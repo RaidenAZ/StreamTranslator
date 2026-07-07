@@ -11,6 +11,7 @@
             </ResourceDictionary.MergedDictionaries>
 
             <SolidColorBrush x:Key="SurfaceBrush" Color="#F7F8FA" />
+            <SolidColorBrush x:Key="ChromeBrush" Color="#EDF6F8" />
             <SolidColorBrush x:Key="PanelBrush" Color="#FFFFFF" />
             <SolidColorBrush x:Key="StrokeBrush" Color="#DADDE3" />
             <SolidColorBrush x:Key="PrimaryTextBrush" Color="#1F2328" />
@@ -41,4 +42,3 @@
         </ResourceDictionary>
     </Application.Resources>
 </Application>
-

@@ -15,7 +15,7 @@ using System.Windows.Interop;
 
 namespace StreamTranslator.App;
 
-public partial class MainWindow : Window
+public partial class MainWindow : FluentWindow
 {
     private const int WmHotkey = 0x0312;
     private const int HotkeyToggleCaption = 1001;
@@ -84,20 +84,6 @@ public partial class MainWindow : Window
     private void OnNavClick(object sender, RoutedEventArgs e)
     {
         if (sender is not FrameworkElement { Tag: string pageName })
-        {
-            return;
-        }
-
-        var page = FindName(pageName) as UIElement;
-        if (page is not null)
-        {
-            ShowPage(page);
-        }
-    }
-
-    private void OnNavigationSelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (NavigationList.SelectedItem is not FrameworkElement { Tag: string pageName })
         {
             return;
         }
