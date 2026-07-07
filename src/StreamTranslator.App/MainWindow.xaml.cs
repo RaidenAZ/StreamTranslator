@@ -4,6 +4,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
 using StreamTranslator.Audio.Capture;
@@ -51,6 +52,7 @@ public partial class MainWindow : FluentWindow
             LoadAudioDevices(_settings.Audio.DeviceId);
             RegisterHotkeys();
             ShowPage(StatusPage);
+            SetActiveNavigationItem("StatusPage");
             DataDirectoryText.Text = $"数据目录: {_dataDirectory}";
             SubtitleList.Items.Add("字幕历史将在开始识别后显示。");
             TryShowFloatingWindow();
@@ -92,6 +94,10 @@ public partial class MainWindow : FluentWindow
         if (page is not null)
         {
             ShowPage(page);
+            if (sender is NavigationViewItem selectedItem)
+            {
+                SetActiveNavigationItem(selectedItem);
+            }
         }
     }
 
@@ -169,7 +175,15 @@ public partial class MainWindow : FluentWindow
 
     private void OnShowFloatingWindowClick(object sender, RoutedEventArgs e)
     {
-        TryShowFloatingWindow();
+        try
+        {
+            ToggleFloatingWindowVisibility();
+        }
+        catch (Exception ex)
+        {
+            LastErrorText.Text = ex.Message;
+            AppendAppLog($"悬浮窗操作失败: {ex}");
+        }
     }
 
     private void OnToggleFloatingLockClick(object sender, RoutedEventArgs e)
@@ -263,6 +277,33 @@ public partial class MainWindow : FluentWindow
         selectedPage.Visibility = Visibility.Visible;
     }
 
+    private void SetActiveNavigationItem(string pageName)
+    {
+        var selectedItem = NavigationItems()
+            .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), pageName, StringComparison.Ordinal));
+        if (selectedItem is not null)
+        {
+            SetActiveNavigationItem(selectedItem);
+        }
+    }
+
+    private void SetActiveNavigationItem(NavigationViewItem selectedItem)
+    {
+        foreach (var item in NavigationItems())
+        {
+            var isActive = ReferenceEquals(item, selectedItem);
+            item.IsActive = isActive;
+            AutomationProperties.SetItemStatus(item, isActive ? "Active" : "Inactive");
+        }
+    }
+
+    private IEnumerable<NavigationViewItem> NavigationItems()
+    {
+        return MainNavigation.MenuItems
+            .OfType<NavigationViewItem>()
+            .Concat(MainNavigation.FooterMenuItems.OfType<NavigationViewItem>());
+    }
+
     private void OnRuntimeStatusChanged(object? sender, string status)
     {
         Dispatcher.Invoke(() =>
@@ -321,7 +362,11 @@ public partial class MainWindow : FluentWindow
         if (_floatingWindow is null)
         {
             _floatingWindow = new FloatingSubtitleWindow();
-            _floatingWindow.Closed += (_, _) => _floatingWindow = null;
+            _floatingWindow.Closed += (_, _) =>
+            {
+                _floatingWindow = null;
+                UpdateFloatingWindowButtonState();
+            };
         }
 
         if (!_floatingWindow.IsVisible)
@@ -340,6 +385,7 @@ public partial class MainWindow : FluentWindow
             NumberValue(FloatingFontSizeBox, 28),
             (int)NumberValue(FloatingLinesBox, 2),
             FloatingOpacitySlider.Value);
+        UpdateFloatingWindowButtonState();
     }
 
     private void TryShowFloatingWindow()
@@ -527,7 +573,18 @@ public partial class MainWindow : FluentWindow
         else
         {
             _floatingWindow.Hide();
+            UpdateFloatingWindowButtonState();
         }
+    }
+
+    private void UpdateFloatingWindowButtonState()
+    {
+        var isVisible = _floatingWindow?.IsVisible == true;
+        var buttonText = isVisible ? "隐藏悬浮窗" : "显示悬浮窗";
+
+        ShowFloatingWindowButton.ToolTip = buttonText;
+        AutomationProperties.SetName(ShowFloatingWindowButton, buttonText);
+        FloatingWindowIcon.Symbol = isVisible ? SymbolRegular.Dismiss24 : SymbolRegular.Window24;
     }
 
     private string GetSelectedLanguage()

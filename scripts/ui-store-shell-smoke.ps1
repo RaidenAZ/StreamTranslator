@@ -56,6 +56,12 @@ public static class UiSmokeNative
     [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
 
+    [DllImport("user32.dll")]
+    private static extern bool SetCursorPos(int X, int Y);
+
+    [DllImport("user32.dll")]
+    private static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+
     private static IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex)
     {
         return IntPtr.Size == 8 ? GetWindowLongPtr64(hWnd, nIndex) : GetWindowLong32(hWnd, nIndex);
@@ -95,6 +101,13 @@ public static class UiSmokeNative
     {
         var handle = new IntPtr(Convert.ToInt64(handleText.Substring(2), 16));
         SendMessage(handle, 0x0010, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    public static void ClickScreenPoint(double x, double y)
+    {
+        SetCursorPos((int)Math.Round(x), (int)Math.Round(y));
+        mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
+        mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
     }
 }
 '@
@@ -143,6 +156,36 @@ try {
         return $mainElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
     }
 
+    function Invoke-Element($element, [string]$description) {
+        if ($null -eq $element) {
+            throw "$description was not found."
+        }
+
+        try {
+            $pattern = $element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+            $pattern.Invoke()
+            return
+        }
+        catch [System.InvalidOperationException] {
+        }
+
+        try {
+            $pattern = $element.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+            $pattern.Select()
+            return
+        }
+        catch [System.InvalidOperationException] {
+        }
+
+        $rect = $element.Current.BoundingRectangle
+        if ($rect.Width -gt 0 -and $rect.Height -gt 0) {
+            [UiSmokeNative]::ClickScreenPoint($rect.Left + ($rect.Width / 2), $rect.Top + ($rect.Height / 2))
+            return
+        }
+
+        throw "$description cannot be invoked, selected, or clicked through UI Automation."
+    }
+
     $navigation = Find-ByAutomationId "MainNavigation"
     if ($null -eq $navigation) {
         $navigationCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, "NavigationItems")
@@ -150,7 +193,9 @@ try {
     }
     $startButton = Find-ByAutomationId "StartStopButton"
     $floatingButton = Find-ByAutomationId "ShowFloatingWindowButton"
-    $searchBox = Find-ByAutomationId "ShellSearchBox"
+    $removedSearchBox = Find-ByAutomationId "ShellSearchBox"
+    $subtitlesNav = Find-ByAutomationId "NavSubtitlesPage"
+    $audioNav = Find-ByAutomationId "NavAudioPage"
     $minimizeButton = Find-ByAutomationId "TitleBarMinimizeButton"
     $maximizeButton = Find-ByAutomationId "TitleBarMaximizeButton"
     $closeButton = Find-ByAutomationId "TitleBarCloseButton"
@@ -158,19 +203,45 @@ try {
     if ($null -eq $navigation) { throw "Store-like NavigationView was not found." }
     if ($null -eq $startButton) { throw "Top command start/stop button was not found." }
     if ($null -eq $floatingButton) { throw "Top command floating window button was not found." }
-    if ($null -eq $searchBox) { throw "Title bar search/status box was not found." }
+    if ($null -ne $removedSearchBox) { throw "Title bar search/status box should not exist." }
+    if ($null -eq $subtitlesNav) { throw "Subtitles navigation item was not found." }
+    if ($null -eq $audioNav) { throw "Audio navigation item was not found." }
     if ($null -eq $minimizeButton) { throw "Title bar minimize button was not found." }
     if ($null -eq $maximizeButton) { throw "Title bar maximize button was not found." }
     if ($null -eq $closeButton) { throw "Title bar close button was not found." }
 
     $navRect = $navigation.Current.BoundingRectangle
     $startRect = $startButton.Current.BoundingRectangle
+    $floatingRect = $floatingButton.Current.BoundingRectangle
     if ($startRect.Left -le ($navRect.Left + 120)) {
         throw "Start/stop button still appears inside the left navigation area."
     }
 
-    $floatingPattern = $floatingButton.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-    $floatingPattern.Invoke()
+    if ($startRect.Height -gt 46) {
+        throw "Start/stop title-bar button is too tall."
+    }
+
+    if ($floatingRect.Height -gt 46) {
+        throw "Floating-window title-bar button is too tall."
+    }
+
+    Invoke-Element $subtitlesNav "Subtitles navigation item"
+    Start-Sleep -Milliseconds 500
+    Invoke-Element $audioNav "Audio navigation item"
+    Start-Sleep -Milliseconds 500
+
+    $subtitlesNav = Find-ByAutomationId "NavSubtitlesPage"
+    $audioNav = Find-ByAutomationId "NavAudioPage"
+
+    if ($audioNav.Current.ItemStatus -ne "Active") {
+        throw "Navigation active state did not move to the clicked audio page."
+    }
+
+    if ($subtitlesNav.Current.ItemStatus -eq "Active") {
+        throw "Previous navigation item remained active after switching pages."
+    }
+
+    Invoke-Element $floatingButton "Top command floating window button"
     Start-Sleep -Milliseconds 900
 
     $floatingWindow = [UiSmokeNative]::GetWindows($process.Id) |
@@ -178,6 +249,16 @@ try {
         Select-Object -First 1
     if ($null -eq $floatingWindow) {
         throw "Floating subtitle window did not open from the top command button."
+    }
+
+    Invoke-Element $floatingButton "Top command floating window button"
+    Start-Sleep -Milliseconds 900
+
+    $floatingWindow = [UiSmokeNative]::GetWindows($process.Id) |
+        Where-Object { $_.Visible -and $_.Title -and $_.Title -ne "StreamTranslator" } |
+        Select-Object -First 1
+    if ($null -ne $floatingWindow) {
+        throw "Floating subtitle window did not hide after the top command button was invoked again."
     }
 
     "PASS ui-store-shell-smoke"

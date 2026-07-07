@@ -17,23 +17,23 @@
                  Closing="OnClosing">
     <Grid Background="{StaticResource SurfaceBrush}">
         <Grid.RowDefinitions>
-            <RowDefinition Height="64" />
+            <RowDefinition Height="56" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
         <ui:TitleBar x:Name="AppTitleBar"
                      Grid.Row="0"
                      Title=""
-                     Height="64"
+                     Height="56"
                      ShowMinimize="True"
                      ShowMaximize="True"
                      ShowClose="True"
                      ForceShutdown="False"
                      Background="{StaticResource ChromeBrush}">
             <ui:TitleBar.Header>
-                <StackPanel Orientation="Horizontal" Margin="18,0,16,0" VerticalAlignment="Center">
-                    <Border Width="28"
-                            Height="28"
+                <StackPanel Orientation="Horizontal" Margin="16,0,14,0" VerticalAlignment="Center">
+                    <Border Width="26"
+                            Height="26"
                             CornerRadius="6"
                             Background="{StaticResource AccentBrush}"
                             Margin="0,0,10,0">
@@ -48,55 +48,35 @@
                                VerticalAlignment="Center" />
                 </StackPanel>
             </ui:TitleBar.Header>
-            <ui:TitleBar.CenterContent>
-                <Border Width="520"
-                        Height="38"
-                        CornerRadius="6"
-                        Background="#F8FAFC"
-                        BorderBrush="{StaticResource StrokeBrush}"
-                        BorderThickness="1">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="40" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="搜索设置、状态、字幕"
-                                   AutomationProperties.AutomationId="ShellSearchBox"
-                                   Foreground="{StaticResource SecondaryTextBrush}"
-                                   FontSize="14"
-                                   VerticalAlignment="Center"
-                                   Margin="14,0,8,0" />
-                        <ui:SymbolIcon Grid.Column="1"
-                                       Symbol="Search24"
-                                       Foreground="{StaticResource SecondaryTextBrush}"
-                                       HorizontalAlignment="Center"
-                                       VerticalAlignment="Center" />
-                    </Grid>
-                </Border>
-            </ui:TitleBar.CenterContent>
             <ui:TitleBar.TrailingContent>
                 <StackPanel Orientation="Horizontal"
-                            Margin="0,0,10,0"
+                            Margin="0,0,8,0"
                             VerticalAlignment="Center">
                     <ui:Button x:Name="ShowFloatingWindowButton"
                                AutomationProperties.AutomationId="ShowFloatingWindowButton"
+                               AutomationProperties.Name="显示悬浮窗"
                                Click="OnShowFloatingWindowClick"
-                               Height="34"
-                               MinWidth="42"
-                               Padding="10,0"
-                               Margin="0,0,8,0"
+                               Height="30"
+                               MinHeight="0"
+                               MaxHeight="30"
+                               MinWidth="36"
+                               Padding="8,0"
+                               Margin="0,0,6,0"
                                ToolTip="显示悬浮窗">
-                        <ui:SymbolIcon Symbol="Window24" />
+                        <ui:SymbolIcon x:Name="FloatingWindowIcon" Symbol="Window24" />
                     </ui:Button>
                     <ui:Button x:Name="StartStopButton"
                                AutomationProperties.AutomationId="StartStopButton"
                                Click="OnStartStopClick"
-                               Height="34"
-                               MinWidth="112"
-                               Padding="12,0"
-                               Margin="0,0,8,0">
+                               Height="30"
+                               MinHeight="0"
+                               MaxHeight="30"
+                               MinWidth="100"
+                               Padding="10,0"
+                               Margin="0,0,6,0"
+                               FontSize="13">
                         <StackPanel Orientation="Horizontal">
-                            <ui:SymbolIcon x:Name="StartStopIcon" Symbol="Play24" Margin="0,0,8,0" />
+                            <ui:SymbolIcon x:Name="StartStopIcon" Symbol="Play24" Margin="0,0,6,0" />
                             <TextBlock x:Name="StartStopText" Text="开始字幕" />
                         </StackPanel>
                     </ui:Button>
@@ -115,34 +95,65 @@
                            AlwaysShowHeader="False"
                            Background="{StaticResource SurfaceBrush}">
             <ui:NavigationView.MenuItems>
-                <ui:NavigationViewItem Content="状态" Tag="StatusPage" Click="OnNavClick" IsActive="True">
+                <ui:NavigationViewItem Content="状态"
+                                       Tag="StatusPage"
+                                       AutomationProperties.AutomationId="NavStatusPage"
+                                       AutomationProperties.ItemStatus="Active"
+                                       FontSize="12"
+                                       Click="OnNavClick"
+                                       IsActive="True">
                     <ui:NavigationViewItem.Icon>
                         <ui:SymbolIcon Symbol="Home24" />
                     </ui:NavigationViewItem.Icon>
                 </ui:NavigationViewItem>
-                <ui:NavigationViewItem Content="字幕" Tag="SubtitlesPage" Click="OnNavClick">
+                <ui:NavigationViewItem Content="字幕"
+                                       Tag="SubtitlesPage"
+                                       AutomationProperties.AutomationId="NavSubtitlesPage"
+                                       AutomationProperties.ItemStatus="Inactive"
+                                       FontSize="12"
+                                       Click="OnNavClick">
                     <ui:NavigationViewItem.Icon>
                         <ui:SymbolIcon Symbol="ClosedCaption24" />
                     </ui:NavigationViewItem.Icon>
                 </ui:NavigationViewItem>
-                <ui:NavigationViewItem Content="音频" Tag="AudioPage" Click="OnNavClick">
+                <ui:NavigationViewItem Content="音频"
+                                       Tag="AudioPage"
+                                       AutomationProperties.AutomationId="NavAudioPage"
+                                       AutomationProperties.ItemStatus="Inactive"
+                                       FontSize="12"
+                                       Click="OnNavClick">
                     <ui:NavigationViewItem.Icon>
                         <ui:SymbolIcon Symbol="Speaker224" />
                     </ui:NavigationViewItem.Icon>
                 </ui:NavigationViewItem>
-                <ui:NavigationViewItem Content="服务" Tag="ServicePage" Click="OnNavClick">
+                <ui:NavigationViewItem Content="服务"
+                                       Tag="ServicePage"
+                                       AutomationProperties.AutomationId="NavServicePage"
+                                       AutomationProperties.ItemStatus="Inactive"
+                                       FontSize="12"
+                                       Click="OnNavClick">
                     <ui:NavigationViewItem.Icon>
                         <ui:SymbolIcon Symbol="DataBarVertical24" />
                     </ui:NavigationViewItem.Icon>
                 </ui:NavigationViewItem>
-                <ui:NavigationViewItem Content="悬浮窗" Tag="FloatingPage" Click="OnNavClick">
+                <ui:NavigationViewItem Content="悬浮窗"
+                                       Tag="FloatingPage"
+                                       AutomationProperties.AutomationId="NavFloatingPage"
+                                       AutomationProperties.ItemStatus="Inactive"
+                                       FontSize="12"
+                                       Click="OnNavClick">
                     <ui:NavigationViewItem.Icon>
                         <ui:SymbolIcon Symbol="Window24" />
                     </ui:NavigationViewItem.Icon>
                 </ui:NavigationViewItem>
             </ui:NavigationView.MenuItems>
             <ui:NavigationView.FooterMenuItems>
-                <ui:NavigationViewItem Content="关于" Tag="AboutPage" Click="OnNavClick">
+                <ui:NavigationViewItem Content="关于"
+                                       Tag="AboutPage"
+                                       AutomationProperties.AutomationId="NavAboutPage"
+                                       AutomationProperties.ItemStatus="Inactive"
+                                       FontSize="12"
+                                       Click="OnNavClick">
                     <ui:NavigationViewItem.Icon>
                         <ui:SymbolIcon Symbol="Info24" />
                     </ui:NavigationViewItem.Icon>
@@ -329,7 +340,7 @@
                                         <ui:Button Click="OnShowFloatingWindowClick" Margin="0,0,8,0">
                                             <StackPanel Orientation="Horizontal">
                                                 <ui:SymbolIcon Symbol="Window24" Margin="0,0,8,0" />
-                                                <TextBlock Text="显示悬浮窗" />
+                                                <TextBlock Text="显示/隐藏悬浮窗" />
                                             </StackPanel>
                                         </ui:Button>
                                         <ui:Button Click="OnToggleFloatingLockClick">
