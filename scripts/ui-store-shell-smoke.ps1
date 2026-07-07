@@ -9,6 +9,26 @@ if (-not (Test-Path $exe)) {
     throw "StreamTranslator.exe was not found at $exe"
 }
 
+$mainWindowXaml = Join-Path $PSScriptRoot "..\src\StreamTranslator.App\MainWindow.xaml"
+if (Test-Path $mainWindowXaml) {
+    $mainWindowMarkup = Get-Content -LiteralPath $mainWindowXaml -Raw
+    if ($mainWindowMarkup -notmatch 'WindowBackdropType="Mica"') {
+        throw "Main window should use the Mica backdrop."
+    }
+
+    if ($mainWindowMarkup -notmatch '<ui:FluentWindow[\s\S]*Background="Transparent"') {
+        throw "Main window should leave the backdrop visible through a transparent window background."
+    }
+
+    if ($mainWindowMarkup -notmatch '<Grid Background="Transparent">') {
+        throw "Main shell root should be transparent so the Mica backdrop remains visible."
+    }
+
+    if ($mainWindowMarkup -notmatch '<Border x:Name="HomeIssuesCard"[\s\S]*AutomationProperties\.AutomationId="HomeIssuesPanel"') {
+        throw "Home issues should be presented in its own card, outside the overview panel."
+    }
+}
+
 $process = Start-Process -FilePath $exe -WorkingDirectory $PackageRoot -PassThru
 
 Add-Type @'
@@ -109,6 +129,7 @@ public static class UiSmokeNative
         mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
         mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
     }
+
 }
 '@
 
@@ -191,55 +212,93 @@ try {
         $navigationCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, "NavigationItems")
         $navigation = $mainElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $navigationCondition)
     }
+    $titleBarAppTitle = Find-ByAutomationId "TitleBarAppTitle"
+    $removedTitleBarAppIcon = Find-ByAutomationId "TitleBarAppIcon"
     $startButton = Find-ByAutomationId "StartStopButton"
-    $floatingButton = Find-ByAutomationId "ShowFloatingWindowButton"
+    $floatingButton = Find-ByAutomationId "HomeFloatingWindowButton"
+    $removedTitleBarFloatingButton = Find-ByAutomationId "ShowFloatingWindowButton"
     $removedSearchBox = Find-ByAutomationId "ShellSearchBox"
-    $subtitlesNav = Find-ByAutomationId "NavSubtitlesPage"
-    $audioNav = Find-ByAutomationId "NavAudioPage"
+    $homeNav = Find-ByAutomationId "NavHomePage"
+    $subtitleHistoryNav = Find-ByAutomationId "NavSubtitleHistoryPage"
+    $settingsNav = Find-ByAutomationId "NavSettingsPage"
+    $aboutNav = Find-ByAutomationId "NavAboutPage"
+    $removedAudioNav = Find-ByAutomationId "NavAudioPage"
+    $removedServiceNav = Find-ByAutomationId "NavServicePage"
+    $removedFloatingNav = Find-ByAutomationId "NavFloatingPage"
+    $homeControlBar = Find-ByAutomationId "HomeControlBar"
+    $homeOverviewPanel = Find-ByAutomationId "HomeOverviewPanel"
+    $removedHomeStatusTiles = Find-ByAutomationId "HomeStatusTiles"
+    $audioInputStatus = Find-ByAutomationId "OverviewAudioInputStatus"
+    $speechDetectionStatus = Find-ByAutomationId "OverviewSpeechDetectionStatus"
+    $recognitionWorkerStatus = Find-ByAutomationId "OverviewRecognitionWorkerStatus"
+    $recognitionApiStatus = Find-ByAutomationId "OverviewRecognitionApiStatus"
+    $subtitleOutputStatus = Find-ByAutomationId "OverviewSubtitleOutputStatus"
+    $homeDeviceText = Find-ByAutomationId "HomeAudioDeviceText"
+    $homeAudioLevel = Find-ByAutomationId "HomeAudioLevelBar"
+    $homeIssuesPanel = Find-ByAutomationId "HomeIssuesPanel"
     $minimizeButton = Find-ByAutomationId "TitleBarMinimizeButton"
     $maximizeButton = Find-ByAutomationId "TitleBarMaximizeButton"
     $closeButton = Find-ByAutomationId "TitleBarCloseButton"
 
     if ($null -eq $navigation) { throw "Store-like NavigationView was not found." }
-    if ($null -eq $startButton) { throw "Top command start/stop button was not found." }
-    if ($null -eq $floatingButton) { throw "Top command floating window button was not found." }
+    if ($null -eq $titleBarAppTitle) { throw "Lightweight title-bar app title was not found." }
+    if ($null -ne $removedTitleBarAppIcon) { throw "Title-bar app icon should not exist." }
+    if ($null -eq $startButton) { throw "Home start/stop button was not found." }
+    if ($null -eq $floatingButton) { throw "Home floating window button was not found." }
+    if ($null -ne $removedTitleBarFloatingButton) { throw "Title-bar floating window button should not exist." }
     if ($null -ne $removedSearchBox) { throw "Title bar search/status box should not exist." }
-    if ($null -eq $subtitlesNav) { throw "Subtitles navigation item was not found." }
-    if ($null -eq $audioNav) { throw "Audio navigation item was not found." }
+    if ($null -eq $homeNav) { throw "Home navigation item was not found." }
+    if ($null -eq $subtitleHistoryNav) { throw "Subtitle history navigation item was not found." }
+    if ($null -eq $settingsNav) { throw "Settings navigation item was not found." }
+    if ($null -eq $aboutNav) { throw "About navigation item was not found." }
+    if ($null -ne $removedAudioNav) { throw "Audio should not remain as a top-level navigation item." }
+    if ($null -ne $removedServiceNav) { throw "Service should not remain as a top-level navigation item." }
+    if ($null -ne $removedFloatingNav) { throw "Floating window should not remain as a top-level navigation item." }
+    if ($null -eq $homeControlBar) { throw "Home workbench control bar was not found." }
+    if ($null -eq $homeOverviewPanel) { throw "Home overview panel was not found." }
+    if ($null -ne $removedHomeStatusTiles) { throw "Home should not use the all-card dashboard layout." }
+    if ($null -eq $audioInputStatus) { throw "Audio input status was not found in the overview panel." }
+    if ($null -eq $speechDetectionStatus) { throw "Speech detection status was not found in the overview panel." }
+    if ($null -eq $recognitionWorkerStatus) { throw "Recognition worker status was not found in the overview panel." }
+    if ($null -eq $recognitionApiStatus) { throw "Recognition API status was not found in the overview panel." }
+    if ($null -eq $subtitleOutputStatus) { throw "Subtitle output status was not found in the overview panel." }
+    if ($null -eq $homeDeviceText) { throw "Home audio device text was not found." }
+    if ($null -eq $homeAudioLevel) { throw "Home audio level bar was not found." }
+    if ($null -eq $homeIssuesPanel) { throw "Home issues panel should be a separate card." }
     if ($null -eq $minimizeButton) { throw "Title bar minimize button was not found." }
     if ($null -eq $maximizeButton) { throw "Title bar maximize button was not found." }
     if ($null -eq $closeButton) { throw "Title bar close button was not found." }
 
     $navRect = $navigation.Current.BoundingRectangle
     $startRect = $startButton.Current.BoundingRectangle
-    $floatingRect = $floatingButton.Current.BoundingRectangle
-    if ($startRect.Left -le ($navRect.Left + 120)) {
-        throw "Start/stop button still appears inside the left navigation area."
+    if ($startRect.Top -lt ($navRect.Top + 80)) {
+        throw "Start/stop button still appears in the title bar instead of the home workbench."
     }
 
-    if ($startRect.Height -gt 46) {
-        throw "Start/stop title-bar button is too tall."
-    }
-
-    if ($floatingRect.Height -gt 46) {
-        throw "Floating-window title-bar button is too tall."
-    }
-
-    Invoke-Element $subtitlesNav "Subtitles navigation item"
+    Invoke-Element $subtitleHistoryNav "Subtitle history navigation item"
     Start-Sleep -Milliseconds 500
-    Invoke-Element $audioNav "Audio navigation item"
+    Invoke-Element $settingsNav "Settings navigation item"
     Start-Sleep -Milliseconds 500
 
-    $subtitlesNav = Find-ByAutomationId "NavSubtitlesPage"
-    $audioNav = Find-ByAutomationId "NavAudioPage"
+    $subtitleHistoryNav = Find-ByAutomationId "NavSubtitleHistoryPage"
+    $settingsNav = Find-ByAutomationId "NavSettingsPage"
+    $audioSettingsGroup = Find-ByAutomationId "SettingsAudioGroup"
+    $recognitionSettingsGroup = Find-ByAutomationId "SettingsRecognitionGroup"
+    $floatingSettingsGroup = Find-ByAutomationId "SettingsFloatingGroup"
+    $diagnosticsSettingsGroup = Find-ByAutomationId "SettingsDiagnosticsGroup"
 
-    if ($audioNav.Current.ItemStatus -ne "Active") {
-        throw "Navigation active state did not move to the clicked audio page."
+    if ($settingsNav.Current.ItemStatus -ne "Active") {
+        throw "Navigation active state did not move to the clicked settings page."
     }
 
-    if ($subtitlesNav.Current.ItemStatus -eq "Active") {
+    if ($subtitleHistoryNav.Current.ItemStatus -eq "Active") {
         throw "Previous navigation item remained active after switching pages."
     }
+
+    if ($null -eq $audioSettingsGroup) { throw "Settings audio group was not found." }
+    if ($null -eq $recognitionSettingsGroup) { throw "Settings recognition service group was not found." }
+    if ($null -eq $floatingSettingsGroup) { throw "Settings floating subtitle group was not found." }
+    if ($null -eq $diagnosticsSettingsGroup) { throw "Settings diagnostics group was not found." }
 
     Invoke-Element $floatingButton "Top command floating window button"
     Start-Sleep -Milliseconds 900
@@ -259,6 +318,20 @@ try {
         Select-Object -First 1
     if ($null -ne $floatingWindow) {
         throw "Floating subtitle window did not hide after the top command button was invoked again."
+    }
+
+    Invoke-Element $subtitleHistoryNav "Subtitle history navigation item"
+    Start-Sleep -Milliseconds 500
+    $clearHistoryButton = Find-ByAutomationId "ClearHistoryButton"
+    if ($null -eq $clearHistoryButton) { throw "Clear history button was not found." }
+
+    Invoke-Element $clearHistoryButton "Clear history button"
+    Start-Sleep -Milliseconds 500
+    $confirmWindow = [UiSmokeNative]::GetWindows($process.Id) |
+        Where-Object { $_.Visible -and $_.Title -and $_.Title -ne "StreamTranslator" } |
+        Select-Object -First 1
+    if ($null -eq $confirmWindow) {
+        throw "Clear history confirmation dialog did not appear."
     }
 
     "PASS ui-store-shell-smoke"

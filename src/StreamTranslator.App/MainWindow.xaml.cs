@@ -24,6 +24,7 @@ public partial class MainWindow : FluentWindow
     private const int HotkeyToggleLock = 1003;
     private const uint ModAlt = 0x0001;
     private const uint ModControl = 0x0002;
+    private const string SubtitlePlaceholder = "开始字幕后，这里会保存今天的字幕记录。";
 
     private readonly string _dataDirectory = Path.Combine(AppContext.BaseDirectory, "data");
     private readonly AudioDeviceService _audioDeviceService = new();
@@ -51,10 +52,10 @@ public partial class MainWindow : FluentWindow
             ApplySettingsToUi(_settings);
             LoadAudioDevices(_settings.Audio.DeviceId);
             RegisterHotkeys();
-            ShowPage(StatusPage);
-            SetActiveNavigationItem("StatusPage");
+            ShowPage(HomePage);
+            SetActiveNavigationItem("HomePage");
             DataDirectoryText.Text = $"数据目录: {_dataDirectory}";
-            SubtitleList.Items.Add("字幕历史将在开始识别后显示。");
+            ResetSubtitlePlaceholder();
             TryShowFloatingWindow();
         }
         catch (Exception ex)
@@ -128,6 +129,9 @@ public partial class MainWindow : FluentWindow
             VadStatusText.Text = "加载中";
             WorkerStatusText.Text = "启动中";
             ApiStatusText.Text = "等待请求";
+            SubtitleOutputStatusText.Text = "等待字幕";
+            HomeRuntimeSummaryText.Text = "启动中，正在连接音频与识别服务";
+            HomeStateBadgeText.Text = "启动中";
             StartStopButton.IsEnabled = false;
 
             await _runtime.StartAsync();
@@ -136,6 +140,8 @@ public partial class MainWindow : FluentWindow
             StartStopText.Text = "停止字幕";
             StartStopIcon.Symbol = SymbolRegular.Stop24;
             StartStopButton.IsEnabled = true;
+            HomeRuntimeSummaryText.Text = "运行中，正在监听系统输出声音";
+            HomeStateBadgeText.Text = "运行中";
             AppendAppLog("字幕 runtime 已启动");
             TryShowFloatingWindow();
             _floatingWindow?.SetCaption("等待字幕...");
@@ -164,9 +170,14 @@ public partial class MainWindow : FluentWindow
 
         _isRunning = false;
         AudioStatusText.Text = "未启动";
+        VadStatusText.Text = "等待模型";
         WorkerStatusText.Text = "未启动";
         ApiStatusText.Text = "未测试";
+        SubtitleOutputStatusText.Text = "等待字幕";
         AudioLevelBar.Value = 0;
+        HomeAudioLevelText.Text = "0%";
+        HomeRuntimeSummaryText.Text = "未启动，等待开始";
+        HomeStateBadgeText.Text = "就绪";
         StartStopText.Text = "开始字幕";
         StartStopIcon.Symbol = SymbolRegular.Play24;
         StartStopButton.IsEnabled = true;
@@ -202,18 +213,19 @@ public partial class MainWindow : FluentWindow
 
     private void OnCopySelectedClick(object sender, RoutedEventArgs e)
     {
-        if (SubtitleList.SelectedItem is not null)
+        var selectedText = SubtitleList.SelectedItem?.ToString() ?? "";
+        if (!string.IsNullOrWhiteSpace(selectedText) && selectedText != SubtitlePlaceholder)
         {
-            Clipboard.SetText(SubtitleList.SelectedItem.ToString() ?? "");
+            Clipboard.SetText(selectedText);
         }
     }
 
     private void OnCopyAllClick(object sender, RoutedEventArgs e)
     {
         var builder = new StringBuilder();
-        foreach (var item in SubtitleList.Items)
+        foreach (var item in SubtitleTexts())
         {
-            builder.AppendLine(item.ToString());
+            builder.AppendLine(item);
         }
 
         Clipboard.SetText(builder.ToString());
@@ -224,18 +236,55 @@ public partial class MainWindow : FluentWindow
         var recent = SubtitleList.Items
             .Cast<object>()
             .Select(static item => item.ToString() ?? "")
-            .Where(static text => !string.IsNullOrWhiteSpace(text))
+            .Where(static text => !string.IsNullOrWhiteSpace(text) && text != SubtitlePlaceholder)
             .TakeLast(10);
         Clipboard.SetText(string.Join(Environment.NewLine, recent));
     }
 
     private void OnClearHistoryClick(object sender, RoutedEventArgs e)
     {
+        var result = System.Windows.MessageBox.Show(
+            this,
+            "清空后会删除当天字幕历史，无法从界面恢复。确定继续吗？",
+            "确认清空历史",
+            System.Windows.MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            System.Windows.MessageBoxResult.No);
+        if (result != System.Windows.MessageBoxResult.Yes)
+        {
+            return;
+        }
+
         SubtitleList.Items.Clear();
         var historyPath = Path.Combine(_dataDirectory, "subtitles", $"{DateTime.Now:yyyy-MM-dd}.jsonl");
         if (File.Exists(historyPath))
         {
             File.WriteAllText(historyPath, string.Empty);
+        }
+
+        ResetSubtitlePlaceholder();
+    }
+
+    private IEnumerable<string> SubtitleTexts()
+    {
+        return SubtitleList.Items
+            .Cast<object>()
+            .Select(static item => item.ToString() ?? "")
+            .Where(static text => !string.IsNullOrWhiteSpace(text) && text != SubtitlePlaceholder);
+    }
+
+    private void ResetSubtitlePlaceholder()
+    {
+        SubtitleList.Items.Clear();
+        SubtitleList.Items.Add(SubtitlePlaceholder);
+    }
+
+    private void RemoveSubtitlePlaceholder()
+    {
+        if (SubtitleList.Items.Count == 1 &&
+            string.Equals(SubtitleList.Items[0]?.ToString(), SubtitlePlaceholder, StringComparison.Ordinal))
+        {
+            SubtitleList.Items.Clear();
         }
     }
 
@@ -268,11 +317,9 @@ public partial class MainWindow : FluentWindow
 
     private void ShowPage(UIElement selectedPage)
     {
-        StatusPage.Visibility = Visibility.Collapsed;
-        SubtitlesPage.Visibility = Visibility.Collapsed;
-        AudioPage.Visibility = Visibility.Collapsed;
-        ServicePage.Visibility = Visibility.Collapsed;
-        FloatingPage.Visibility = Visibility.Collapsed;
+        HomePage.Visibility = Visibility.Collapsed;
+        SubtitleHistoryPage.Visibility = Visibility.Collapsed;
+        SettingsPage.Visibility = Visibility.Collapsed;
         AboutPage.Visibility = Visibility.Collapsed;
         selectedPage.Visibility = Visibility.Visible;
     }
@@ -336,9 +383,11 @@ public partial class MainWindow : FluentWindow
             var text = item.SourceText;
             if (!string.IsNullOrWhiteSpace(text))
             {
+                RemoveSubtitlePlaceholder();
                 SubtitleList.Items.Add(text);
                 SubtitleList.ScrollIntoView(text);
                 _floatingWindow?.SetCaption(text);
+                SubtitleOutputStatusText.Text = "输出中";
             }
         });
     }
@@ -348,13 +397,19 @@ public partial class MainWindow : FluentWindow
         Dispatcher.Invoke(() =>
         {
             LastErrorText.Text = ex.Message;
+            HomeStateBadgeText.Text = "错误";
+            HomeRuntimeSummaryText.Text = "运行异常，请查看问题信息";
             AppendAppLog($"错误: {ex.GetType().Name}: {ex.Message}");
         });
     }
 
     private void OnAudioLevelChanged(object? sender, double level)
     {
-        Dispatcher.BeginInvoke(() => AudioLevelBar.Value = level);
+        Dispatcher.BeginInvoke(() =>
+        {
+            AudioLevelBar.Value = level;
+            HomeAudioLevelText.Text = $"{Math.Round(level)}%";
+        });
     }
 
     private void ShowFloatingWindow()
@@ -432,10 +487,36 @@ public partial class MainWindow : FluentWindow
             {
                 AudioDeviceComboBox.SelectedIndex = selectedIndex >= 0 ? selectedIndex : Math.Max(defaultIndex, 0);
             }
+
+            UpdateCurrentAudioDeviceText();
         }
         catch (Exception ex)
         {
             LastErrorText.Text = $"音频设备加载失败: {ex.Message}";
+            CurrentAudioDeviceText.Text = "加载失败";
+        }
+    }
+
+    private void OnAudioDeviceSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        UpdateCurrentAudioDeviceText();
+    }
+
+    private void UpdateCurrentAudioDeviceText()
+    {
+        if (CurrentAudioDeviceText is null)
+        {
+            return;
+        }
+
+        var selectedIndex = AudioDeviceComboBox.SelectedIndex;
+        if (selectedIndex >= 0 && selectedIndex < AudioDeviceComboBox.Items.Count)
+        {
+            CurrentAudioDeviceText.Text = AudioDeviceComboBox.Items[selectedIndex]?.ToString() ?? "默认设备";
+        }
+        else
+        {
+            CurrentAudioDeviceText.Text = "默认设备";
         }
     }
 
@@ -582,8 +663,8 @@ public partial class MainWindow : FluentWindow
         var isVisible = _floatingWindow?.IsVisible == true;
         var buttonText = isVisible ? "隐藏悬浮窗" : "显示悬浮窗";
 
-        ShowFloatingWindowButton.ToolTip = buttonText;
-        AutomationProperties.SetName(ShowFloatingWindowButton, buttonText);
+        HomeFloatingWindowButton.ToolTip = buttonText;
+        AutomationProperties.SetName(HomeFloatingWindowButton, buttonText);
         FloatingWindowIcon.Symbol = isVisible ? SymbolRegular.Dismiss24 : SymbolRegular.Window24;
     }
 
