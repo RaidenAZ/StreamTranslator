@@ -1,0 +1,22 @@
+using System.Text.Json.Serialization;
+
+namespace StreamTranslator.Core.Subtitles;
+
+public sealed record SubtitleItem
+{
+    public long Sequence { get; init; }
+    public TimeSpan Start { get; init; }
+    public TimeSpan End { get; init; }
+    public string SourceText { get; init; } = "";
+    public string? TranslatedText { get; init; }
+    public SubtitleStatus Status { get; init; }
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<SubtitleStatus>))]
+public enum SubtitleStatus
+{
+    Interim,
+    Final,
+    Failed
+}
+

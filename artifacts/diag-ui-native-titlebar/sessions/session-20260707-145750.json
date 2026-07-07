@@ -1,0 +1,13 @@
+{
+  "input": "artifacts\\sample.wav",
+  "output": "artifacts\\diag-ui-native-titlebar",
+  "sampleRate": 16000,
+  "frameMs": 32,
+  "endSilenceMs": 300,
+  "minSegmentMs": 900,
+  "softMaxSegmentMs": 4000,
+  "hardMaxSegmentMs": 10000,
+  "overlapMs": 600,
+  "segmentCount": 0,
+  "segments": []
+}

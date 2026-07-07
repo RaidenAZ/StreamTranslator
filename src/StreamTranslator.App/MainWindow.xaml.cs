@@ -1,0 +1,610 @@
+using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using StreamTranslator.Audio.Capture;
+using StreamTranslator.App.Runtime;
+using StreamTranslator.Core.Configuration;
+using StreamTranslator.Core.Subtitles;
+using Wpf.Ui.Controls;
+using System.Windows.Interop;
+
+namespace StreamTranslator.App;
+
+public partial class MainWindow : Window
+{
+    private const int WmHotkey = 0x0312;
+    private const int HotkeyToggleCaption = 1001;
+    private const int HotkeyToggleWindow = 1002;
+    private const int HotkeyToggleLock = 1003;
+    private const uint ModAlt = 0x0001;
+    private const uint ModControl = 0x0002;
+
+    private readonly string _dataDirectory = Path.Combine(AppContext.BaseDirectory, "data");
+    private readonly AudioDeviceService _audioDeviceService = new();
+    private readonly List<AudioDeviceInfo> _audioDevices = [];
+    private SettingsStore? _settingsStore;
+    private AppSettings _settings = new();
+    private FloatingSubtitleWindow? _floatingWindow;
+    private SubtitleRuntime? _runtime;
+    private HwndSource? _hwndSource;
+    private bool _isRunning;
+    private bool _isClosing;
+
+    public MainWindow()
+    {
+        InitializeComponent();
+    }
+
+    private async void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            EnsureDataDirectories();
+            _settingsStore = new SettingsStore(Path.Combine(_dataDirectory, "settings.json"));
+            _settings = await _settingsStore.LoadAsync();
+            ApplySettingsToUi(_settings);
+            LoadAudioDevices(_settings.Audio.DeviceId);
+            RegisterHotkeys();
+            ShowPage(StatusPage);
+            DataDirectoryText.Text = $"数据目录: {_dataDirectory}";
+            SubtitleList.Items.Add("字幕历史将在开始识别后显示。");
+            TryShowFloatingWindow();
+        }
+        catch (Exception ex)
+        {
+            AppendAppLog($"启动初始化失败: {ex.Message}");
+            LastErrorText.Text = ex.Message;
+        }
+    }
+
+    private async void OnClosing(object? sender, CancelEventArgs e)
+    {
+        if (_isClosing)
+        {
+            return;
+        }
+
+        e.Cancel = true;
+        _isClosing = true;
+        IsEnabled = false;
+
+        await SaveSettingsAsync();
+        UnregisterHotkeys();
+        await StopRuntimeAsync();
+
+        _floatingWindow?.Close();
+        Close();
+    }
+
+    private void OnNavClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string pageName })
+        {
+            return;
+        }
+
+        var page = FindName(pageName) as UIElement;
+        if (page is not null)
+        {
+            ShowPage(page);
+        }
+    }
+
+    private void OnNavigationSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (NavigationList.SelectedItem is not FrameworkElement { Tag: string pageName })
+        {
+            return;
+        }
+
+        var page = FindName(pageName) as UIElement;
+        if (page is not null)
+        {
+            ShowPage(page);
+        }
+    }
+
+    private async void OnStartStopClick(object sender, RoutedEventArgs e)
+    {
+        if (!_isRunning)
+        {
+            await StartRuntimeAsync();
+        }
+        else
+        {
+            await StopRuntimeAsync();
+        }
+    }
+
+    private async Task StartRuntimeAsync()
+    {
+        try
+        {
+            await SaveSettingsAsync();
+            _runtime = new SubtitleRuntime(AppContext.BaseDirectory, _dataDirectory, _settings);
+            _runtime.StatusChanged += OnRuntimeStatusChanged;
+            _runtime.SubtitleReady += OnSubtitleReady;
+            _runtime.RuntimeError += OnRuntimeError;
+            _runtime.AudioLevelChanged += OnAudioLevelChanged;
+
+            AudioStatusText.Text = "等待捕获";
+            VadStatusText.Text = "加载中";
+            WorkerStatusText.Text = "启动中";
+            ApiStatusText.Text = "等待请求";
+            StartStopButton.IsEnabled = false;
+
+            await _runtime.StartAsync();
+
+            _isRunning = true;
+            StartStopText.Text = "停止字幕";
+            StartStopIcon.Symbol = SymbolRegular.Stop24;
+            StartStopButton.IsEnabled = true;
+            AppendAppLog("字幕 runtime 已启动");
+            TryShowFloatingWindow();
+            _floatingWindow?.SetCaption("等待字幕...");
+        }
+        catch (Exception ex)
+        {
+            StartStopButton.IsEnabled = true;
+            await StopRuntimeAsync();
+            AppendAppLog($"字幕 runtime 启动失败: {ex.Message}");
+            LastErrorText.Text = ex.Message;
+        }
+    }
+
+    private async Task StopRuntimeAsync()
+    {
+        StartStopButton.IsEnabled = false;
+        if (_runtime is not null)
+        {
+            _runtime.StatusChanged -= OnRuntimeStatusChanged;
+            _runtime.SubtitleReady -= OnSubtitleReady;
+            _runtime.RuntimeError -= OnRuntimeError;
+            _runtime.AudioLevelChanged -= OnAudioLevelChanged;
+            await _runtime.DisposeAsync();
+            _runtime = null;
+        }
+
+        _isRunning = false;
+        AudioStatusText.Text = "未启动";
+        WorkerStatusText.Text = "未启动";
+        ApiStatusText.Text = "未测试";
+        AudioLevelBar.Value = 0;
+        StartStopText.Text = "开始字幕";
+        StartStopIcon.Symbol = SymbolRegular.Play24;
+        StartStopButton.IsEnabled = true;
+        AppendAppLog("字幕 runtime 已停止");
+    }
+
+    private void OnShowFloatingWindowClick(object sender, RoutedEventArgs e)
+    {
+        TryShowFloatingWindow();
+    }
+
+    private void OnToggleFloatingLockClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            ShowFloatingWindow();
+            _floatingWindow?.ToggleLocked();
+        }
+        catch (Exception ex)
+        {
+            LastErrorText.Text = ex.Message;
+            AppendAppLog($"悬浮窗操作失败: {ex}");
+        }
+    }
+
+    private void OnCopySelectedClick(object sender, RoutedEventArgs e)
+    {
+        if (SubtitleList.SelectedItem is not null)
+        {
+            Clipboard.SetText(SubtitleList.SelectedItem.ToString() ?? "");
+        }
+    }
+
+    private void OnCopyAllClick(object sender, RoutedEventArgs e)
+    {
+        var builder = new StringBuilder();
+        foreach (var item in SubtitleList.Items)
+        {
+            builder.AppendLine(item.ToString());
+        }
+
+        Clipboard.SetText(builder.ToString());
+    }
+
+    private void OnCopyRecentClick(object sender, RoutedEventArgs e)
+    {
+        var recent = SubtitleList.Items
+            .Cast<object>()
+            .Select(static item => item.ToString() ?? "")
+            .Where(static text => !string.IsNullOrWhiteSpace(text))
+            .TakeLast(10);
+        Clipboard.SetText(string.Join(Environment.NewLine, recent));
+    }
+
+    private void OnClearHistoryClick(object sender, RoutedEventArgs e)
+    {
+        SubtitleList.Items.Clear();
+        var historyPath = Path.Combine(_dataDirectory, "subtitles", $"{DateTime.Now:yyyy-MM-dd}.jsonl");
+        if (File.Exists(historyPath))
+        {
+            File.WriteAllText(historyPath, string.Empty);
+        }
+    }
+
+    private void OnOpenDataDirectoryClick(object sender, RoutedEventArgs e)
+    {
+        OpenDirectory(_dataDirectory);
+    }
+
+    private void OnOpenLogsDirectoryClick(object sender, RoutedEventArgs e)
+    {
+        OpenDirectory(Path.Combine(_dataDirectory, "logs"));
+    }
+
+    private void OnCopyDiagnosticsClick(object sender, RoutedEventArgs e)
+    {
+        var diagnostics = $"""
+            StreamTranslator V1.0
+            OS: {Environment.OSVersion}
+            DataDirectory: {_dataDirectory}
+            AudioStatus: {AudioStatusText.Text}
+            VadStatus: {VadStatusText.Text}
+            WorkerStatus: {WorkerStatusText.Text}
+            ApiStatus: {ApiStatusText.Text}
+            Model: {ModelBox.Text}
+            Language: {GetSelectedLanguage()}
+            MaxConcurrency: {MaxConcurrencyBox.Value}
+            """;
+        Clipboard.SetText(diagnostics);
+    }
+
+    private void ShowPage(UIElement selectedPage)
+    {
+        StatusPage.Visibility = Visibility.Collapsed;
+        SubtitlesPage.Visibility = Visibility.Collapsed;
+        AudioPage.Visibility = Visibility.Collapsed;
+        ServicePage.Visibility = Visibility.Collapsed;
+        FloatingPage.Visibility = Visibility.Collapsed;
+        AboutPage.Visibility = Visibility.Collapsed;
+        selectedPage.Visibility = Visibility.Visible;
+    }
+
+    private void OnRuntimeStatusChanged(object? sender, string status)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            if (status.Contains("ASR API", StringComparison.OrdinalIgnoreCase))
+            {
+                ApiStatusText.Text = status;
+            }
+            else if (status.Contains("worker", StringComparison.OrdinalIgnoreCase))
+            {
+                WorkerStatusText.Text = status;
+            }
+            else if (status.Contains("VAD", StringComparison.OrdinalIgnoreCase))
+            {
+                VadStatusText.Text = status;
+            }
+            else if (status.Contains("捕获", StringComparison.OrdinalIgnoreCase))
+            {
+                AudioStatusText.Text = status;
+            }
+
+            AppendAppLog(status);
+        });
+    }
+
+    private void OnSubtitleReady(object? sender, SubtitleItem item)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            var text = item.SourceText;
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                SubtitleList.Items.Add(text);
+                SubtitleList.ScrollIntoView(text);
+                _floatingWindow?.SetCaption(text);
+            }
+        });
+    }
+
+    private void OnRuntimeError(object? sender, Exception ex)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            LastErrorText.Text = ex.Message;
+            AppendAppLog($"错误: {ex.GetType().Name}: {ex.Message}");
+        });
+    }
+
+    private void OnAudioLevelChanged(object? sender, double level)
+    {
+        Dispatcher.BeginInvoke(() => AudioLevelBar.Value = level);
+    }
+
+    private void ShowFloatingWindow()
+    {
+        if (_floatingWindow is null)
+        {
+            _floatingWindow = new FloatingSubtitleWindow();
+            _floatingWindow.Closed += (_, _) => _floatingWindow = null;
+        }
+
+        if (!_floatingWindow.IsVisible)
+        {
+            _floatingWindow.Show();
+        }
+
+        if (_floatingWindow.WindowState == WindowState.Minimized)
+        {
+            _floatingWindow.WindowState = WindowState.Normal;
+        }
+
+        _floatingWindow.Activate();
+
+        _floatingWindow.ApplySettings(
+            NumberValue(FloatingFontSizeBox, 28),
+            (int)NumberValue(FloatingLinesBox, 2),
+            FloatingOpacitySlider.Value);
+    }
+
+    private void TryShowFloatingWindow()
+    {
+        try
+        {
+            ShowFloatingWindow();
+        }
+        catch (Exception ex)
+        {
+            LastErrorText.Text = ex.Message;
+            AppendAppLog($"悬浮窗显示失败: {ex}");
+        }
+    }
+
+    private void LoadAudioDevices(string selectedDeviceId)
+    {
+        _audioDevices.Clear();
+        AudioDeviceComboBox.Items.Clear();
+        try
+        {
+            var devices = _audioDeviceService.GetOutputDevices();
+            var selectedIndex = -1;
+            var defaultIndex = -1;
+
+            foreach (var device in devices)
+            {
+                var index = _audioDevices.Count;
+                _audioDevices.Add(device);
+                AudioDeviceComboBox.Items.Add($"{device.Name}{(device.IsDefault ? " (默认)" : "")}");
+
+                if (device.IsDefault)
+                {
+                    defaultIndex = index;
+                }
+
+                if (string.Equals(device.Id, selectedDeviceId, StringComparison.OrdinalIgnoreCase))
+                {
+                    selectedIndex = index;
+                }
+            }
+
+            if (AudioDeviceComboBox.Items.Count > 0)
+            {
+                AudioDeviceComboBox.SelectedIndex = selectedIndex >= 0 ? selectedIndex : Math.Max(defaultIndex, 0);
+            }
+        }
+        catch (Exception ex)
+        {
+            LastErrorText.Text = $"音频设备加载失败: {ex.Message}";
+        }
+    }
+
+    private void ApplySettingsToUi(AppSettings settings)
+    {
+        FollowDefaultDeviceSwitch.IsChecked = settings.Audio.FollowDefaultDevice;
+        EndSilenceBox.Value = settings.Vad.EndSilenceMs;
+        MinSegmentBox.Value = settings.Vad.MinSegmentMs;
+        DiagnosticsSwitch.IsChecked = settings.Diagnostics.Enabled;
+        ApiKeyBox.Password = settings.Asr.ApiKey;
+        BaseUrlBox.Text = settings.Asr.BaseUrl;
+        ModelBox.Text = settings.Asr.Model;
+        TimeoutBox.Value = settings.Asr.TimeoutMs;
+        MaxConcurrencyBox.Value = settings.Asr.MaxConcurrency;
+        FloatingFontSizeBox.Value = settings.SubtitleWindow.FontSize;
+        FloatingLinesBox.Value = settings.SubtitleWindow.MaxLines;
+        FloatingOpacitySlider.Value = settings.SubtitleWindow.Opacity;
+        HotkeysEnabledSwitch.IsChecked = settings.Hotkeys.Enabled;
+        SelectLanguage(settings.Asr.Language);
+    }
+
+    private async Task SaveSettingsAsync()
+    {
+        if (_settingsStore is null)
+        {
+            return;
+        }
+
+        _settings = _settings with
+        {
+            Audio = _settings.Audio with
+            {
+                DeviceId = FollowDefaultDeviceSwitch.IsChecked == true ? "default" : SelectedAudioDeviceId(),
+                FollowDefaultDevice = FollowDefaultDeviceSwitch.IsChecked == true
+            },
+            Vad = _settings.Vad with
+            {
+                EndSilenceMs = (int)NumberValue(EndSilenceBox, 300),
+                MinSegmentMs = (int)NumberValue(MinSegmentBox, 900)
+            },
+            Asr = _settings.Asr with
+            {
+                ApiKey = ApiKeyBox.Password,
+                BaseUrl = BaseUrlBox.Text,
+                Model = ModelBox.Text,
+                Language = GetSelectedLanguage(),
+                TimeoutMs = (int)NumberValue(TimeoutBox, 30000),
+                MaxConcurrency = (int)NumberValue(MaxConcurrencyBox, 2)
+            },
+            SubtitleWindow = _settings.SubtitleWindow with
+            {
+                FontSize = NumberValue(FloatingFontSizeBox, 28),
+                MaxLines = (int)NumberValue(FloatingLinesBox, 2),
+                Opacity = FloatingOpacitySlider.Value
+            },
+            Diagnostics = _settings.Diagnostics with
+            {
+                Enabled = DiagnosticsSwitch.IsChecked == true,
+                SaveSegmentAudio = DiagnosticsSwitch.IsChecked == true,
+                SaveVadTimeline = DiagnosticsSwitch.IsChecked == true
+            },
+            Hotkeys = _settings.Hotkeys with
+            {
+                Enabled = HotkeysEnabledSwitch.IsChecked == true
+            }
+        };
+
+        await _settingsStore.SaveAsync(_settings);
+    }
+
+    private string SelectedAudioDeviceId()
+    {
+        var selectedIndex = AudioDeviceComboBox.SelectedIndex;
+        return selectedIndex >= 0 && selectedIndex < _audioDevices.Count
+            ? _audioDevices[selectedIndex].Id
+            : "default";
+    }
+
+    private void RegisterHotkeys()
+    {
+        if (HotkeysEnabledSwitch.IsChecked != true)
+        {
+            return;
+        }
+
+        var handle = new WindowInteropHelper(this).Handle;
+        _hwndSource = HwndSource.FromHwnd(handle);
+        _hwndSource?.AddHook(OnWndProc);
+
+        RegisterHotKey(handle, HotkeyToggleCaption, ModControl | ModAlt, (uint)KeyInterop.VirtualKeyFromKey(Key.S));
+        RegisterHotKey(handle, HotkeyToggleWindow, ModControl | ModAlt, (uint)KeyInterop.VirtualKeyFromKey(Key.H));
+        RegisterHotKey(handle, HotkeyToggleLock, ModControl | ModAlt, (uint)KeyInterop.VirtualKeyFromKey(Key.L));
+    }
+
+    private void UnregisterHotkeys()
+    {
+        var handle = new WindowInteropHelper(this).Handle;
+        UnregisterHotKey(handle, HotkeyToggleCaption);
+        UnregisterHotKey(handle, HotkeyToggleWindow);
+        UnregisterHotKey(handle, HotkeyToggleLock);
+        _hwndSource?.RemoveHook(OnWndProc);
+        _hwndSource = null;
+    }
+
+    private IntPtr OnWndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg != WmHotkey)
+        {
+            return IntPtr.Zero;
+        }
+
+        handled = true;
+        switch (wParam.ToInt32())
+        {
+            case HotkeyToggleCaption:
+                OnStartStopClick(this, new RoutedEventArgs());
+                break;
+            case HotkeyToggleWindow:
+                ToggleFloatingWindowVisibility();
+                break;
+            case HotkeyToggleLock:
+                OnToggleFloatingLockClick(this, new RoutedEventArgs());
+                break;
+        }
+
+        return IntPtr.Zero;
+    }
+
+    private void ToggleFloatingWindowVisibility()
+    {
+        if (_floatingWindow is null || !_floatingWindow.IsVisible)
+        {
+            ShowFloatingWindow();
+        }
+        else
+        {
+            _floatingWindow.Hide();
+        }
+    }
+
+    private string GetSelectedLanguage()
+    {
+        return (LanguageBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "auto";
+    }
+
+    private void SelectLanguage(string language)
+    {
+        foreach (var item in LanguageBox.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(item.Content?.ToString(), language, StringComparison.OrdinalIgnoreCase))
+            {
+                LanguageBox.SelectedItem = item;
+                return;
+            }
+        }
+
+        LanguageBox.SelectedIndex = 0;
+    }
+
+    private static double NumberValue(NumberBox numberBox, double fallback)
+    {
+        return numberBox.Value ?? fallback;
+    }
+
+    private void EnsureDataDirectories()
+    {
+        Directory.CreateDirectory(_dataDirectory);
+        Directory.CreateDirectory(Path.Combine(_dataDirectory, "subtitles"));
+        Directory.CreateDirectory(Path.Combine(_dataDirectory, "logs"));
+        Directory.CreateDirectory(Path.Combine(_dataDirectory, "debug-audio"));
+    }
+
+    private static void OpenDirectory(string directory)
+    {
+        Directory.CreateDirectory(directory);
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = directory,
+            UseShellExecute = true
+        });
+    }
+
+    private void AppendAppLog(string message)
+    {
+        try
+        {
+            var logsDirectory = Path.Combine(_dataDirectory, "logs");
+            Directory.CreateDirectory(logsDirectory);
+            File.AppendAllText(
+                Path.Combine(logsDirectory, "app.log"),
+                $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
+        }
+        catch
+        {
+            // Logging must never break the capture or UI path.
+        }
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+}
