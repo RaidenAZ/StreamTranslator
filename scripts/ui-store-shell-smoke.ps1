@@ -278,10 +278,18 @@ try {
     Invoke-Element $subtitleHistoryNav "Subtitle history navigation item"
     Start-Sleep -Milliseconds 500
     Invoke-Element $settingsNav "Settings navigation item"
-    Start-Sleep -Milliseconds 500
+    $navigationDeadline = (Get-Date).AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 100
+        $subtitleHistoryNav = Find-ByAutomationId "NavSubtitleHistoryPage"
+        $settingsNav = Find-ByAutomationId "NavSettingsPage"
+        $navigationUpdated =
+            $null -ne $settingsNav -and
+            $settingsNav.Current.ItemStatus -eq "Active" -and
+            $null -ne $subtitleHistoryNav -and
+            $subtitleHistoryNav.Current.ItemStatus -ne "Active"
+    } while (-not $navigationUpdated -and (Get-Date) -lt $navigationDeadline)
 
-    $subtitleHistoryNav = Find-ByAutomationId "NavSubtitleHistoryPage"
-    $settingsNav = Find-ByAutomationId "NavSettingsPage"
     $audioSettingsGroup = Find-ByAutomationId "SettingsAudioGroup"
     $recognitionSettingsGroup = Find-ByAutomationId "SettingsRecognitionGroup"
     $floatingSettingsGroup = Find-ByAutomationId "SettingsFloatingGroup"
