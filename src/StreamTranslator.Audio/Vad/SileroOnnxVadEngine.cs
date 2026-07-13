@@ -7,7 +7,9 @@ public sealed class SileroOnnxVadEngine : IVadEngine
 {
     private readonly InferenceSession _session;
     private readonly float[] _state = new float[2 * 1 * 128];
+    private readonly float[] _context = new float[64];
     private readonly float _threshold;
+    private int _lastSampleRate;
 
     public SileroOnnxVadEngine(string modelPath, float threshold = 0.5f)
     {
@@ -42,10 +44,17 @@ public sealed class SileroOnnxVadEngine : IVadEngine
                 nameof(pcm16Frame));
         }
 
-        var input = new float[pcm16Frame.Length];
+        if (_lastSampleRate != 0 && _lastSampleRate != sampleRate)
+        {
+            Reset();
+        }
+
+        var contextSize = sampleRate == 16000 ? 64 : 32;
+        var input = new float[contextSize + pcm16Frame.Length];
+        Array.Copy(_context, input, contextSize);
         for (var i = 0; i < pcm16Frame.Length; i++)
         {
-            input[i] = pcm16Frame[i] / 32768f;
+            input[contextSize + i] = pcm16Frame[i] / 32768f;
         }
 
         var inputTensor = new DenseTensor<float>(input, new[] { 1, input.Length });
@@ -62,6 +71,8 @@ public sealed class SileroOnnxVadEngine : IVadEngine
         using var results = _session.Run(inputs);
         var probability = ReadSpeechProbability(results);
         UpdateState(results);
+        Array.Copy(input, input.Length - contextSize, _context, 0, contextSize);
+        _lastSampleRate = sampleRate;
 
         return new VadDecision(probability >= _threshold, probability);
     }
@@ -69,6 +80,8 @@ public sealed class SileroOnnxVadEngine : IVadEngine
     public void Reset()
     {
         Array.Clear(_state);
+        Array.Clear(_context);
+        _lastSampleRate = 0;
     }
 
     private static float ReadSpeechProbability(IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results)

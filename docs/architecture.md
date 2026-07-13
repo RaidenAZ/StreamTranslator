@@ -108,6 +108,8 @@ device native format
 
 V1.0 以准确度优先，C# 侧内置 Silero VAD ONNX。正式运行缺少模型时阻止启动，不自动降级为 Energy VAD。
 
+当前 Silero ONNX wrapper 的输入不仅包含 16kHz 下的 512-sample 帧，还必须在帧前拼接上一帧末尾 64 samples 的 context；8kHz 对应 256+32。state 和 context 都要在新会话或采样率切换时重置。
+
 VAD 只判断短帧是否像语音。句子边界由 `SpeechSegmenter` 决定。
 
 推荐默认参数：
