@@ -95,18 +95,18 @@ container for ASR: WAV
 ```text
 device native format
   -> channel mix to mono
-  -> resample to 16kHz
+  -> stateful WDL resample to 16kHz float
   -> convert to PCM16
   -> frame buffer
   -> VAD
   -> segment WAV bytes
 ```
 
-先统一格式，再进入 VAD。不要直接对设备原始格式跑 VAD，否则不同设备格式会影响稳定性。
+先统一格式，再进入 VAD。实时捕获必须保持跨 WASAPI 回调的重采样状态，不能逐块重置插值相位。loopback 完全无数据时由静音 gap filler 补齐 32ms 静音帧，保证尾静音仍能推进。
 
 ## VAD And Segmentation
 
-V1.0 以准确度优先，C# 侧内置 Silero VAD ONNX。WebRTC VAD 和能量阈值 VAD 可以作为后续 fallback 或诊断模式，但不是默认主方案。
+V1.0 以准确度优先，C# 侧内置 Silero VAD ONNX。正式运行缺少模型时阻止启动，不自动降级为 Energy VAD。
 
 VAD 只判断短帧是否像语音。句子边界由 `SpeechSegmenter` 决定。
 
@@ -115,7 +115,9 @@ VAD 只判断短帧是否像语音。句子边界由 `SpeechSegmenter` 决定。
 ```text
 EndSilenceMs: 300
 StartSpeechMs: 96
+PreRollMs: 192
 MinSegmentMs: 900
+SoftBreakSilenceMs: 128
 SoftMaxSegmentMs: 4000
 HardMaxSegmentMs: 10000
 OverlapMs: 600
@@ -137,7 +139,8 @@ OverlapMs: 600
 分段策略：
 
 - 正常结束：检测到尾静音达到 `EndSilenceMs`。
-- 软上限：连续说话达到 `SoftMaxSegmentMs` 后开始寻找自然断点。
+- 起始预卷：确认语音后保留前置 `PreRollMs` 音频，避免切掉首音节。
+- 软上限：连续说话达到 `SoftMaxSegmentMs` 后等待稳定的 `SoftBreakSilenceMs` 非语音区间。
 - 硬上限：达到 `HardMaxSegmentMs` 后强制切片。
 - overlap：硬切或连续切片时，下一段带上一段末尾 `OverlapMs` 的音频。
 - 去重：文本层做本地 suffix/prefix 去重，避免 overlap 造成重复字幕。
@@ -174,12 +177,12 @@ stderr 写入 worker 日志
   "id": "seg-000123",
   "type": "transcribe",
   "sequence": 123,
-  "start_ms": 48120,
-  "end_ms": 54240,
-  "audio_format": "wav",
-  "sample_rate": 16000,
+  "startMs": 48120,
+  "endMs": 54240,
+  "audioFormat": "wav",
+  "sampleRate": 16000,
   "language": "zh",
-  "audio_base64": "..."
+  "audioBase64": "..."
 }
 ```
 
@@ -192,7 +195,7 @@ stderr 写入 worker 日志
   "sequence": 123,
   "ok": true,
   "text": "识别出来的字幕内容",
-  "latency_ms": 842
+  "latencyMs": 842
 }
 ```
 
@@ -225,6 +228,8 @@ mimo-v2.5-asr
 - Timeout
 - Max concurrency
 
+`Language` 仅允许 `auto`、`zh`、`en`。Python worker 使用有界线程池执行 ASR，请求可以乱序返回，stdout 由写锁保证每行 JSON 完整。
+
 API Key 明文存放在 `data/settings.json`。UI 中仍使用密码输入框，日志和诊断信息不得输出完整 API Key。
 
 参考文档：
@@ -244,8 +249,8 @@ MaxConcurrentAsr: 2 by default
 每个音频片段必须带：
 
 - `sequence`
-- `start_ms`
-- `end_ms`
+- `startMs`
+- `endMs`
 
 返回结果可能乱序。C# 侧通过 reorder buffer 保证字幕时间线尽量稳定。
 
@@ -254,6 +259,7 @@ MaxConcurrentAsr: 2 by default
 - 正常情况下按 `sequence` 显示。
 - 前序片段失败时标记失败并继续释放后续字幕。
 - 慢段由 ASR timeout、worker 失败传播和停止时取消来避免永久阻塞。
+- 每个已分配 sequence 必须提交 final 或 failed 终态，异常不能在 reorder buffer 中留下缺口。
 
 ## Subtitle Model
 
@@ -312,7 +318,7 @@ V1.0 包含两个窗口：
 
 ```text
 MainWindow:
-  状态、字幕、音频、服务、悬浮窗、关于
+  主页、字幕历史、设置、关于
 
 FloatingSubtitleWindow:
   Always on top
@@ -322,11 +328,9 @@ FloatingSubtitleWindow:
 
 主窗口页面：
 
-- 状态：捕获状态、VAD 状态、worker 状态、API 状态、最近错误、开始/停止按钮。
-- 字幕：当前字幕流、历史记录、复制功能。
-- 音频：输出设备选择、跟随默认设备、输入电平、VAD 参数、诊断开关。
-- 服务：API Key、Base URL、Model、Language、Timeout、Max concurrency。
-- 悬浮窗：字号、行数、宽度、透明度、锁定行为、快捷键。
+- 主页：捕获、VAD、worker、API、字幕输出状态，最近错误和开始/停止按钮。
+- 字幕历史：当天字幕、复制选中、复制最近、复制全部、清空历史。
+- 设置：音频、VAD、识别服务、悬浮窗、快捷键和诊断参数。
 - 关于：版本、数据目录、日志目录、复制诊断信息。
 
 悬浮窗模式：
@@ -435,6 +439,8 @@ V1.0 只对明确可恢复错误自动重试一次，不做无限重试。
 - API 429：当前 segment 重试 1 次，仍失败则标记失败并提示限流；动态降低并发留到后续版本。
 - 音频设备断开：若开启跟随默认设备，则尝试切换默认设备；否则停止字幕并提示重新选择设备。
 
+Python 错误响应包含 `errorKind`、`statusCode` 和 `retryable`。C# 对每个请求设置独立硬超时，并使用互斥锁保证整个运行期最多重启 worker 一次。
+
 状态页按层显示：
 
 - 音频捕获
@@ -473,3 +479,4 @@ AudioNormalize -> VAD -> SpeechSegmenter
 - segment WAV
 - segment JSON
 - VAD timeline JSONL
+- metrics JSON

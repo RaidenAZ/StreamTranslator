@@ -34,6 +34,14 @@ public sealed class SileroOnnxVadEngine : IVadEngine
             throw new ArgumentOutOfRangeException(nameof(sampleRate), "Silero VAD expects 8kHz or 16kHz audio.");
         }
 
+        var expectedFrameLength = sampleRate == 16000 ? 512 : 256;
+        if (pcm16Frame.Length != expectedFrameLength)
+        {
+            throw new ArgumentException(
+                $"Silero VAD expects {expectedFrameLength} samples at {sampleRate} Hz.",
+                nameof(pcm16Frame));
+        }
+
         var input = new float[pcm16Frame.Length];
         for (var i = 0; i < pcm16Frame.Length; i++)
         {

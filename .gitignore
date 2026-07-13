@@ -13,5 +13,5 @@ models/*.onnx
 python/.venv/
 python/__pycache__/
 python/.pytest_cache/
-worker/
+/worker/
 *.log

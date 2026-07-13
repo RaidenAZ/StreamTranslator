@@ -17,7 +17,8 @@
 - C# 负责音频捕获、格式转换、VAD、分段和 UI。
 - Python worker 只负责调用 MiMo ASR API。
 - C# 与 Python 使用 stdin/stdout JSON 协议通信。
-- VAD 使用 C# 侧 Silero ONNX，默认尾静音 300ms，可配置。
+- VAD 使用 C# 侧 Silero ONNX，默认尾静音 300ms，可配置；模型缺失时不静默降级。
+- 音频使用有状态 WDL 重采样，无播放数据时补静音帧以完成尾静音判断。
+- Python worker 以默认并发 2 调用 MiMo，并返回结构化错误供 C# 重试或停机。
 - 必须有悬浮字幕窗，主窗口保留设置和状态页面。
 - 发布形态是 Windows 10/11 x64 绿色便携版。
-

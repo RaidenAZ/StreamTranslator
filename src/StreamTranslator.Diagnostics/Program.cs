@@ -28,13 +28,17 @@ static int RunSegment(SegmentOptions options)
 
     using var vad = CreateVad(options);
     using var reader = new AudioFileReader(options.Input);
-    var sourcePcm = ReadAudio(reader);
-    var normalized = AudioNormalizer.ResampleLinear(sourcePcm, reader.WaveFormat.SampleRate);
+    var sourceSamples = ReadAudio(reader);
+    using var normalizer = new StreamingAudioNormalizer(reader.WaveFormat.SampleRate, reader.WaveFormat.Channels);
+    var normalized = normalizer.ProcessFloatSamples(sourceSamples);
     var frameBuffer = new PcmFrameBuffer(AudioNormalizer.TargetSampleRate, options.FrameMs);
     var segmenter = new SpeechSegmenter(new SpeechSegmenterOptions
     {
         EndSilenceMs = options.EndSilenceMs,
+        StartSpeechMs = options.StartSpeechMs,
+        PreRollMs = options.PreRollMs,
         MinSegmentMs = options.MinSegmentMs,
+        SoftBreakSilenceMs = options.SoftBreakSilenceMs,
         SoftMaxSegmentMs = options.SoftMaxSegmentMs,
         HardMaxSegmentMs = options.HardMaxSegmentMs,
         OverlapMs = options.OverlapMs
@@ -43,8 +47,9 @@ static int RunSegment(SegmentOptions options)
     var sessionId = DateTimeOffset.Now.ToString("yyyyMMdd-HHmmss");
     var vadPath = Path.Combine(vadDirectory, $"session-{sessionId}.vad.jsonl");
     var sessionPath = Path.Combine(sessionsDirectory, $"session-{sessionId}.json");
+    var metricsPath = Path.Combine(sessionsDirectory, $"session-{sessionId}.metrics.json");
     var segmentRecords = new List<SegmentRecord>();
-    var sequence = 0;
+    var sequence = 1;
 
     using var vadWriter = File.CreateText(vadPath);
     foreach (var frame in frameBuffer.Push(normalized))
@@ -78,7 +83,10 @@ static int RunSegment(SegmentOptions options)
         output = options.Output,
         sampleRate = AudioNormalizer.TargetSampleRate,
         frameMs = options.FrameMs,
+        options.StartSpeechMs,
+        options.PreRollMs,
         options.EndSilenceMs,
+        options.SoftBreakSilenceMs,
         options.MinSegmentMs,
         options.SoftMaxSegmentMs,
         options.HardMaxSegmentMs,
@@ -87,13 +95,27 @@ static int RunSegment(SegmentOptions options)
         segments = segmentRecords
     };
 
+    var metrics = new
+    {
+        totalAudioDurationMs = normalized.Length * 1000L / AudioNormalizer.TargetSampleRate,
+        segmentCount = segmentRecords.Count,
+        averageSegmentDurationMs = segmentRecords.Count == 0 ? 0 : segmentRecords.Average(item => item.DurationMs),
+        tooShortSegmentCount = segmentRecords.Count(item => item.DurationMs < options.MinSegmentMs),
+        hardCutCount = segmentRecords.Count(item => item.CutReason == SpeechSegmentCutReason.HardMax.ToString()),
+        softCutCount = segmentRecords.Count(item => item.CutReason == SpeechSegmentCutReason.SoftMax.ToString()),
+        silenceCutCount = segmentRecords.Count(item => item.CutReason == SpeechSegmentCutReason.Silence.ToString()),
+        overlapCount = segmentRecords.Count(item => item.OverlapMs > 0),
+        emptySegmentCount = segmentRecords.Count(item => item.DurationMs <= 0)
+    };
+
     File.WriteAllText(sessionPath, JsonSerializer.Serialize(session, JsonOptions.Indented));
+    File.WriteAllText(metricsPath, JsonSerializer.Serialize(metrics, JsonOptions.Indented));
     Console.WriteLine($"Segments: {segmentRecords.Count}");
     Console.WriteLine(sessionPath);
     return 0;
 }
 
-static short[] ReadAudio(AudioFileReader reader)
+static float[] ReadAudio(AudioFileReader reader)
 {
     var floats = new List<float>();
     var buffer = new float[reader.WaveFormat.SampleRate * reader.WaveFormat.Channels];
@@ -103,7 +125,7 @@ static short[] ReadAudio(AudioFileReader reader)
         floats.AddRange(buffer.Take(read));
     }
 
-    return AudioNormalizer.ConvertFloatSamplesToMonoPcm16(floats.ToArray(), reader.WaveFormat.Channels);
+    return floats.ToArray();
 }
 
 static IVadEngine CreateVad(SegmentOptions options)
@@ -114,7 +136,7 @@ static IVadEngine CreateVad(SegmentOptions options)
         return new SileroOnnxVadEngine(modelPath, options.VadThreshold);
     }
 
-    return new EnergyVadEngine();
+    throw new FileNotFoundException("Silero VAD ONNX model was not found. Use --model or place it in models/silero_vad.onnx.");
 }
 
 static string? FindModelPath(string? configuredPath)
@@ -139,6 +161,7 @@ static string? FindModelPath(string? configuredPath)
     return null;
 }
 
+[Verb("segment", HelpText = "Run the VAD and segmentation pipeline for an audio file.")]
 internal sealed class SegmentOptions
 {
     [Option("input", Required = true, HelpText = "Input wav/mp3/audio file path.")]
@@ -156,8 +179,17 @@ internal sealed class SegmentOptions
     [Option("frame-ms", Required = false, Default = 32)]
     public int FrameMs { get; init; } = 32;
 
+    [Option("start-speech-ms", Required = false, Default = 96)]
+    public int StartSpeechMs { get; init; } = 96;
+
+    [Option("pre-roll-ms", Required = false, Default = 192)]
+    public int PreRollMs { get; init; } = 192;
+
     [Option("end-silence-ms", Required = false, Default = 300)]
     public int EndSilenceMs { get; init; } = 300;
+
+    [Option("soft-break-silence-ms", Required = false, Default = 128)]
+    public int SoftBreakSilenceMs { get; init; } = 128;
 
     [Option("min-segment-ms", Required = false, Default = 900)]
     public int MinSegmentMs { get; init; } = 900;

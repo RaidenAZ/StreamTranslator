@@ -13,6 +13,8 @@ $workerRoot = Join-Path $publishRoot "worker"
 $modelsRoot = Join-Path $publishRoot "models"
 $pythonRoot = Join-Path $root "python"
 
+& (Join-Path $PSScriptRoot "ensure-model.ps1") -ModelPath (Join-Path $root "models\silero_vad.onnx")
+
 Remove-Item -Recurse -Force $publishRoot -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $publishRoot, $workerRoot, $modelsRoot | Out-Null
 
@@ -45,4 +47,3 @@ if (-not $SkipWorker) {
 
 New-Item -ItemType Directory -Force -Path (Join-Path $publishRoot "data") | Out-Null
 Write-Host "Portable package: $publishRoot"
-

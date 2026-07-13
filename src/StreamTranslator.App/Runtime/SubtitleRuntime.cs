@@ -18,6 +18,9 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     private readonly string _dataDirectory;
     private readonly AppSettings _settings;
     private readonly SemaphoreSlim _asrSemaphore;
+    private readonly SemaphoreSlim _workerRestartLock = new(1, 1);
+    private readonly SemaphoreSlim _captureRecoveryLock = new(1, 1);
+    private readonly SemaphoreSlim _subtitlePublishLock = new(1, 1);
     private LoopbackCaptureService? _capture;
     private IVadEngine? _vad;
     private SpeechSegmenter? _segmenter;
@@ -26,6 +29,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     private readonly SubtitleReorderBuffer _reorderBuffer = new(firstSequence: 1);
     private readonly object _subtitleLock = new();
     private readonly object _tasksLock = new();
+    private readonly object _captureTaskLock = new();
     private readonly List<Task> _segmentTasks = [];
     private readonly List<DiagnosticSegmentRecord> _diagnosticSegments = [];
     private long _sequence;
@@ -33,7 +37,9 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     private StreamWriter? _vadTimelineWriter;
     private string? _diagnosticSessionPath;
     private CancellationTokenSource? _stopCts;
+    private Task? _captureRecoveryTask;
     private bool _stopping;
+    private int _workerRestartCount;
 
     public SubtitleRuntime(string baseDirectory, string dataDirectory, AppSettings settings)
     {
@@ -51,19 +57,12 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         _stopping = false;
+        _workerRestartCount = 0;
         _stopCts = new CancellationTokenSource();
         _history = new SubtitleHistoryStore(Path.Combine(_dataDirectory, "subtitles"));
         StartDiagnosticsSession();
         _vad = CreateVadEngine();
-        _segmenter = new SpeechSegmenter(new SpeechSegmenterOptions
-        {
-            EndSilenceMs = _settings.Vad.EndSilenceMs,
-            StartSpeechMs = _settings.Vad.StartSpeechMs,
-            MinSegmentMs = _settings.Vad.MinSegmentMs,
-            SoftMaxSegmentMs = _settings.Vad.SoftMaxSegmentMs,
-            HardMaxSegmentMs = _settings.Vad.HardMaxSegmentMs,
-            OverlapMs = _settings.Vad.OverlapMs
-        });
+        _segmenter = CreateSpeechSegmenter();
 
         _worker = CreateWorkerClient();
         await _worker.StartAsync(cancellationToken).ConfigureAwait(false);
@@ -74,6 +73,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             _settings.Audio.DeviceId,
             _settings.Audio.FollowDefaultDevice);
         _capture.FrameCaptured += OnFrameCaptured;
+        _capture.CaptureStopped += OnCaptureStopped;
         _capture.Start();
         StatusChanged?.Invoke(this, "音频捕获已启动");
     }
@@ -86,9 +86,12 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         if (_capture is not null)
         {
             _capture.FrameCaptured -= OnFrameCaptured;
+            _capture.CaptureStopped -= OnCaptureStopped;
             _capture.Dispose();
             _capture = null;
         }
+
+        await WaitForCaptureRecoveryAsync().ConfigureAwait(false);
 
         await WaitForSegmentTasksAsync().ConfigureAwait(false);
 
@@ -141,6 +144,90 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         }
     }
 
+    private void OnCaptureStopped(object? sender, AudioCaptureStoppedEventArgs e)
+    {
+        if (_stopping)
+        {
+            return;
+        }
+
+        lock (_captureTaskLock)
+        {
+            if (_captureRecoveryTask is { IsCompleted: false })
+            {
+                return;
+            }
+
+            _captureRecoveryTask = HandleCaptureStoppedAsync(e);
+        }
+    }
+
+    private async Task HandleCaptureStoppedAsync(AudioCaptureStoppedEventArgs e)
+    {
+        await _captureRecoveryLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_stopping)
+            {
+                return;
+            }
+
+            if (_settings.Audio.FollowDefaultDevice && _capture is not null)
+            {
+                StatusChanged?.Invoke(this, "音频捕获中断，正在切换默认设备");
+                try
+                {
+                    await Task.Delay(500, _stopCts?.Token ?? CancellationToken.None).ConfigureAwait(false);
+                    _capture.Start();
+                    _vad?.Reset();
+                    _segmenter = CreateSpeechSegmenter();
+                    StatusChanged?.Invoke(this, "音频捕获已恢复");
+                    return;
+                }
+                catch (OperationCanceledException) when (_stopping)
+                {
+                    return;
+                }
+                catch (Exception restartException)
+                {
+                    var fatal = new RuntimeFatalException("默认音频设备切换失败，请检查系统输出设备。", restartException);
+                    RuntimeError?.Invoke(this, fatal);
+                    return;
+                }
+            }
+
+            RuntimeError?.Invoke(
+                this,
+                new RuntimeFatalException("所选音频设备已断开，请重新选择输出设备。", e.Exception));
+        }
+        finally
+        {
+            _captureRecoveryLock.Release();
+        }
+    }
+
+    private async Task WaitForCaptureRecoveryAsync()
+    {
+        Task? task;
+        lock (_captureTaskLock)
+        {
+            task = _captureRecoveryTask;
+        }
+
+        if (task is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
     private void TrackSegmentTask(Task task)
     {
         lock (_tasksLock)
@@ -184,23 +271,21 @@ public sealed class SubtitleRuntime : IAsyncDisposable
 
     private async Task ProcessSegmentAsync(CompletedSpeechSegment segment, CancellationToken cancellationToken)
     {
-        var worker = _worker;
-        if (worker is null)
-        {
-            return;
-        }
-
         var sequence = Interlocked.Increment(ref _sequence);
+        var requestId = $"seg-{sequence:000000}";
         var acquired = false;
+        DiagnosticSegmentRecord? diagnosticRecord = null;
+        WorkerResponse response;
+        RuntimeFatalException? fatalError = null;
         try
         {
             await _asrSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
             acquired = true;
 
             var wav = WavEncoder.EncodePcm16Mono(segment.Samples, segment.SampleRate);
-            var diagnosticRecord = SaveSegmentDiagnostic(sequence, segment, wav);
+            diagnosticRecord = SaveSegmentDiagnostic(sequence, segment, wav);
             var request = WorkerRequest.Transcribe(
-                id: $"seg-{sequence:000000}",
+                id: requestId,
                 sequence: sequence,
                 startMs: segment.StartMs,
                 endMs: segment.EndMs,
@@ -208,52 +293,27 @@ public sealed class SubtitleRuntime : IAsyncDisposable
                 language: _settings.Asr.Language,
                 audioBase64: Convert.ToBase64String(wav));
 
-            var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
-            UpdateDiagnosticAsr(diagnosticRecord, response);
-            StatusChanged?.Invoke(
-                this,
-                response.Ok
-                    ? $"ASR API 正常 ({response.LatencyMs?.ToString() ?? "-"} ms)"
-                    : $"ASR API 错误: {response.ErrorCode ?? "Unknown"}");
-
-            var subtitle = new SubtitleItem
+            response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
+            if (response.Ok && string.IsNullOrWhiteSpace(response.Text))
             {
-                Sequence = sequence,
-                Start = TimeSpan.FromMilliseconds(segment.StartMs),
-                End = TimeSpan.FromMilliseconds(segment.EndMs),
-                SourceText = response.Ok ? response.Text ?? "" : $"识别失败: {response.ErrorMessage}",
-                Status = response.Ok ? SubtitleStatus.Final : SubtitleStatus.Failed
-            };
-
-            SubtitleItem[] displayItems;
-            lock (_subtitleLock)
-            {
-                var releasedItems = _reorderBuffer.Add(subtitle);
-                displayItems = new SubtitleItem[releasedItems.Count];
-                for (var i = 0; i < releasedItems.Count; i++)
+                response = response with
                 {
-                    var deduplicated = ApplyDeduplicationLocked(releasedItems[i]);
-                    UpdateDiagnosticDedupLocked(deduplicated.Item.Sequence, deduplicated.DedupApplied);
-                    displayItems[i] = deduplicated.Item;
-                }
-            }
-
-            foreach (var displayItem in displayItems)
-            {
-                if (_history is not null)
-                {
-                    await _history.AppendAsync(displayItem, DateOnly.FromDateTime(DateTime.Now)).ConfigureAwait(false);
-                }
-
-                SubtitleReady?.Invoke(this, displayItem);
+                    Ok = false,
+                    ErrorCode = "EmptyResult",
+                    ErrorMessage = "ASR 未返回文本",
+                    ErrorKind = "empty_result",
+                    Retryable = false
+                };
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            return;
         }
         catch (Exception ex)
         {
-            RuntimeError?.Invoke(this, ex);
+            fatalError = ex as RuntimeFatalException;
+            response = CreateFailureResponse(requestId, sequence, ex);
         }
         finally
         {
@@ -261,6 +321,76 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             {
                 _asrSemaphore.Release();
             }
+        }
+
+        UpdateDiagnosticAsr(diagnosticRecord, response);
+        StatusChanged?.Invoke(
+            this,
+            response.Ok
+                ? $"ASR API 正常 ({response.LatencyMs?.ToString() ?? "-"} ms)"
+                : $"ASR API 错误: {response.ErrorKind ?? response.ErrorCode ?? "Unknown"}");
+
+        await PublishTerminalResponseAsync(sequence, segment, response).ConfigureAwait(false);
+
+        if (fatalError is not null || WorkerFailurePolicy.Decide(response, attempt: 1) == WorkerFailureAction.StopRuntime)
+        {
+            RuntimeError?.Invoke(
+                this,
+                fatalError ?? new RuntimeFatalException("MiMo API 鉴权失败，请检查 API Key 和访问权限。"));
+        }
+    }
+
+    private async Task PublishTerminalResponseAsync(
+        long sequence,
+        CompletedSpeechSegment segment,
+        WorkerResponse response)
+    {
+        await _subtitlePublishLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var hasText = response.Ok && !string.IsNullOrWhiteSpace(response.Text);
+            var subtitle = new SubtitleItem
+            {
+                Sequence = sequence,
+                Start = TimeSpan.FromMilliseconds(segment.StartMs),
+                End = TimeSpan.FromMilliseconds(segment.EndMs),
+                SourceText = hasText ? response.Text! : $"识别失败: {response.ErrorMessage ?? "ASR 未返回文本"}",
+                Status = hasText ? SubtitleStatus.Final : SubtitleStatus.Failed
+            };
+
+            SubtitleItem[] displayItems;
+            lock (_subtitleLock)
+            {
+                var releasedItems = _reorderBuffer.Add(subtitle);
+                displayItems = new SubtitleItem[releasedItems.Count];
+                for (var index = 0; index < releasedItems.Count; index++)
+                {
+                    var deduplicated = ApplyDeduplicationLocked(releasedItems[index]);
+                    UpdateDiagnosticDedupLocked(deduplicated.Item.Sequence, deduplicated.DedupApplied);
+                    displayItems[index] = deduplicated.Item;
+                }
+            }
+
+            foreach (var displayItem in displayItems)
+            {
+                if (_history is not null)
+                {
+                    try
+                    {
+                        await _history.AppendAsync(displayItem, DateOnly.FromDateTime(DateTime.Now)).ConfigureAwait(false);
+                    }
+                    catch (Exception historyException)
+                    {
+                        RuntimeError?.Invoke(this, historyException);
+                    }
+                }
+
+                SubtitleReady?.Invoke(this, displayItem);
+            }
+        }
+        finally
+        {
+            _subtitlePublishLock.Release();
         }
     }
 
@@ -273,49 +403,131 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             return new SileroOnnxVadEngine(modelPath);
         }
 
-        StatusChanged?.Invoke(this, "VAD 模型缺失，使用 Energy fallback");
-        return new EnergyVadEngine();
+        throw new FileNotFoundException("Silero VAD 模型缺失，无法以准确模式启动字幕。", modelPath);
+    }
+
+    private SpeechSegmenter CreateSpeechSegmenter()
+    {
+        return new SpeechSegmenter(new SpeechSegmenterOptions
+        {
+            EndSilenceMs = _settings.Vad.EndSilenceMs,
+            StartSpeechMs = _settings.Vad.StartSpeechMs,
+            PreRollMs = _settings.Vad.PreRollMs,
+            MinSegmentMs = _settings.Vad.MinSegmentMs,
+            SoftBreakSilenceMs = _settings.Vad.SoftBreakSilenceMs,
+            SoftMaxSegmentMs = _settings.Vad.SoftMaxSegmentMs,
+            HardMaxSegmentMs = _settings.Vad.HardMaxSegmentMs,
+            OverlapMs = _settings.Vad.OverlapMs
+        });
     }
 
     private async Task<WorkerResponse> SendWithRetryAsync(WorkerRequest request, CancellationToken cancellationToken)
     {
-        try
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            var response = await SendOnceAsync(request, cancellationToken).ConfigureAwait(false);
-            if (response.Ok || string.Equals(response.ErrorCode, "ValueError", StringComparison.OrdinalIgnoreCase))
+            var worker = _worker ?? throw new RuntimeFatalException("ASR worker 未运行。");
+            try
             {
-                return response;
+                var response = await SendOnceAsync(worker, request, cancellationToken).ConfigureAwait(false);
+                var action = WorkerFailurePolicy.Decide(response, attempt);
+                if (action != WorkerFailureAction.Retry)
+                {
+                    return response;
+                }
+
+                if (string.Equals(response.ErrorKind, "rate_limit", StringComparison.OrdinalIgnoreCase))
+                {
+                    await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (attempt == 0)
+            {
+                StatusChanged?.Invoke(this, $"ASR worker 异常，正在重启: {ex.Message}");
+                await EnsureWorkerRestartedAsync(worker, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                throw new RuntimeFatalException("ASR worker 重启后仍无法完成请求，字幕已停止。", ex);
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            RuntimeError?.Invoke(this, ex);
-            await RestartWorkerAsync(cancellationToken).ConfigureAwait(false);
-        }
 
-        return await SendOnceAsync(request, cancellationToken).ConfigureAwait(false);
+        return CreateFailureResponse(request.Id, request.Sequence, new TimeoutException("ASR request retry exhausted."));
     }
 
-    private async Task<WorkerResponse> SendOnceAsync(WorkerRequest request, CancellationToken cancellationToken)
+    private async Task<WorkerResponse> SendOnceAsync(
+        PythonWorkerClient worker,
+        WorkerRequest request,
+        CancellationToken cancellationToken)
     {
-        var worker = _worker ?? throw new InvalidOperationException("ASR worker is not running.");
-        return await worker.TranscribeAsync(request, cancellationToken).ConfigureAwait(false);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(_settings.Asr.TimeoutMs));
+        try
+        {
+            return await worker.TranscribeAsync(request, timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException($"ASR request exceeded {_settings.Asr.TimeoutMs} ms.");
+        }
     }
 
-    private async Task RestartWorkerAsync(CancellationToken cancellationToken)
+    private async Task EnsureWorkerRestartedAsync(
+        PythonWorkerClient failedWorker,
+        CancellationToken cancellationToken)
     {
-        if (_worker is not null)
+        await _workerRestartLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            await _worker.DisposeAsync().ConfigureAwait(false);
-        }
+            if (!ReferenceEquals(_worker, failedWorker))
+            {
+                return;
+            }
 
-        _worker = CreateWorkerClient();
-        await _worker.StartAsync(cancellationToken).ConfigureAwait(false);
-        StatusChanged?.Invoke(this, "ASR worker 已重启");
+            if (_workerRestartCount >= 1)
+            {
+                throw new RuntimeFatalException("ASR worker 已重启过一次，仍然异常，字幕已停止。");
+            }
+
+            _workerRestartCount++;
+            await failedWorker.DisposeAsync().ConfigureAwait(false);
+            var replacement = CreateWorkerClient();
+            try
+            {
+                await replacement.StartAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                await replacement.DisposeAsync().ConfigureAwait(false);
+                throw new RuntimeFatalException("ASR worker 重启失败，字幕已停止。", ex);
+            }
+
+            _worker = replacement;
+            StatusChanged?.Invoke(this, "ASR worker 已重启");
+        }
+        finally
+        {
+            _workerRestartLock.Release();
+        }
+    }
+
+    private static WorkerResponse CreateFailureResponse(string id, long? sequence, Exception exception)
+    {
+        var isTimeout = exception is TimeoutException;
+        return new WorkerResponse
+        {
+            Id = id,
+            Type = "error",
+            Ok = false,
+            Sequence = sequence,
+            ErrorCode = exception.GetType().Name,
+            ErrorMessage = exception.Message,
+            ErrorKind = isTimeout ? "timeout" : "worker",
+            Retryable = false
+        };
     }
 
     private PythonWorkerClient CreateWorkerClient()
@@ -335,7 +547,8 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             ["MIMO_API_KEY"] = _settings.Asr.ApiKey,
             ["MIMO_BASE_URL"] = string.IsNullOrWhiteSpace(_settings.Asr.BaseUrl) ? DefaultMimoBaseUrl : _settings.Asr.BaseUrl,
             ["MIMO_ASR_MODEL"] = _settings.Asr.Model,
-            ["MIMO_TIMEOUT_SECONDS"] = timeoutSeconds.ToString()
+            ["MIMO_TIMEOUT_SECONDS"] = timeoutSeconds.ToString(),
+            ["MIMO_MAX_CONCURRENCY"] = Math.Max(1, _settings.Asr.MaxConcurrency).ToString()
         };
 
         return new PythonWorkerClient(
@@ -546,5 +759,8 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     {
         await StopAsync().ConfigureAwait(false);
         _asrSemaphore.Dispose();
+        _workerRestartLock.Dispose();
+        _captureRecoveryLock.Dispose();
+        _subtitlePublishLock.Dispose();
     }
 }

@@ -74,6 +74,7 @@ public sealed class SpeechSegmenterTests
         {
             EndSilenceMs = 300,
             MinSegmentMs = 0,
+            SoftBreakSilenceMs = 100,
             SoftMaxSegmentMs = 400,
             HardMaxSegmentMs = 1000,
             OverlapMs = 200
@@ -168,6 +169,7 @@ public sealed class SpeechSegmenterTests
         var segmenter = new SpeechSegmenter(new SpeechSegmenterOptions
         {
             StartSpeechMs = 96,
+            PreRollMs = 0,
             EndSilenceMs = 64,
             MinSegmentMs = 0,
             SoftMaxSegmentMs = 5000,
@@ -188,6 +190,61 @@ public sealed class SpeechSegmenterTests
         Assert.IsNotNull(completed);
         Assert.AreEqual(128, completed.StartMs);
         Assert.AreEqual(288, completed.EndMs);
+    }
+
+    [TestMethod]
+    public void Push_IncludesConfiguredPreRollBeforeConfirmedSpeech()
+    {
+        var segmenter = new SpeechSegmenter(new SpeechSegmenterOptions
+        {
+            StartSpeechMs = 96,
+            PreRollMs = 64,
+            EndSilenceMs = 64,
+            MinSegmentMs = 0,
+            SoftMaxSegmentMs = 5000,
+            HardMaxSegmentMs = 10000
+        });
+
+        segmenter.Push(Frame(0, 32, speech: false), new VadDecision(false, 0.1f));
+        segmenter.Push(Frame(32, 32, speech: false), new VadDecision(false, 0.1f));
+        segmenter.Push(Frame(64, 32, speech: false), new VadDecision(false, 0.1f));
+        segmenter.Push(Frame(96, 32, speech: true), new VadDecision(true, 0.9f));
+        segmenter.Push(Frame(128, 32, speech: true), new VadDecision(true, 0.9f));
+        segmenter.Push(Frame(160, 32, speech: true), new VadDecision(true, 0.9f));
+        segmenter.Push(Frame(192, 32, speech: false), new VadDecision(false, 0.1f));
+        var completed = segmenter.Push(Frame(224, 32, speech: false), new VadDecision(false, 0.1f));
+
+        Assert.IsNotNull(completed);
+        Assert.AreEqual(32, completed.StartMs);
+    }
+
+    [TestMethod]
+    public void Push_SoftMaxRequiresStableNonSpeechBreak()
+    {
+        var segmenter = new SpeechSegmenter(new SpeechSegmenterOptions
+        {
+            StartSpeechMs = 32,
+            PreRollMs = 0,
+            EndSilenceMs = 300,
+            SoftBreakSilenceMs = 96,
+            MinSegmentMs = 0,
+            SoftMaxSegmentMs = 128,
+            HardMaxSegmentMs = 1000
+        });
+
+        for (var time = 0; time < 128; time += 32)
+        {
+            segmenter.Push(Frame(time, 32, speech: true), new VadDecision(true, 0.9f));
+        }
+
+        Assert.IsNull(segmenter.Push(Frame(128, 32, speech: false), new VadDecision(false, 0.1f)));
+        Assert.IsNull(segmenter.Push(Frame(160, 32, speech: true), new VadDecision(true, 0.9f)));
+        Assert.IsNull(segmenter.Push(Frame(192, 32, speech: false), new VadDecision(false, 0.1f)));
+        Assert.IsNull(segmenter.Push(Frame(224, 32, speech: false), new VadDecision(false, 0.1f)));
+        var completed = segmenter.Push(Frame(256, 32, speech: false), new VadDecision(false, 0.1f));
+
+        Assert.IsNotNull(completed);
+        Assert.AreEqual(SpeechSegmentCutReason.SoftMax, completed.CutReason);
     }
 
     private static IEnumerable<PcmAudioFrame> Frames(long startMs, int count, bool speech)
