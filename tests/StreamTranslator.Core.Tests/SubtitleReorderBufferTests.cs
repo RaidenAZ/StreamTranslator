@@ -21,7 +21,20 @@ public sealed class SubtitleReorderBufferTests
         Assert.AreEqual("第二句", released[1].SourceText);
     }
 
-    private static SubtitleItem Item(long sequence, string text)
+    [TestMethod]
+    public void Add_FailedPlaceholderReleasesLaterSuccessfulItems()
+    {
+        var buffer = new SubtitleReorderBuffer(firstSequence: 1);
+        Assert.AreEqual(0, buffer.Add(Item(2, "第二句")).Count);
+
+        var released = buffer.Add(Item(1, "识别失败", SubtitleStatus.Failed));
+
+        Assert.AreEqual(2, released.Count);
+        Assert.AreEqual(SubtitleStatus.Failed, released[0].Status);
+        Assert.AreEqual("第二句", released[1].SourceText);
+    }
+
+    private static SubtitleItem Item(long sequence, string text, SubtitleStatus status = SubtitleStatus.Final)
     {
         return new SubtitleItem
         {
@@ -29,8 +42,7 @@ public sealed class SubtitleReorderBufferTests
             Start = TimeSpan.Zero,
             End = TimeSpan.FromSeconds(1),
             SourceText = text,
-            Status = SubtitleStatus.Final
+            Status = status
         };
     }
 }
-

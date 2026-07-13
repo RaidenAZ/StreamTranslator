@@ -119,6 +119,12 @@ public partial class MainWindow : FluentWindow
         try
         {
             await SaveSettingsAsync();
+            var validationErrors = AppSettingsValidator.ValidateForStart(_settings);
+            if (validationErrors.Count > 0)
+            {
+                throw new InvalidOperationException(string.Join(Environment.NewLine, validationErrors));
+            }
+
             _runtime = new SubtitleRuntime(AppContext.BaseDirectory, _dataDirectory, _settings);
             _runtime.StatusChanged += OnRuntimeStatusChanged;
             _runtime.SubtitleReady += OnSubtitleReady;
@@ -394,12 +400,20 @@ public partial class MainWindow : FluentWindow
 
     private void OnRuntimeError(object? sender, Exception ex)
     {
-        Dispatcher.Invoke(() =>
+        Dispatcher.BeginInvoke(async () =>
         {
             LastErrorText.Text = ex.Message;
             HomeStateBadgeText.Text = "错误";
             HomeRuntimeSummaryText.Text = "运行异常，请查看问题信息";
             AppendAppLog($"错误: {ex.GetType().Name}: {ex.Message}");
+
+            if (ex is RuntimeFatalException && _isRunning)
+            {
+                await StopRuntimeAsync();
+                LastErrorText.Text = ex.Message;
+                HomeStateBadgeText.Text = "错误";
+                HomeRuntimeSummaryText.Text = "字幕已停止，请处理问题后重新开始";
+            }
         });
     }
 

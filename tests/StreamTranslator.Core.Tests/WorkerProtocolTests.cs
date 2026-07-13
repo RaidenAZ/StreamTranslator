@@ -23,5 +23,19 @@ public sealed class WorkerProtocolTests
         StringAssert.Contains(json, "\"audioBase64\":\"AAAA\"");
         StringAssert.Contains(json, "\"sampleRate\":16000");
     }
-}
 
+    [TestMethod]
+    public void DeserializeResponse_PreservesStructuredFailureMetadata()
+    {
+        const string json = """
+            {"id":"seg-1","type":"error","ok":false,"sequence":1,"errorKind":"rate_limit","statusCode":429,"retryable":true}
+            """;
+
+        var response = WorkerJson.Deserialize<WorkerResponse>(json);
+
+        Assert.IsNotNull(response);
+        Assert.AreEqual("rate_limit", response.ErrorKind);
+        Assert.AreEqual(429, response.StatusCode);
+        Assert.IsTrue(response.Retryable);
+    }
+}

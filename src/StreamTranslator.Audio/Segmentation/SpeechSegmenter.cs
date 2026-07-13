@@ -7,12 +7,22 @@ public sealed class SpeechSegmenter
     private readonly SpeechSegmenterOptions _options;
     private readonly List<PcmAudioFrame> _frames = [];
     private readonly List<PcmAudioFrame> _pendingStartFrames = [];
+    private readonly List<PcmAudioFrame> _preRollFrames = [];
     private int _pendingSpeechMs;
     private int _trailingSilenceMs;
+    private int _softBreakSilenceMs;
     private long? _hardLimitStartMs;
 
     public SpeechSegmenter(SpeechSegmenterOptions options)
     {
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.StartSpeechMs <= 0 || options.PreRollMs < 0 || options.EndSilenceMs <= 0 ||
+            options.SoftBreakSilenceMs <= 0 || options.MinSegmentMs < 0 || options.SoftMaxSegmentMs <= 0 ||
+            options.HardMaxSegmentMs <= options.SoftMaxSegmentMs || options.OverlapMs < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Speech segmenter options are inconsistent.");
+        }
+
         _options = options;
     }
 
@@ -24,6 +34,12 @@ public sealed class SpeechSegmenter
         {
             if (!decision.IsSpeech)
             {
+                foreach (var pendingFrame in _pendingStartFrames)
+                {
+                    AddPreRoll(pendingFrame);
+                }
+
+                AddPreRoll(frame);
                 _pendingStartFrames.Clear();
                 _pendingSpeechMs = 0;
                 return null;
@@ -36,23 +52,28 @@ public sealed class SpeechSegmenter
                 return null;
             }
 
+            var speechStartMs = _pendingStartFrames[0].StartMs;
+            _frames.AddRange(_preRollFrames);
             _frames.AddRange(_pendingStartFrames);
+            _preRollFrames.Clear();
             _pendingStartFrames.Clear();
             _pendingSpeechMs = 0;
-            _hardLimitStartMs = _frames[0].StartMs;
+            _hardLimitStartMs = speechStartMs;
             _trailingSilenceMs = 0;
+            _softBreakSilenceMs = 0;
             return null;
         }
 
         _frames.Add(frame);
         _trailingSilenceMs = decision.IsSpeech ? 0 : _trailingSilenceMs + frame.DurationMs;
+        _softBreakSilenceMs = decision.IsSpeech ? 0 : _softBreakSilenceMs + frame.DurationMs;
 
         if (_trailingSilenceMs >= _options.EndSilenceMs && CurrentDurationMs >= _options.MinSegmentMs)
         {
             return Complete(SpeechSegmentCutReason.Silence, frame.EndMs, 0);
         }
 
-        if (!decision.IsSpeech &&
+        if (_softBreakSilenceMs >= _options.SoftBreakSilenceMs &&
             HardLimitElapsedMs(frame.EndMs) > _options.SoftMaxSegmentMs &&
             CurrentDurationMs >= _options.MinSegmentMs)
         {
@@ -65,6 +86,22 @@ public sealed class SpeechSegmenter
         }
 
         return null;
+    }
+
+    private void AddPreRoll(PcmAudioFrame frame)
+    {
+        if (_options.PreRollMs == 0)
+        {
+            _preRollFrames.Clear();
+            return;
+        }
+
+        _preRollFrames.Add(frame);
+        while (_preRollFrames.Count > 0 &&
+               _preRollFrames[^1].EndMs - _preRollFrames[0].StartMs > _options.PreRollMs)
+        {
+            _preRollFrames.RemoveAt(0);
+        }
     }
 
     private int CurrentDurationMs => _frames.Count == 0 ? 0 : (int)(_frames[^1].EndMs - _frames[0].StartMs);
@@ -94,6 +131,7 @@ public sealed class SpeechSegmenter
         _pendingStartFrames.Clear();
         _pendingSpeechMs = 0;
         _trailingSilenceMs = 0;
+        _softBreakSilenceMs = 0;
         _hardLimitStartMs = _frames.Count == 0 ? null : endMs;
 
         return completed;

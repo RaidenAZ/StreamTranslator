@@ -439,7 +439,6 @@
                                                     <ComboBoxItem Content="auto" />
                                                     <ComboBoxItem Content="zh" />
                                                     <ComboBoxItem Content="en" />
-                                                    <ComboBoxItem Content="ja" />
                                                 </ComboBox>
                                             </StackPanel>
                                             <StackPanel Grid.Row="2" Grid.Column="0">

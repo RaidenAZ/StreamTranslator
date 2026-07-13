@@ -32,7 +32,7 @@ VAD 和分段全部放在 C# 侧。Python 不处理实时音频状态，只做 A
 
 V1.0 以准确度优先，C# 侧挂载 Silero VAD ONNX 模型，并通过 Microsoft.ML.OnnxRuntime 推理。
 
-WebRTC VAD 和能量阈值 VAD 可以后续作为 fallback 或诊断模式，但不是默认主方案。
+正式运行缺少 Silero 模型时直接阻止启动。WebRTC VAD 和能量阈值 VAD 只能作为后续显式诊断选项，不能静默降级。
 
 理由：
 
@@ -166,6 +166,8 @@ V1.0 不做托盘常驻。
 状态：Accepted
 
 默认 ASR 并发数为 2。C# 侧维护队列和结果重排序。
+
+Python worker 使用同样上限的有界线程池并行调用 MiMo，stdout 使用写锁输出 JSON Lines。
 
 策略：
 
@@ -356,6 +358,8 @@ V1.0 增加离线音频回放/分段 CLI 诊断工具。
 状态：Accepted
 
 V1.0 对明确可恢复的错误自动重试一次，不做无限重试。
+
+worker 返回结构化错误分类。401/403 不重试并停止字幕；429、timeout、network、5xx 仅重试一次；每个 sequence 无论成功失败都必须释放重排缓冲。
 
 错误状态分层显示：
 
