@@ -27,6 +27,26 @@ if (Test-Path $mainWindowXaml) {
     if ($mainWindowMarkup -notmatch '<Border x:Name="HomeIssuesCard"[\s\S]*AutomationProperties\.AutomationId="HomeIssuesPanel"') {
         throw "Home issues should be presented in its own card, outside the overview panel."
     }
+
+    if ($mainWindowMarkup -notmatch '<ListBox x:Name="SubtitleList"[\s\S]*?AutomationProperties\.AutomationId="SubtitleHistoryList"') {
+        throw "Subtitle history list should expose a stable UI automation boundary."
+    }
+
+    if ($mainWindowMarkup -notmatch '<ListBox x:Name="SubtitleList"[\s\S]*?HorizontalContentAlignment="Stretch"') {
+        throw "Subtitle history rows should stretch to the available width."
+    }
+
+    if ($mainWindowMarkup -notmatch '<ListBox x:Name="SubtitleList"[\s\S]*?ScrollViewer\.HorizontalScrollBarVisibility="Disabled"') {
+        throw "Subtitle history should not expose a horizontal scrollbar."
+    }
+
+    if ($mainWindowMarkup -notmatch 'Text="\{Binding GeneratedTimeText\}"') {
+        throw "Subtitle history rows should display the recorded system time."
+    }
+
+    if ($mainWindowMarkup -notmatch 'Text="\{Binding SourceText\}"[\s\S]*?TextWrapping="Wrap"') {
+        throw "Subtitle history text should wrap within the available width."
+    }
 }
 
 $process = Start-Process -FilePath $exe -WorkingDirectory $PackageRoot -PassThru
