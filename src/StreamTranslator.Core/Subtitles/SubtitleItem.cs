@@ -5,7 +5,11 @@ namespace StreamTranslator.Core.Subtitles;
 
 public sealed record SubtitleItem
 {
+    public string Type { get; init; } = "subtitle";
     public long Sequence { get; init; }
+    public string? UtteranceGroupId { get; init; }
+    public int Revision { get; init; } = 1;
+    public long[] ReplacesSequences { get; init; } = [];
     public TimeSpan Start { get; init; }
     public TimeSpan End { get; init; }
     public DateTimeOffset? GeneratedAt { get; init; }

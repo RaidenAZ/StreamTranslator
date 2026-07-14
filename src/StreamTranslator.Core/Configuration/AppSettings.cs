@@ -1,7 +1,10 @@
+using System.Text.Json.Serialization;
+
 namespace StreamTranslator.Core.Configuration;
 
 public sealed record AppSettings
 {
+    public int SchemaVersion { get; init; } = 2;
     public AudioSettings Audio { get; init; } = new();
     public VadSettings Vad { get; init; } = new();
     public AsrSettings Asr { get; init; } = new();
@@ -18,7 +21,8 @@ public sealed record AudioSettings
 
 public sealed record VadSettings
 {
-    public int EndSilenceMs { get; init; } = 300;
+    public VadEndpointMode EndpointMode { get; init; } = VadEndpointMode.Balanced;
+    public int EndSilenceMs { get; init; } = 400;
     public int StartSpeechMs { get; init; } = 96;
     public int PreRollMs { get; init; } = 192;
     public int MinSegmentMs { get; init; } = 900;
@@ -26,6 +30,15 @@ public sealed record VadSettings
     public int SoftMaxSegmentMs { get; init; } = 4000;
     public int HardMaxSegmentMs { get; init; } = 10000;
     public int OverlapMs { get; init; } = 600;
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<VadEndpointMode>))]
+public enum VadEndpointMode
+{
+    LowLatency,
+    Balanced,
+    SentenceComplete,
+    Fixed
 }
 
 public sealed record AsrSettings

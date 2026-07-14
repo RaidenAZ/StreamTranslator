@@ -40,6 +40,29 @@ public sealed class SpeechSegmenterTests
     }
 
     [TestMethod]
+    public void Push_UsesCurrentEffectiveEndSilence()
+    {
+        var segmenter = new SpeechSegmenter(new SpeechSegmenterOptions
+        {
+            EndSilenceMs = 600,
+            MinSegmentMs = 0,
+            SoftMaxSegmentMs = 5000,
+            HardMaxSegmentMs = 10000,
+            OverlapMs = 0
+        });
+
+        Assert.IsNull(segmenter.Push(Frame(0, speech: true), new VadDecision(true, 0.9f), 400));
+        Assert.IsNull(segmenter.Push(Frame(100, speech: false), new VadDecision(false, 0.1f), 400));
+        Assert.IsNull(segmenter.Push(Frame(200, speech: false), new VadDecision(false, 0.1f), 400));
+
+        var completed = segmenter.Push(Frame(300, speech: false), new VadDecision(false, 0.1f), 300);
+
+        Assert.IsNotNull(completed);
+        Assert.AreEqual(SpeechSegmentCutReason.Silence, completed.CutReason);
+        Assert.AreEqual(400, completed.EndMs);
+    }
+
+    [TestMethod]
     public void Push_CompletesSegmentAtHardMaxDuringContinuousSpeech()
     {
         var segmenter = new SpeechSegmenter(new SpeechSegmenterOptions

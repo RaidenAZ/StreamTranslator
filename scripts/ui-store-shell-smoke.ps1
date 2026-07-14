@@ -47,6 +47,18 @@ if (Test-Path $mainWindowXaml) {
     if ($mainWindowMarkup -notmatch 'Text="\{Binding SourceText\}"[\s\S]*?TextWrapping="Wrap"') {
         throw "Subtitle history text should wrap within the available width."
     }
+
+    if ($mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="VadModeBalanced"') {
+        throw "Settings should expose the balanced adaptive VAD mode."
+    }
+
+    if ($mainWindowMarkup -notmatch 'x:Name="EndSilenceBox"[\s\S]*?AutomationProperties\.AutomationId="FixedEndSilenceBox"[\s\S]*?IsEnabled="False"') {
+        throw "Fixed end-silence input should be disabled while balanced adaptive mode is selected."
+    }
+
+    if ($mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="CurrentVadEndpointText"') {
+        throw "Settings should display the current effective VAD endpoint."
+    }
 }
 
 $process = Start-Process -FilePath $exe -WorkingDirectory $PackageRoot -PassThru
@@ -314,6 +326,9 @@ try {
     $recognitionSettingsGroup = Find-ByAutomationId "SettingsRecognitionGroup"
     $floatingSettingsGroup = Find-ByAutomationId "SettingsFloatingGroup"
     $diagnosticsSettingsGroup = Find-ByAutomationId "SettingsDiagnosticsGroup"
+    $balancedVadMode = Find-ByAutomationId "VadModeBalanced"
+    $fixedEndSilenceBox = Find-ByAutomationId "FixedEndSilenceBox"
+    $currentVadEndpointText = Find-ByAutomationId "CurrentVadEndpointText"
 
     if ($settingsNav.Current.ItemStatus -ne "Active") {
         throw "Navigation active state did not move to the clicked settings page."
@@ -327,6 +342,10 @@ try {
     if ($null -eq $recognitionSettingsGroup) { throw "Settings recognition service group was not found." }
     if ($null -eq $floatingSettingsGroup) { throw "Settings floating subtitle group was not found." }
     if ($null -eq $diagnosticsSettingsGroup) { throw "Settings diagnostics group was not found." }
+    if ($null -eq $balancedVadMode) { throw "Balanced adaptive VAD mode was not found." }
+    if ($null -eq $fixedEndSilenceBox) { throw "Fixed end-silence input was not found." }
+    if ($fixedEndSilenceBox.Current.IsEnabled) { throw "Fixed end-silence input should be disabled in balanced mode." }
+    if ($null -eq $currentVadEndpointText) { throw "Current VAD endpoint status was not found." }
 
     Invoke-Element $floatingButton "Top command floating window button"
     Start-Sleep -Milliseconds 900
