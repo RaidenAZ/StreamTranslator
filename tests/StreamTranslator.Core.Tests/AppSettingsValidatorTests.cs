@@ -29,4 +29,18 @@ public sealed class AppSettingsValidatorTests
 
         Assert.AreEqual(0, AppSettingsValidator.ValidateForStart(settings).Count);
     }
+
+    [TestMethod]
+    public void ValidateForStart_RejectsUnknownVadEndpointMode()
+    {
+        var settings = new AppSettings
+        {
+            Asr = new AsrSettings { ApiKey = "test-key", Language = "auto" },
+            Vad = new VadSettings { EndpointMode = (VadEndpointMode)99 }
+        };
+
+        var errors = AppSettingsValidator.ValidateForStart(settings);
+
+        Assert.IsTrue(errors.Any(error => error.Contains("断句策略", StringComparison.Ordinal)));
+    }
 }

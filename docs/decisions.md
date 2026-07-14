@@ -1,6 +1,6 @@
 # StreamTranslator Decisions
 
-本文档记录已确认的 V1.0 架构和产品决策。每条决策都应作为后续实现时的默认依据，除非有新的明确变更。
+本文档记录已确认的 V1.0 和 V1.1 架构与产品决策。每条决策都应作为后续实现时的默认依据，除非有新的明确变更。
 
 ## D001: C# / Python Boundary Uses Bytes, Not Temporary Files
 
@@ -63,7 +63,7 @@ V1.0 以准确度优先，C# 侧挂载 Silero VAD ONNX 模型，并通过 Micros
 
 ## D005: VAD End Silence Is User Configurable
 
-状态：Accepted
+状态：Accepted for V1.0，V1.1 由 D027 扩展
 
 默认尾静音判定为 300ms。用户可在设置页配置。
 
@@ -177,15 +177,15 @@ Python worker 使用同样上限的有界线程池并行调用 MiMo，stdout 使
 
 ## D012: V1.0 Does Not Default To Rolling Interim ASR
 
-状态：Accepted
+状态：Accepted for V1.0，后续版本顺序由 D027 调整
 
 V1.0 只发 final / final-ish 音频片段。数据模型和 UI 预留 interim 替换能力。
 
 滚动 interim ASR 放到：
 
 ```text
-V1.1: 实验功能，默认关闭
-V1.2: 若稳定，再考虑正式低延迟模式
+V1.2: 实验功能，默认关闭
+后续版本: 若稳定，再考虑正式 rolling interim 模式
 ```
 
 理由：
@@ -409,3 +409,82 @@ StreamTranslator/
   data/
   docs/
 ```
+
+## D027: V1.1 Uses Goal-Based Adaptive End Silence
+
+状态：Accepted
+
+V1.1 不按体育、游戏、新闻或发布会等直播类别选择 VAD 参数。用户选择优化目标：
+
+| 模式 | 初始值 | 范围 |
+|---|---:|---:|
+| 低延迟 | 250ms | 200-400ms |
+| 均衡 | 400ms | 280-600ms |
+| 句子完整 | 600ms | 400-800ms |
+| 固定值 | 用户输入 | 200-800ms |
+
+第一版只动态调整 `EndSilenceMs`，其他 VAD 参数保持不变。自适应逻辑位于 C# `AdaptiveEndpointController`，只读取 VAD 决策和时间信号，不读取 ASR 文本、LLM 语义或直播类别。
+
+固定值模式继续测量 quick-resume metrics，但不学习、不调整、不触发字幕合并。
+
+## D028: Adaptive Learning Uses A Short Event Window
+
+状态：Accepted
+
+控制器使用最近 8 次有效停顿，样本最长保留 15 秒，至少 3 个样本后开始调整。目标参考 P75 加 50ms 安全余量。
+
+调整策略：
+
+- 连续两次疑似误切后上调 50ms。
+- 至少 6 个稳定样本后才允许下调，每次 25ms。
+- 调整冷却 2 秒，每 10 秒最多调整 2 次。
+- 10 秒没有确认语音时清空样本，并逐步回到模式初始值。
+
+学习状态只在当前捕获会话内有效，不跨会话保存。
+
+## D029: Quick Resume Produces Subtitle-Layer Revisions
+
+状态：Accepted
+
+因尾静音切段后，完整停顿不超过 800ms 时视为疑似过早切段。完整停顿等于切段时端点加切段后到确认语音恢复的时间。
+
+处理方式：
+
+- 两个音频片段仍分别调用 ASR。
+- 不拼接 WAV，不增加第三次 MiMo 请求。
+- 相邻结果在字幕层合并并静默替换 UI。
+- 支持最多 3 段、最长 12 秒的有限链式合并。
+- 只能合并相邻 sequence；ASR 失败或任何边界超限时关闭分组。
+- 使用本地确定性 suffix/prefix 去重，不调用 LLM。
+
+## D030: Subtitle History Uses Append-Only Revision Events
+
+状态：Accepted
+
+字幕合并不原地改写 `data/subtitles/YYYY-MM-DD.jsonl`。历史追加带稳定 `utteranceGroupId`、revision 和 `replacesSequences` 的修订事件，读取时只物化每组最新 revision。
+
+普通 UI 不显示“修订中”；修订次数、原始 sequence 和合并原因只进入诊断和历史事件。
+
+## D031: V1.1 Forces Balanced Adaptive Mode
+
+状态：Accepted
+
+当前仍处于测试阶段，V1.1 对新安装和旧配置都默认强制使用 `均衡` 自适应模式。不猜测旧数字对应的优化目标，不提供旧值恢复入口或阻塞确认弹窗。
+
+用户需要固定端点时可主动选择 `固定值` 并填写 200-800ms。
+
+## D032: Adaptive VAD Has Quantitative Acceptance Gates
+
+状态：Accepted
+
+同一批直播样本相对固定 300ms 基线必须满足：
+
+- 疑似过早切段率至少下降 30%。
+- 均衡模式端点中位数不超过 450ms，P95 不超过 600ms。
+- 每 10 秒最多调整 2 次。
+- 错误合并率低于 5%。
+- 合并最多 3 段、最长 12 秒。
+- ASR 调用次数不因字幕合并增加。
+- 固定值模式与 V1.0 行为等价。
+
+完整实现规格见 [v1.1-adaptive-vad.md](v1.1-adaptive-vad.md)。

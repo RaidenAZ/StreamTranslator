@@ -28,7 +28,16 @@ public sealed class SpeechSegmenter
 
     public CompletedSpeechSegment? Push(PcmAudioFrame frame, VadDecision decision)
     {
+        return Push(frame, decision, _options.EndSilenceMs);
+    }
+
+    public CompletedSpeechSegment? Push(PcmAudioFrame frame, VadDecision decision, int effectiveEndSilenceMs)
+    {
         ArgumentNullException.ThrowIfNull(frame);
+        if (effectiveEndSilenceMs <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(effectiveEndSilenceMs));
+        }
 
         if (_frames.Count == 0)
         {
@@ -68,7 +77,7 @@ public sealed class SpeechSegmenter
         _trailingSilenceMs = decision.IsSpeech ? 0 : _trailingSilenceMs + frame.DurationMs;
         _softBreakSilenceMs = decision.IsSpeech ? 0 : _softBreakSilenceMs + frame.DurationMs;
 
-        if (_trailingSilenceMs >= _options.EndSilenceMs && CurrentDurationMs >= _options.MinSegmentMs)
+        if (_trailingSilenceMs >= effectiveEndSilenceMs && CurrentDurationMs >= _options.MinSegmentMs)
         {
             return Complete(SpeechSegmentCutReason.Silence, frame.EndMs, 0);
         }

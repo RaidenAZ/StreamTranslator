@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Threading.Channels;
 using StreamTranslator.Audio.Capture;
 using StreamTranslator.Audio.Encoding;
 using StreamTranslator.Audio.Segmentation;
@@ -23,10 +24,13 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     private readonly SemaphoreSlim _subtitlePublishLock = new(1, 1);
     private LoopbackCaptureService? _capture;
     private IVadEngine? _vad;
+    private AdaptiveEndpointController? _endpointController;
     private SpeechSegmenter? _segmenter;
     private PythonWorkerClient? _worker;
     private SubtitleHistoryStore? _history;
     private readonly SubtitleReorderBuffer _reorderBuffer = new(firstSequence: 1);
+    private readonly UtteranceGroupTracker _utteranceGroupTracker;
+    private readonly SubtitleRevisionCoordinator _revisionCoordinator = new();
     private readonly object _subtitleLock = new();
     private readonly object _tasksLock = new();
     private readonly object _captureTaskLock = new();
@@ -38,7 +42,10 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     private string? _diagnosticSessionPath;
     private CancellationTokenSource? _stopCts;
     private Task? _captureRecoveryTask;
+    private Channel<string>? _adaptiveMetricsChannel;
+    private Task? _adaptiveMetricsWriterTask;
     private bool _stopping;
+    private bool _mergeNextSegment;
     private int _workerRestartCount;
 
     public SubtitleRuntime(string baseDirectory, string dataDirectory, AppSettings settings)
@@ -46,6 +53,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         _baseDirectory = baseDirectory;
         _dataDirectory = dataDirectory;
         _settings = settings;
+        _utteranceGroupTracker = new UtteranceGroupTracker($"utt-{Guid.NewGuid():N}");
         _asrSemaphore = new SemaphoreSlim(Math.Max(1, settings.Asr.MaxConcurrency), Math.Max(1, settings.Asr.MaxConcurrency));
     }
 
@@ -53,6 +61,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     public event EventHandler<SubtitleItem>? SubtitleReady;
     public event EventHandler<Exception>? RuntimeError;
     public event EventHandler<double>? AudioLevelChanged;
+    public event EventHandler<VadEndpointRuntimeStatus>? VadEndpointChanged;
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
@@ -60,8 +69,10 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         _workerRestartCount = 0;
         _stopCts = new CancellationTokenSource();
         _history = new SubtitleHistoryStore(Path.Combine(_dataDirectory, "subtitles"));
+        StartAdaptiveMetricsWriter();
         StartDiagnosticsSession();
         _vad = CreateVadEngine();
+        _endpointController = CreateEndpointController();
         _segmenter = CreateSpeechSegmenter();
 
         _worker = CreateWorkerClient();
@@ -97,8 +108,14 @@ public sealed class SubtitleRuntime : IAsyncDisposable
 
         _vad?.Dispose();
         _vad = null;
+        if (_endpointController is not null)
+        {
+            _endpointController.EndpointAdjusted -= OnEndpointAdjusted;
+            _endpointController = null;
+        }
         _segmenter = null;
         await StopDiagnosticsSessionAsync().ConfigureAwait(false);
+        await StopAdaptiveMetricsWriterAsync().ConfigureAwait(false);
 
         if (_worker is not null)
         {
@@ -122,8 +139,9 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             }
 
             var vad = _vad;
+            var endpointController = _endpointController;
             var segmenter = _segmenter;
-            if (vad is null || segmenter is null)
+            if (vad is null || endpointController is null || segmenter is null)
             {
                 return;
             }
@@ -131,10 +149,50 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             var decision = vad.Analyze(frame.Samples, frame.SampleRate);
             AudioLevelChanged?.Invoke(this, CalculateLevel(frame.Samples));
             WriteVadDiagnostic(frame, decision);
-            var completed = segmenter.Push(frame, decision);
+            var endpointObservation = endpointController.ObserveVad(frame.StartMs, frame.DurationMs, decision.IsSpeech);
+            if (endpointObservation.QuickResume is { } quickResume)
+            {
+                if (quickResume.ShouldMergeWithPreviousSegment)
+                {
+                    _mergeNextSegment = true;
+                }
+
+                WriteAdaptiveMetric(new
+                {
+                    type = "quick_resume",
+                    timestamp = DateTimeOffset.Now,
+                    timelineMs = frame.StartMs,
+                    quickResume.CompletePauseMs,
+                    quickResume.ShouldMergeWithPreviousSegment
+                });
+            }
+
+            var completed = segmenter.Push(frame, decision, endpointController.EffectiveEndSilenceMs);
             if (completed is not null)
             {
-                var task = ProcessSegmentAsync(completed, _stopCts?.Token ?? CancellationToken.None);
+                endpointController.NotifySegmentCut(completed.EndMs, completed.CutReason);
+                var sequence = Interlocked.Increment(ref _sequence);
+                var groupAssignment = _utteranceGroupTracker.Assign(
+                    sequence,
+                    completed.StartMs,
+                    completed.EndMs,
+                    _mergeNextSegment);
+                _mergeNextSegment = false;
+                WriteAdaptiveMetric(new
+                {
+                    type = "utterance_group_assignment",
+                    timestamp = DateTimeOffset.Now,
+                    sequence,
+                    groupAssignment.UtteranceGroupId,
+                    groupAssignment.SegmentCount,
+                    groupAssignment.IsContinuation,
+                    groupSpanMs = groupAssignment.GroupEndMs - groupAssignment.GroupStartMs
+                });
+                var task = ProcessSegmentAsync(
+                    sequence,
+                    completed,
+                    groupAssignment,
+                    _stopCts?.Token ?? CancellationToken.None);
                 TrackSegmentTask(task);
             }
         }
@@ -180,7 +238,15 @@ public sealed class SubtitleRuntime : IAsyncDisposable
                     await Task.Delay(500, _stopCts?.Token ?? CancellationToken.None).ConfigureAwait(false);
                     _capture.Start();
                     _vad?.Reset();
+                    if (_endpointController is not null)
+                    {
+                        _endpointController.EndpointAdjusted -= OnEndpointAdjusted;
+                    }
+                    _endpointController = CreateEndpointController();
                     _segmenter = CreateSpeechSegmenter();
+                    _utteranceGroupTracker.CloseCurrentGroup();
+                    _revisionCoordinator.CloseCurrentGroup();
+                    _mergeNextSegment = false;
                     StatusChanged?.Invoke(this, "音频捕获已恢复");
                     return;
                 }
@@ -269,9 +335,12 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         }
     }
 
-    private async Task ProcessSegmentAsync(CompletedSpeechSegment segment, CancellationToken cancellationToken)
+    private async Task ProcessSegmentAsync(
+        long sequence,
+        CompletedSpeechSegment segment,
+        UtteranceGroupAssignment groupAssignment,
+        CancellationToken cancellationToken)
     {
-        var sequence = Interlocked.Increment(ref _sequence);
         var requestId = $"seg-{sequence:000000}";
         var acquired = false;
         DiagnosticSegmentRecord? diagnosticRecord = null;
@@ -283,7 +352,14 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             acquired = true;
 
             var wav = WavEncoder.EncodePcm16Mono(segment.Samples, segment.SampleRate);
-            diagnosticRecord = SaveSegmentDiagnostic(sequence, segment, wav);
+            diagnosticRecord = SaveSegmentDiagnostic(sequence, segment, groupAssignment, wav);
+            WriteAdaptiveMetric(new
+            {
+                type = "asr_request",
+                timestamp = DateTimeOffset.Now,
+                sequence,
+                groupAssignment.UtteranceGroupId
+            });
             var request = WorkerRequest.Transcribe(
                 id: requestId,
                 sequence: sequence,
@@ -330,7 +406,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
                 ? $"ASR API 正常 ({response.LatencyMs?.ToString() ?? "-"} ms)"
                 : $"ASR API 错误: {response.ErrorKind ?? response.ErrorCode ?? "Unknown"}");
 
-        await PublishTerminalResponseAsync(sequence, segment, response).ConfigureAwait(false);
+        await PublishTerminalResponseAsync(sequence, segment, groupAssignment, response).ConfigureAwait(false);
 
         if (fatalError is not null || WorkerFailurePolicy.Decide(response, attempt: 1) == WorkerFailureAction.StopRuntime)
         {
@@ -343,6 +419,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     private async Task PublishTerminalResponseAsync(
         long sequence,
         CompletedSpeechSegment segment,
+        UtteranceGroupAssignment groupAssignment,
         WorkerResponse response)
     {
         await _subtitlePublishLock.WaitAsync().ConfigureAwait(false);
@@ -352,36 +429,47 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             var subtitle = new SubtitleItem
             {
                 Sequence = sequence,
+                UtteranceGroupId = groupAssignment.UtteranceGroupId,
                 Start = TimeSpan.FromMilliseconds(segment.StartMs),
                 End = TimeSpan.FromMilliseconds(segment.EndMs),
                 SourceText = hasText ? response.Text! : $"识别失败: {response.ErrorMessage ?? "ASR 未返回文本"}",
                 Status = hasText ? SubtitleStatus.Final : SubtitleStatus.Failed
             };
 
-            SubtitleItem[] displayItems;
+            (SubtitleItem HistoryItem, SubtitlePublication Publication)[] publications;
             lock (_subtitleLock)
             {
                 var releasedItems = _reorderBuffer.Add(subtitle);
-                displayItems = new SubtitleItem[releasedItems.Count];
+                publications = new (SubtitleItem, SubtitlePublication)[releasedItems.Count];
                 for (var index = 0; index < releasedItems.Count; index++)
                 {
                     var deduplicated = ApplyDeduplicationLocked(releasedItems[index]);
                     UpdateDiagnosticDedupLocked(deduplicated.Item.Sequence, deduplicated.DedupApplied);
-                    displayItems[index] = deduplicated.Item;
+                    var historyItem = deduplicated.Item with
+                    {
+                        Type = "subtitle",
+                        Revision = 1,
+                        ReplacesSequences = [deduplicated.Item.Sequence],
+                        GeneratedAt = deduplicated.Item.GeneratedAt ?? DateTimeOffset.Now
+                    };
+                    publications[index] = (historyItem, _revisionCoordinator.Publish(historyItem));
                 }
             }
 
-            foreach (var displayItem in displayItems)
+            foreach (var (historyItem, publication) in publications)
             {
-                var generatedAt = displayItem.GeneratedAt ?? DateTimeOffset.Now;
-                var publishedItem = displayItem with { GeneratedAt = generatedAt };
+                var generatedAt = historyItem.GeneratedAt ?? DateTimeOffset.Now;
 
                 if (_history is not null)
                 {
                     try
                     {
                         var historyDate = DateOnly.FromDateTime(generatedAt.Date);
-                        await _history.AppendAsync(publishedItem, historyDate).ConfigureAwait(false);
+                        await _history.AppendAsync(historyItem, historyDate).ConfigureAwait(false);
+                        if (publication.Kind == SubtitlePublicationKind.Revise)
+                        {
+                            await _history.AppendRevisionAsync(publication.Item, historyDate).ConfigureAwait(false);
+                        }
                     }
                     catch (Exception historyException)
                     {
@@ -389,7 +477,19 @@ public sealed class SubtitleRuntime : IAsyncDisposable
                     }
                 }
 
-                SubtitleReady?.Invoke(this, publishedItem);
+                if (publication.Kind == SubtitlePublicationKind.Revise)
+                {
+                    WriteAdaptiveMetric(new
+                    {
+                        type = "subtitle_revision",
+                        timestamp = DateTimeOffset.Now,
+                        publication.Item.UtteranceGroupId,
+                        publication.Item.Revision,
+                        publication.Item.ReplacesSequences
+                    });
+                }
+
+                SubtitleReady?.Invoke(this, publication.Item);
             }
         }
         finally
@@ -414,7 +514,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     {
         return new SpeechSegmenter(new SpeechSegmenterOptions
         {
-            EndSilenceMs = _settings.Vad.EndSilenceMs,
+            EndSilenceMs = _endpointController?.EffectiveEndSilenceMs ?? _settings.Vad.EndSilenceMs,
             StartSpeechMs = _settings.Vad.StartSpeechMs,
             PreRollMs = _settings.Vad.PreRollMs,
             MinSegmentMs = _settings.Vad.MinSegmentMs,
@@ -423,6 +523,116 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             HardMaxSegmentMs = _settings.Vad.HardMaxSegmentMs,
             OverlapMs = _settings.Vad.OverlapMs
         });
+    }
+
+    private AdaptiveEndpointController CreateEndpointController()
+    {
+        var controller = new AdaptiveEndpointController(
+            _settings.Vad.EndpointMode,
+            _settings.Vad.EndSilenceMs,
+            _settings.Vad.StartSpeechMs);
+        controller.EndpointAdjusted += OnEndpointAdjusted;
+        PublishVadEndpointStatus(controller, adjustment: null);
+        WriteAdaptiveMetric(new
+        {
+            type = "session_start",
+            timestamp = DateTimeOffset.Now,
+            mode = controller.Mode.ToString(),
+            effectiveEndSilenceMs = controller.EffectiveEndSilenceMs,
+            minimumEndSilenceMs = controller.MinimumEndSilenceMs,
+            maximumEndSilenceMs = controller.MaximumEndSilenceMs
+        });
+        return controller;
+    }
+
+    private void OnEndpointAdjusted(object? sender, EndpointAdjustment adjustment)
+    {
+        if (sender is not AdaptiveEndpointController controller)
+        {
+            return;
+        }
+
+        WriteAdaptiveMetric(new
+        {
+            type = "endpoint_adjustment",
+            timestamp = DateTimeOffset.Now,
+            timelineMs = adjustment.TimestampMs,
+            mode = controller.Mode.ToString(),
+            previousEndSilenceMs = adjustment.PreviousEndSilenceMs,
+            currentEndSilenceMs = adjustment.CurrentEndSilenceMs,
+            reason = adjustment.Reason.ToString(),
+            sampleCount = adjustment.SampleCount,
+            p75PauseMs = adjustment.P75PauseMs,
+            targetEndSilenceMs = adjustment.TargetEndSilenceMs
+        });
+        PublishVadEndpointStatus(controller, adjustment);
+    }
+
+    private void PublishVadEndpointStatus(AdaptiveEndpointController controller, EndpointAdjustment? adjustment)
+    {
+        VadEndpointChanged?.Invoke(
+            this,
+            new VadEndpointRuntimeStatus(
+                controller.Mode,
+                controller.EffectiveEndSilenceMs,
+                controller.IsAdaptive,
+                adjustment));
+    }
+
+    private void WriteAdaptiveMetric(object metric)
+    {
+        try
+        {
+            var line = JsonSerializer.Serialize(metric, DiagnosticJsonOptions);
+            _adaptiveMetricsChannel?.Writer.TryWrite(line);
+        }
+        catch
+        {
+            // Metrics must not interrupt audio capture.
+        }
+    }
+
+    private void StartAdaptiveMetricsWriter()
+    {
+        var channel = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false
+        });
+        _adaptiveMetricsChannel = channel;
+        _adaptiveMetricsWriterTask = Task.Run(async () =>
+        {
+            try
+            {
+                var logsDirectory = Path.Combine(_dataDirectory, "logs");
+                Directory.CreateDirectory(logsDirectory);
+                var path = Path.Combine(logsDirectory, "adaptive-vad.jsonl");
+                await using var writer = new StreamWriter(path, append: true);
+                await foreach (var line in channel.Reader.ReadAllAsync())
+                {
+                    await writer.WriteLineAsync(line).ConfigureAwait(false);
+                }
+
+                await writer.FlushAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                // Metrics must not interrupt audio capture or shutdown.
+            }
+        });
+    }
+
+    private async Task StopAdaptiveMetricsWriterAsync()
+    {
+        var channel = _adaptiveMetricsChannel;
+        var writerTask = _adaptiveMetricsWriterTask;
+        _adaptiveMetricsChannel = null;
+        _adaptiveMetricsWriterTask = null;
+        channel?.Writer.TryComplete();
+        if (writerTask is not null)
+        {
+            await writerTask.ConfigureAwait(false);
+        }
     }
 
     private async Task<WorkerResponse> SendWithRetryAsync(WorkerRequest request, CancellationToken cancellationToken)
@@ -647,7 +857,11 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         _vadTimelineWriter.WriteLine(record);
     }
 
-    private DiagnosticSegmentRecord? SaveSegmentDiagnostic(long sequence, CompletedSpeechSegment segment, byte[] wav)
+    private DiagnosticSegmentRecord? SaveSegmentDiagnostic(
+        long sequence,
+        CompletedSpeechSegment segment,
+        UtteranceGroupAssignment groupAssignment,
+        byte[] wav)
     {
         if (!_settings.Diagnostics.Enabled)
         {
@@ -665,6 +879,8 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         var record = new DiagnosticSegmentRecord
         {
             Sequence = sequence,
+            UtteranceGroupId = groupAssignment.UtteranceGroupId,
+            UtteranceSegmentCount = groupAssignment.SegmentCount,
             StartMs = segment.StartMs,
             EndMs = segment.EndMs,
             DurationMs = segment.EndMs - segment.StartMs,
@@ -740,6 +956,8 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     private sealed class DiagnosticSegmentRecord
     {
         public long Sequence { get; init; }
+        public string UtteranceGroupId { get; init; } = "";
+        public int UtteranceSegmentCount { get; init; }
         public long StartMs { get; init; }
         public long EndMs { get; init; }
         public long DurationMs { get; init; }
@@ -768,3 +986,9 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         _subtitlePublishLock.Dispose();
     }
 }
+
+public sealed record VadEndpointRuntimeStatus(
+    VadEndpointMode Mode,
+    int EffectiveEndSilenceMs,
+    bool IsAdaptive,
+    EndpointAdjustment? Adjustment);

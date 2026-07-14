@@ -1,6 +1,6 @@
 # StreamTranslator Architecture
 
-本文档描述 StreamTranslator V1.0 的整体架构。目标是让新参与者快速理解实时字幕链路、模块边界、运行时生命周期和关键数据流。
+本文档描述 StreamTranslator V1.0 已交付架构和 V1.1 自适应 VAD 目标架构。目标是让新参与者快速理解实时字幕链路、模块边界、运行时生命周期和关键数据流。
 
 ## Product Goal
 
@@ -67,6 +67,7 @@ WPF App
   -> WASAPI loopback capture
   -> AudioNormalizer: 16kHz / mono / PCM16
   -> SileroOnnxVadEngine
+  -> AdaptiveEndpointController (V1.1)
   -> SpeechSegmenter
   -> WavEncoder
   -> PythonWorkerClient
@@ -137,6 +138,29 @@ OverlapMs: 600
 断句等待
 声音停止后等待多久生成字幕
 ```
+
+以上固定 300ms 是 V1.0 基线。V1.1 默认改为目标驱动的单变量自适应端点：
+
+| 模式 | 初始值 | 范围 |
+|---|---:|---:|
+| 低延迟 | 250ms | 200-400ms |
+| 均衡 | 400ms | 280-600ms |
+| 句子完整 | 600ms | 400-800ms |
+| 固定值 | 用户输入 | 200-800ms |
+
+`AdaptiveEndpointController` 位于 VAD 和 `SpeechSegmenter` 之间，只接收 speech/non-speech 决策、单调时间戳、切段事件和后续确认语音事件。它不读取原始音频、ASR 文本、LLM 语义或直播类别。
+
+控制器状态：
+
+- 最近 8 次有效停顿，样本最大年龄 15 秒。
+- 至少 3 个样本后开始调整。
+- P75 加 50ms 安全余量作为目标。
+- 连续两次疑似误切后上调 50ms。
+- 至少 6 个稳定样本后每次下调 25ms。
+- 冷却 2 秒，每 10 秒最多调整 2 次。
+- 10 秒没有确认语音时清空样本并逐步回归初始值。
+
+完整停顿不超过 800ms 时判为疑似过早切段。该信号既用于后续端点学习，也用于 V1.1 字幕分组。
 
 分段策略：
 
@@ -278,8 +302,12 @@ public enum SubtitleStatus
 public sealed record SubtitleItem
 {
     public long Sequence { get; init; }
+    public string? UtteranceGroupId { get; init; }
+    public int Revision { get; init; }
+    public IReadOnlyList<long> ReplacesSequences { get; init; }
     public TimeSpan Start { get; init; }
     public TimeSpan End { get; init; }
+    public DateTimeOffset? GeneratedAt { get; init; }
     public string SourceText { get; init; } = "";
     public string? TranslatedText { get; init; }
     public SubtitleStatus Status { get; init; }
@@ -290,7 +318,17 @@ V1.0 字幕策略：
 
 - final / final-ish 片段为主。
 - 预留 interim 状态和 UI 替换能力。
-- V1.1 再实现滚动 interim ASR，默认作为实验功能关闭。
+- V1.2 再评估滚动 interim ASR，默认作为实验功能关闭。
+
+V1.1 自适应端点阶段先实现字幕 revision，而不实现 rolling interim：
+
+- 第一个 ASR 结果立即显示。
+- 完整停顿不超过 800ms 时，相邻 sequence 归入同一个 `utteranceGroupId`。
+- group id 包含会话唯一前缀；revision 替换必须同时匹配 group id 和 sequence。
+- 同组最多 3 段、最长 12 秒。
+- 后续结果使用确定性去重合并，并更新历史中的同一行。
+- 只有该组仍是悬浮窗当前字幕时才替换悬浮文本。
+- ASR 失败或边界超限时关闭当前组。
 
 ## Text Deduplication
 
@@ -422,6 +460,8 @@ StreamTranslator/
 
 V1.0 默认保存字幕历史，不保存音频片段。
 
+V1.1 历史保持 append-only。原始字幕行继续保留，合并时追加 `subtitle_revision` 事件。读取历史时按稳定 `utteranceGroupId` 只物化最新 revision；旧版没有事件类型和分组字段的行按独立字幕兼容读取。
+
 诊断模式开启后才保存：
 
 - segment WAV
@@ -463,6 +503,10 @@ V1.0 内置诊断模式，默认关闭。
 - ASR latency
 - ASR ok/error code
 - dedup result
+- 当前端点、调整方向与原因
+- 有效停顿样本数、P75 和目标值
+- 疑似过早切段与字幕 revision
+- utterance group 大小、跨度和 ASR 调用次数
 
 V1.0 还包含离线音频回放/分段 CLI：
 
@@ -482,3 +526,11 @@ AudioNormalize -> VAD -> SpeechSegmenter
 - segment JSON
 - VAD timeline JSONL
 - metrics JSON
+
+V1.1 自适应算法、历史事件形状和验收标准的完整定义见 [v1.1-adaptive-vad.md](v1.1-adaptive-vad.md)。
+
+同批音频的固定 300ms / 均衡自适应对比可使用：
+
+```text
+scripts/adaptive-vad-evaluate.ps1
+```

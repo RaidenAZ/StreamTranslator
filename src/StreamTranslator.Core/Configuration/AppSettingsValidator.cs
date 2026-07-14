@@ -45,6 +45,11 @@ public static class AppSettingsValidator
             errors.Add("最大并发必须在 1 到 4 之间。");
         }
 
+        if (!Enum.IsDefined(settings.Vad.EndpointMode))
+        {
+            errors.Add("断句策略无效，请重新选择。");
+        }
+
         if (settings.Vad.EndSilenceMs is < 200 or > 800)
         {
             errors.Add("断句等待必须在 200 到 800 ms 之间。");

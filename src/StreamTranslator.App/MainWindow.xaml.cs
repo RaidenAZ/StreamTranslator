@@ -32,6 +32,7 @@ public partial class MainWindow : FluentWindow
     private FloatingSubtitleWindow? _floatingWindow;
     private SubtitleRuntime? _runtime;
     private HwndSource? _hwndSource;
+    private string? _currentFloatingGroupId;
     private bool _isRunning;
     private bool _isClosing;
 
@@ -54,6 +55,7 @@ public partial class MainWindow : FluentWindow
             SetActiveNavigationItem("HomePage");
             DataDirectoryText.Text = $"数据目录: {_dataDirectory}";
             ResetSubtitlePlaceholder();
+            await LoadTodaySubtitleHistoryAsync();
             TryShowFloatingWindow();
         }
         catch (Exception ex)
@@ -128,6 +130,7 @@ public partial class MainWindow : FluentWindow
             _runtime.SubtitleReady += OnSubtitleReady;
             _runtime.RuntimeError += OnRuntimeError;
             _runtime.AudioLevelChanged += OnAudioLevelChanged;
+            _runtime.VadEndpointChanged += OnVadEndpointChanged;
 
             AudioStatusText.Text = "等待捕获";
             VadStatusText.Text = "加载中";
@@ -168,6 +171,7 @@ public partial class MainWindow : FluentWindow
             _runtime.SubtitleReady -= OnSubtitleReady;
             _runtime.RuntimeError -= OnRuntimeError;
             _runtime.AudioLevelChanged -= OnAudioLevelChanged;
+            _runtime.VadEndpointChanged -= OnVadEndpointChanged;
             await _runtime.DisposeAsync();
             _runtime = null;
         }
@@ -185,6 +189,7 @@ public partial class MainWindow : FluentWindow
         StartStopText.Text = "开始字幕";
         StartStopIcon.Symbol = SymbolRegular.Play24;
         StartStopButton.IsEnabled = true;
+        UpdateVadEndpointModeUi();
         AppendAppLog("字幕 runtime 已停止");
     }
 
@@ -281,6 +286,7 @@ public partial class MainWindow : FluentWindow
     {
         SubtitleList.Items.Clear();
         SubtitlePlaceholderText.Visibility = Visibility.Visible;
+        _currentFloatingGroupId = null;
     }
 
     private void RemoveSubtitlePlaceholder()
@@ -384,12 +390,64 @@ public partial class MainWindow : FluentWindow
             if (!string.IsNullOrWhiteSpace(text))
             {
                 RemoveSubtitlePlaceholder();
-                SubtitleList.Items.Add(item);
+                var updateFloatingWindow = true;
+                if (string.Equals(item.Type, "subtitle_revision", StringComparison.Ordinal))
+                {
+                    ApplySubtitleRevision(item);
+                    updateFloatingWindow = string.Equals(
+                        _currentFloatingGroupId,
+                        item.UtteranceGroupId,
+                        StringComparison.Ordinal);
+                }
+                else
+                {
+                    SubtitleList.Items.Add(item);
+                    _currentFloatingGroupId = item.UtteranceGroupId;
+                }
+
                 SubtitleList.ScrollIntoView(item);
-                _floatingWindow?.SetCaption(text);
+                if (updateFloatingWindow)
+                {
+                    _floatingWindow?.SetCaption(text);
+                }
                 SubtitleOutputStatusText.Text = "输出中";
             }
         });
+    }
+
+    private void ApplySubtitleRevision(SubtitleItem revision)
+    {
+        var indexes = SubtitleList.Items
+            .OfType<SubtitleItem>()
+            .Select((item, index) => new { item, index })
+            .Where(entry => SubtitleRevisionCoordinator.Replaces(revision, entry.item))
+            .Select(static entry => entry.index)
+            .ToArray();
+        var insertIndex = indexes.Length == 0 ? SubtitleList.Items.Count : indexes.Min();
+        for (var index = indexes.Length - 1; index >= 0; index--)
+        {
+            SubtitleList.Items.RemoveAt(indexes[index]);
+        }
+
+        SubtitleList.Items.Insert(insertIndex, revision);
+    }
+
+    private async Task LoadTodaySubtitleHistoryAsync()
+    {
+        var store = new SubtitleHistoryStore(Path.Combine(_dataDirectory, "subtitles"));
+        var items = await store.LoadLatestAsync(DateOnly.FromDateTime(DateTime.Now));
+        if (items.Count == 0)
+        {
+            return;
+        }
+
+        RemoveSubtitlePlaceholder();
+        foreach (var item in items)
+        {
+            SubtitleList.Items.Add(item);
+        }
+
+        SubtitleList.ScrollIntoView(items[^1]);
     }
 
     private void OnRuntimeError(object? sender, Exception ex)
@@ -417,6 +475,16 @@ public partial class MainWindow : FluentWindow
         {
             AudioLevelBar.Value = level;
             HomeAudioLevelText.Text = $"{Math.Round(level)}%";
+        });
+    }
+
+    private void OnVadEndpointChanged(object? sender, VadEndpointRuntimeStatus status)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            var label = VadEndpointModeLabel(status.Mode);
+            var suffix = status.IsAdaptive ? "自适应" : "固定";
+            CurrentVadEndpointText.Text = $"当前断句等待：{status.EffectiveEndSilenceMs}ms（{label}，{suffix}）";
         });
     }
 
@@ -510,6 +578,19 @@ public partial class MainWindow : FluentWindow
         UpdateCurrentAudioDeviceText();
     }
 
+    private void OnVadEndpointModeChecked(object sender, RoutedEventArgs e)
+    {
+        UpdateVadEndpointModeUi();
+    }
+
+    private void OnFixedEndSilenceValueChanged(object sender, NumberBoxValueChangedEventArgs e)
+    {
+        if (FixedVadModeButton?.IsChecked == true)
+        {
+            UpdateVadEndpointModeUi();
+        }
+    }
+
     private void UpdateCurrentAudioDeviceText()
     {
         if (CurrentAudioDeviceText is null)
@@ -532,6 +613,8 @@ public partial class MainWindow : FluentWindow
     {
         FollowDefaultDeviceSwitch.IsChecked = settings.Audio.FollowDefaultDevice;
         EndSilenceBox.Value = settings.Vad.EndSilenceMs;
+        SelectVadEndpointMode(settings.Vad.EndpointMode);
+        UpdateVadEndpointModeUi();
         MinSegmentBox.Value = settings.Vad.MinSegmentMs;
         DiagnosticsSwitch.IsChecked = settings.Diagnostics.Enabled;
         ApiKeyBox.Password = settings.Asr.ApiKey;
@@ -555,6 +638,7 @@ public partial class MainWindow : FluentWindow
 
         _settings = _settings with
         {
+            SchemaVersion = 2,
             Audio = _settings.Audio with
             {
                 DeviceId = FollowDefaultDeviceSwitch.IsChecked == true ? "default" : SelectedAudioDeviceId(),
@@ -562,7 +646,8 @@ public partial class MainWindow : FluentWindow
             },
             Vad = _settings.Vad with
             {
-                EndSilenceMs = (int)NumberValue(EndSilenceBox, 300),
+                EndpointMode = SelectedVadEndpointMode(),
+                EndSilenceMs = (int)NumberValue(EndSilenceBox, 400),
                 MinSegmentMs = (int)NumberValue(MinSegmentBox, 900)
             },
             Asr = _settings.Asr with
@@ -593,6 +678,61 @@ public partial class MainWindow : FluentWindow
         };
 
         await _settingsStore.SaveAsync(_settings);
+    }
+
+    private void SelectVadEndpointMode(VadEndpointMode mode)
+    {
+        var button = mode switch
+        {
+            VadEndpointMode.LowLatency => LowLatencyVadModeButton,
+            VadEndpointMode.Balanced => BalancedVadModeButton,
+            VadEndpointMode.SentenceComplete => SentenceCompleteVadModeButton,
+            VadEndpointMode.Fixed => FixedVadModeButton,
+            _ => BalancedVadModeButton
+        };
+        button.IsChecked = true;
+    }
+
+    private VadEndpointMode SelectedVadEndpointMode()
+    {
+        if (LowLatencyVadModeButton.IsChecked == true)
+        {
+            return VadEndpointMode.LowLatency;
+        }
+
+        if (SentenceCompleteVadModeButton.IsChecked == true)
+        {
+            return VadEndpointMode.SentenceComplete;
+        }
+
+        return FixedVadModeButton.IsChecked == true ? VadEndpointMode.Fixed : VadEndpointMode.Balanced;
+    }
+
+    private void UpdateVadEndpointModeUi()
+    {
+        if (EndSilenceBox is null || CurrentVadEndpointText is null)
+        {
+            return;
+        }
+
+        var mode = SelectedVadEndpointMode();
+        EndSilenceBox.IsEnabled = mode == VadEndpointMode.Fixed;
+        var profile = VadEndpointProfiles.Get(mode, (int)NumberValue(EndSilenceBox, 400));
+        var suffix = profile.IsAdaptive ? "自适应" : "固定";
+        CurrentVadEndpointText.Text =
+            $"当前断句等待：{profile.InitialEndSilenceMs}ms（{VadEndpointModeLabel(mode)}，{suffix}）";
+    }
+
+    private static string VadEndpointModeLabel(VadEndpointMode mode)
+    {
+        return mode switch
+        {
+            VadEndpointMode.LowLatency => "低延迟",
+            VadEndpointMode.Balanced => "均衡",
+            VadEndpointMode.SentenceComplete => "句子完整",
+            VadEndpointMode.Fixed => "固定值",
+            _ => "均衡"
+        };
     }
 
     private string SelectedAudioDeviceId()

@@ -423,18 +423,113 @@
                                                                  Content="跟随系统默认设备"
                                                                  IsChecked="True" />
                                             </StackPanel>
-                                            <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,0,0,12">
-                                                <TextBlock Text="断句等待" Style="{StaticResource FieldLabelText}" />
+                                            <StackPanel Grid.Row="1"
+                                                        Grid.Column="0"
+                                                        Grid.ColumnSpan="3"
+                                                        Margin="0,0,0,12">
+                                                <StackPanel.Resources>
+                                                    <Style x:Key="VadModeOptionStyle" TargetType="{x:Type RadioButton}">
+                                                        <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}" />
+                                                        <Setter Property="FontSize" Value="13" />
+                                                        <Setter Property="HorizontalContentAlignment" Value="Center" />
+                                                        <Setter Property="Template">
+                                                            <Setter.Value>
+                                                                <ControlTemplate TargetType="{x:Type RadioButton}">
+                                                                    <Border x:Name="ModeBorder"
+                                                                            Margin="2"
+                                                                            Padding="14,8"
+                                                                            CornerRadius="4"
+                                                                            Background="Transparent">
+                                                                        <TextBlock Text="{TemplateBinding Content}"
+                                                                                   Foreground="{TemplateBinding Foreground}"
+                                                                                   HorizontalAlignment="Center" />
+                                                                    </Border>
+                                                                    <ControlTemplate.Triggers>
+                                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                            <Setter TargetName="ModeBorder" Property="Background" Value="#12000000" />
+                                                                        </Trigger>
+                                                                        <Trigger Property="IsChecked" Value="True">
+                                                                            <Setter TargetName="ModeBorder" Property="Background" Value="{StaticResource AccentBrush}" />
+                                                                            <Setter Property="Foreground" Value="White" />
+                                                                        </Trigger>
+                                                                    </ControlTemplate.Triggers>
+                                                                </ControlTemplate>
+                                                            </Setter.Value>
+                                                        </Setter>
+                                                    </Style>
+                                                </StackPanel.Resources>
+                                                <DockPanel Margin="0,0,0,6">
+                                                    <TextBlock Text="断句策略" Style="{StaticResource FieldLabelText}" />
+                                                    <TextBlock x:Name="CurrentVadEndpointText"
+                                                               AutomationProperties.AutomationId="CurrentVadEndpointText"
+                                                               DockPanel.Dock="Right"
+                                                               Text="当前断句等待：400ms（均衡，自适应）"
+                                                               FontSize="12"
+                                                               Foreground="{StaticResource SecondaryTextBrush}"
+                                                               HorizontalAlignment="Right" />
+                                                </DockPanel>
+                                                <Border BorderBrush="{StaticResource StrokeBrush}"
+                                                        BorderThickness="1"
+                                                        CornerRadius="6"
+                                                        HorizontalAlignment="Left">
+                                                    <Grid Width="456">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="*" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <RadioButton x:Name="LowLatencyVadModeButton"
+                                                                     Grid.Column="0"
+                                                                     GroupName="VadEndpointMode"
+                                                                     Content="低延迟"
+                                                                     Tag="LowLatency"
+                                                                     AutomationProperties.AutomationId="VadModeLowLatency"
+                                                                     Checked="OnVadEndpointModeChecked"
+                                                                     Style="{StaticResource VadModeOptionStyle}" />
+                                                        <RadioButton x:Name="BalancedVadModeButton"
+                                                                     Grid.Column="1"
+                                                                     GroupName="VadEndpointMode"
+                                                                     Content="均衡"
+                                                                     Tag="Balanced"
+                                                                     IsChecked="True"
+                                                                     AutomationProperties.AutomationId="VadModeBalanced"
+                                                                     Checked="OnVadEndpointModeChecked"
+                                                                     Style="{StaticResource VadModeOptionStyle}" />
+                                                        <RadioButton x:Name="SentenceCompleteVadModeButton"
+                                                                     Grid.Column="2"
+                                                                     GroupName="VadEndpointMode"
+                                                                     Content="句子完整"
+                                                                     Tag="SentenceComplete"
+                                                                     AutomationProperties.AutomationId="VadModeSentenceComplete"
+                                                                     Checked="OnVadEndpointModeChecked"
+                                                                     Style="{StaticResource VadModeOptionStyle}" />
+                                                        <RadioButton x:Name="FixedVadModeButton"
+                                                                     Grid.Column="3"
+                                                                     GroupName="VadEndpointMode"
+                                                                     Content="固定值"
+                                                                     Tag="Fixed"
+                                                                     AutomationProperties.AutomationId="VadModeFixed"
+                                                                     Checked="OnVadEndpointModeChecked"
+                                                                     Style="{StaticResource VadModeOptionStyle}" />
+                                                    </Grid>
+                                                </Border>
+                                            </StackPanel>
+                                            <StackPanel Grid.Row="2" Grid.Column="0" Margin="0,0,0,12">
+                                                <TextBlock Text="固定断句等待" Style="{StaticResource FieldLabelText}" />
                                                 <ui:NumberBox x:Name="EndSilenceBox"
-                                                              Value="300"
+                                                              AutomationProperties.AutomationId="FixedEndSilenceBox"
+                                                              Value="400"
                                                               Minimum="200"
                                                               Maximum="800"
                                                               SmallChange="50"
                                                               LargeChange="100"
                                                               Width="180"
+                                                              IsEnabled="False"
+                                                              ValueChanged="OnFixedEndSilenceValueChanged"
                                                               HorizontalAlignment="Left" />
                                             </StackPanel>
-                                            <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,0,0,12">
+                                            <StackPanel Grid.Row="2" Grid.Column="2" Margin="0,0,0,12">
                                                 <TextBlock Text="最短片段" Style="{StaticResource FieldLabelText}" />
                                                 <ui:NumberBox x:Name="MinSegmentBox"
                                                               Value="900"

@@ -6,6 +6,7 @@ using StreamTranslator.Audio.Capture;
 using StreamTranslator.Audio.Encoding;
 using StreamTranslator.Audio.Segmentation;
 using StreamTranslator.Audio.Vad;
+using StreamTranslator.Core.Configuration;
 
 return Parser.Default.ParseArguments<SegmentOptions>(args)
     .MapResult(RunSegment, _ => 1);
@@ -32,9 +33,16 @@ static int RunSegment(SegmentOptions options)
     using var normalizer = new StreamingAudioNormalizer(reader.WaveFormat.SampleRate, reader.WaveFormat.Channels);
     var normalized = normalizer.ProcessFloatSamples(sourceSamples);
     var frameBuffer = new PcmFrameBuffer(AudioNormalizer.TargetSampleRate, options.FrameMs);
+    if (!Enum.TryParse<VadEndpointMode>(options.EndpointMode, ignoreCase: true, out var endpointMode))
+    {
+        Console.Error.WriteLine("Endpoint mode must be LowLatency, Balanced, SentenceComplete, or Fixed.");
+        return 3;
+    }
+
+    var endpointController = new AdaptiveEndpointController(endpointMode, options.EndSilenceMs, options.StartSpeechMs);
     var segmenter = new SpeechSegmenter(new SpeechSegmenterOptions
     {
-        EndSilenceMs = options.EndSilenceMs,
+        EndSilenceMs = endpointController.EffectiveEndSilenceMs,
         StartSpeechMs = options.StartSpeechMs,
         PreRollMs = options.PreRollMs,
         MinSegmentMs = options.MinSegmentMs,
@@ -49,19 +57,38 @@ static int RunSegment(SegmentOptions options)
     var sessionPath = Path.Combine(sessionsDirectory, $"session-{sessionId}.json");
     var metricsPath = Path.Combine(sessionsDirectory, $"session-{sessionId}.metrics.json");
     var segmentRecords = new List<SegmentRecord>();
+    var endpointAdjustments = new List<EndpointAdjustment>();
+    var endpointValues = new List<int>();
+    var quickResumeCount = 0;
     var sequence = 1;
+    endpointController.EndpointAdjusted += (_, adjustment) => endpointAdjustments.Add(adjustment);
 
     using var vadWriter = File.CreateText(vadPath);
     foreach (var frame in frameBuffer.Push(normalized))
     {
         var decision = vad.Analyze(frame.Samples, frame.SampleRate);
-        vadWriter.WriteLine(JsonSerializer.Serialize(new VadRecord(frame.StartMs, decision.Probability, decision.IsSpeech), JsonOptions.Default));
+        var endpointObservation = endpointController.ObserveVad(frame.StartMs, frame.DurationMs, decision.IsSpeech);
+        if (endpointObservation.QuickResume is not null)
+        {
+            quickResumeCount++;
+        }
 
-        var completed = segmenter.Push(frame, decision);
+        endpointValues.Add(endpointController.EffectiveEndSilenceMs);
+        vadWriter.WriteLine(JsonSerializer.Serialize(
+            new VadRecord(
+                frame.StartMs,
+                decision.Probability,
+                decision.IsSpeech,
+                endpointController.EffectiveEndSilenceMs),
+            JsonOptions.Default));
+
+        var completed = segmenter.Push(frame, decision, endpointController.EffectiveEndSilenceMs);
         if (completed is null)
         {
             continue;
         }
+
+        endpointController.NotifySegmentCut(completed.EndMs, completed.CutReason);
 
         var segmentFileName = $"seg-{sequence:000000}.wav";
         var segmentPath = Path.Combine(segmentsDirectory, segmentFileName);
@@ -85,7 +112,9 @@ static int RunSegment(SegmentOptions options)
         frameMs = options.FrameMs,
         options.StartSpeechMs,
         options.PreRollMs,
-        options.EndSilenceMs,
+        endpointMode = endpointController.Mode.ToString(),
+        initialEndSilenceMs = endpointController.InitialEndSilenceMs,
+        finalEndSilenceMs = endpointController.EffectiveEndSilenceMs,
         options.SoftBreakSilenceMs,
         options.MinSegmentMs,
         options.SoftMaxSegmentMs,
@@ -95,9 +124,10 @@ static int RunSegment(SegmentOptions options)
         segments = segmentRecords
     };
 
+    var totalAudioDurationMs = normalized.Length * 1000L / AudioNormalizer.TargetSampleRate;
     var metrics = new
     {
-        totalAudioDurationMs = normalized.Length * 1000L / AudioNormalizer.TargetSampleRate,
+        totalAudioDurationMs,
         segmentCount = segmentRecords.Count,
         averageSegmentDurationMs = segmentRecords.Count == 0 ? 0 : segmentRecords.Average(item => item.DurationMs),
         tooShortSegmentCount = segmentRecords.Count(item => item.DurationMs < options.MinSegmentMs),
@@ -105,7 +135,16 @@ static int RunSegment(SegmentOptions options)
         softCutCount = segmentRecords.Count(item => item.CutReason == SpeechSegmentCutReason.SoftMax.ToString()),
         silenceCutCount = segmentRecords.Count(item => item.CutReason == SpeechSegmentCutReason.Silence.ToString()),
         overlapCount = segmentRecords.Count(item => item.OverlapMs > 0),
-        emptySegmentCount = segmentRecords.Count(item => item.DurationMs <= 0)
+        emptySegmentCount = segmentRecords.Count(item => item.DurationMs <= 0),
+        endpointMedianMs = Percentile(endpointValues, 0.5),
+        endpointP95Ms = Percentile(endpointValues, 0.95),
+        endpointAdjustmentCount = endpointAdjustments.Count,
+        suspectedPrematureCutCount = quickResumeCount,
+        suspectedPrematureCutRatePerMinute = totalAudioDurationMs == 0
+            ? 0
+            : quickResumeCount * 60000d / totalAudioDurationMs,
+        asrCallCount = segmentRecords.Count,
+        adjustments = endpointAdjustments
     };
 
     File.WriteAllText(sessionPath, JsonSerializer.Serialize(session, JsonOptions.Indented));
@@ -126,6 +165,18 @@ static float[] ReadAudio(AudioFileReader reader)
     }
 
     return floats.ToArray();
+}
+
+static int Percentile(IReadOnlyCollection<int> values, double percentile)
+{
+    if (values.Count == 0)
+    {
+        return 0;
+    }
+
+    var ordered = values.Order().ToArray();
+    var index = Math.Clamp((int)Math.Ceiling(ordered.Length * percentile) - 1, 0, ordered.Length - 1);
+    return ordered[index];
 }
 
 static IVadEngine CreateVad(SegmentOptions options)
@@ -188,6 +239,9 @@ internal sealed class SegmentOptions
     [Option("end-silence-ms", Required = false, Default = 300)]
     public int EndSilenceMs { get; init; } = 300;
 
+    [Option("endpoint-mode", Required = false, Default = "Fixed")]
+    public string EndpointMode { get; init; } = "Fixed";
+
     [Option("soft-break-silence-ms", Required = false, Default = 128)]
     public int SoftBreakSilenceMs { get; init; } = 128;
 
@@ -204,7 +258,7 @@ internal sealed class SegmentOptions
     public int OverlapMs { get; init; } = 600;
 }
 
-internal sealed record VadRecord(long TimeMs, float Probability, bool IsSpeech);
+internal sealed record VadRecord(long TimeMs, float Probability, bool IsSpeech, int EffectiveEndSilenceMs);
 
 internal sealed record SegmentRecord(
     int Sequence,

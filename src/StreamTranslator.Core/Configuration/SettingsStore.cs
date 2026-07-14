@@ -26,11 +26,28 @@ public sealed class SettingsStore
             return defaults;
         }
 
-        await using var stream = File.OpenRead(_settingsPath);
-        var settings = await JsonSerializer.DeserializeAsync<AppSettings>(stream, JsonOptions, cancellationToken)
-            .ConfigureAwait(false);
+        var json = await File.ReadAllTextAsync(_settingsPath, cancellationToken).ConfigureAwait(false);
+        using var document = JsonDocument.Parse(json);
+        var isCurrentSchema = document.RootElement.TryGetProperty("schemaVersion", out var schemaVersion) &&
+                              schemaVersion.TryGetInt32(out var version) &&
+                              version >= 2;
+        var settings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? new AppSettings();
 
-        return settings ?? new AppSettings();
+        if (!isCurrentSchema)
+        {
+            settings = settings with
+            {
+                SchemaVersion = 2,
+                Vad = settings.Vad with
+                {
+                    EndpointMode = VadEndpointMode.Balanced,
+                    EndSilenceMs = 400
+                }
+            };
+            await SaveAsync(settings, cancellationToken).ConfigureAwait(false);
+        }
+
+        return settings;
     }
 
     public async Task SaveAsync(AppSettings settings, CancellationToken cancellationToken = default)
@@ -47,4 +64,3 @@ public sealed class SettingsStore
         await JsonSerializer.SerializeAsync(stream, settings, JsonOptions, cancellationToken).ConfigureAwait(false);
     }
 }
-
