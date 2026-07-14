@@ -337,9 +337,54 @@
                                         <TextBlock DockPanel.Dock="Top"
                                                    Text="今天"
                                                    Style="{StaticResource SectionTitleText}" />
-                                        <ListBox x:Name="SubtitleList"
-                                                 MinHeight="500"
-                                                 BorderThickness="0" />
+                                        <Grid>
+                                            <TextBlock x:Name="SubtitlePlaceholderText"
+                                                       Text="开始字幕后，这里会保存今天的字幕记录。"
+                                                       Margin="12,10"
+                                                       Foreground="{StaticResource SecondaryTextBrush}"
+                                                       FontSize="14"
+                                                       IsHitTestVisible="False" />
+                                            <ListBox x:Name="SubtitleList"
+                                                     AutomationProperties.AutomationId="SubtitleHistoryList"
+                                                     MinHeight="500"
+                                                     BorderThickness="0"
+                                                     Background="Transparent"
+                                                     HorizontalContentAlignment="Stretch"
+                                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                                     ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                                <ListBox.ItemContainerStyle>
+                                                    <Style TargetType="{x:Type ListBoxItem}">
+                                                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                                        <Setter Property="Padding" Value="12,8" />
+                                                    </Style>
+                                                </ListBox.ItemContainerStyle>
+                                                <ListBox.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Grid HorizontalAlignment="Stretch">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="64" />
+                                                                <ColumnDefinition Width="12" />
+                                                                <ColumnDefinition Width="*" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock Grid.Column="0"
+                                                                       Text="{Binding GeneratedTimeText}"
+                                                                       FontFamily="Consolas"
+                                                                       FontSize="12"
+                                                                       Foreground="{StaticResource SecondaryTextBrush}"
+                                                                       Margin="0,2,0,0"
+                                                                       VerticalAlignment="Top" />
+                                                            <TextBlock Grid.Column="2"
+                                                                       Text="{Binding SourceText}"
+                                                                       TextWrapping="Wrap"
+                                                                       FontSize="15"
+                                                                       LineHeight="22"
+                                                                       Foreground="{StaticResource PrimaryTextBrush}"
+                                                                       HorizontalAlignment="Stretch" />
+                                                        </Grid>
+                                                    </DataTemplate>
+                                                </ListBox.ItemTemplate>
+                                            </ListBox>
+                                        </Grid>
                                     </DockPanel>
                                 </Border>
                             </StackPanel>

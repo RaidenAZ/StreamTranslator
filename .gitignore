@@ -11,7 +11,7 @@ artifacts/
 data/
 models/*.onnx
 python/.venv/
-python/__pycache__/
+__pycache__/
 python/.pytest_cache/
 /worker/
 *.log

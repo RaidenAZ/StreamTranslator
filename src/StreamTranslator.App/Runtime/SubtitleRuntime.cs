@@ -373,11 +373,15 @@ public sealed class SubtitleRuntime : IAsyncDisposable
 
             foreach (var displayItem in displayItems)
             {
+                var generatedAt = displayItem.GeneratedAt ?? DateTimeOffset.Now;
+                var publishedItem = displayItem with { GeneratedAt = generatedAt };
+
                 if (_history is not null)
                 {
                     try
                     {
-                        await _history.AppendAsync(displayItem, DateOnly.FromDateTime(DateTime.Now)).ConfigureAwait(false);
+                        var historyDate = DateOnly.FromDateTime(generatedAt.Date);
+                        await _history.AppendAsync(publishedItem, historyDate).ConfigureAwait(false);
                     }
                     catch (Exception historyException)
                     {
@@ -385,7 +389,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
                     }
                 }
 
-                SubtitleReady?.Invoke(this, displayItem);
+                SubtitleReady?.Invoke(this, publishedItem);
             }
         }
         finally

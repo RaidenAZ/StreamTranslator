@@ -24,8 +24,6 @@ public partial class MainWindow : FluentWindow
     private const int HotkeyToggleLock = 1003;
     private const uint ModAlt = 0x0001;
     private const uint ModControl = 0x0002;
-    private const string SubtitlePlaceholder = "开始字幕后，这里会保存今天的字幕记录。";
-
     private readonly string _dataDirectory = Path.Combine(AppContext.BaseDirectory, "data");
     private readonly AudioDeviceService _audioDeviceService = new();
     private readonly List<AudioDeviceInfo> _audioDevices = [];
@@ -219,8 +217,8 @@ public partial class MainWindow : FluentWindow
 
     private void OnCopySelectedClick(object sender, RoutedEventArgs e)
     {
-        var selectedText = SubtitleList.SelectedItem?.ToString() ?? "";
-        if (!string.IsNullOrWhiteSpace(selectedText) && selectedText != SubtitlePlaceholder)
+        if (SubtitleList.SelectedItem is SubtitleItem { SourceText: { } selectedText } &&
+            !string.IsNullOrWhiteSpace(selectedText))
         {
             Clipboard.SetText(selectedText);
         }
@@ -240,9 +238,9 @@ public partial class MainWindow : FluentWindow
     private void OnCopyRecentClick(object sender, RoutedEventArgs e)
     {
         var recent = SubtitleList.Items
-            .Cast<object>()
-            .Select(static item => item.ToString() ?? "")
-            .Where(static text => !string.IsNullOrWhiteSpace(text) && text != SubtitlePlaceholder)
+            .OfType<SubtitleItem>()
+            .Select(static item => item.SourceText)
+            .Where(static text => !string.IsNullOrWhiteSpace(text))
             .TakeLast(10);
         Clipboard.SetText(string.Join(Environment.NewLine, recent));
     }
@@ -274,24 +272,20 @@ public partial class MainWindow : FluentWindow
     private IEnumerable<string> SubtitleTexts()
     {
         return SubtitleList.Items
-            .Cast<object>()
-            .Select(static item => item.ToString() ?? "")
-            .Where(static text => !string.IsNullOrWhiteSpace(text) && text != SubtitlePlaceholder);
+            .OfType<SubtitleItem>()
+            .Select(static item => item.SourceText)
+            .Where(static text => !string.IsNullOrWhiteSpace(text));
     }
 
     private void ResetSubtitlePlaceholder()
     {
         SubtitleList.Items.Clear();
-        SubtitleList.Items.Add(SubtitlePlaceholder);
+        SubtitlePlaceholderText.Visibility = Visibility.Visible;
     }
 
     private void RemoveSubtitlePlaceholder()
     {
-        if (SubtitleList.Items.Count == 1 &&
-            string.Equals(SubtitleList.Items[0]?.ToString(), SubtitlePlaceholder, StringComparison.Ordinal))
-        {
-            SubtitleList.Items.Clear();
-        }
+        SubtitlePlaceholderText.Visibility = Visibility.Collapsed;
     }
 
     private void OnOpenDataDirectoryClick(object sender, RoutedEventArgs e)
@@ -390,8 +384,8 @@ public partial class MainWindow : FluentWindow
             if (!string.IsNullOrWhiteSpace(text))
             {
                 RemoveSubtitlePlaceholder();
-                SubtitleList.Items.Add(text);
-                SubtitleList.ScrollIntoView(text);
+                SubtitleList.Items.Add(item);
+                SubtitleList.ScrollIntoView(item);
                 _floatingWindow?.SetCaption(text);
                 SubtitleOutputStatusText.Text = "输出中";
             }
