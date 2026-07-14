@@ -1,12 +1,12 @@
 # StreamTranslator Architecture
 
-本文档描述 StreamTranslator V1.0 已交付架构和 V1.1 自适应 VAD 目标架构。目标是让新参与者快速理解实时字幕链路、模块边界、运行时生命周期和关键数据流。
+本文档描述 StreamTranslator V1.0 已交付主链路、V1.1 自适应 VAD 和 V1.2 翻译字幕目标架构。目标是让新参与者快速理解实时字幕链路、模块边界、运行时生命周期和关键数据流。
 
 ## Product Goal
 
 StreamTranslator 是面向 Windows 直播观看场景的实时字幕软件。
 
-V1.0 只做 ASR 实时字幕，不做翻译。翻译相关字段和接口预留，但默认不启用。
+V1.0/V1.1 只做 ASR 实时字幕。V1.2 在保持原文链路独立可用的前提下增加可选双语翻译，默认关闭。
 
 核心体验目标：
 
@@ -14,6 +14,7 @@ V1.0 只做 ASR 实时字幕，不做翻译。翻译相关字段和接口预留�
 - 将音频实时切分为适合 ASR 的片段。
 - 调用 MiMo ASR API 识别文本。
 - 在悬浮字幕窗中快速显示字幕。
+- 可选调用 OpenAI Chat Completions compatible 模型生成译文。
 - 保留主窗口设置页、状态页、字幕历史和诊断能力。
 
 ## Platform
@@ -52,6 +53,13 @@ ASR worker：
 - `from openai import OpenAI`
 - MiMo ASR API
 
+Translation worker：
+
+- Python
+- OpenAI Chat Completions compatible API
+- 远程 API 或用户自行管理的本地推理服务
+- 独立 `translation_worker.exe`
+
 交付：
 
 - 绿色便携版
@@ -73,9 +81,14 @@ WPF App
   -> PythonWorkerClient
   -> Python asr_worker
   -> MiMo ASR API
-  -> Subtitle timeline / reorder buffer
-  -> Floating subtitle window
-  -> Subtitle history jsonl
+  -> Subtitle timeline / reorder buffer / revision
+  -> Source subtitle immediately visible
+  -> Translation queue (V1.2, optional)
+  -> Python translation_worker
+  -> OpenAI-compatible Chat Completions endpoint
+  -> Revision-aware translated text
+  -> Bilingual floating subtitle window
+  -> Append-only subtitle history jsonl
 ```
 
 ## Audio Pipeline
@@ -264,6 +277,28 @@ API Key 明文存放在 `data/settings.json`。UI 中仍使用密码输入框，
 - ONNX Runtime C#: https://onnxruntime.ai/docs/get-started/with-csharp.html
 - Silero VAD: https://github.com/snakers4/silero-vad
 
+## Translation Worker Boundary
+
+V1.2 使用独立 translation worker，不合并 ASR worker 与翻译 worker。
+
+```text
+C#:
+  source subtitle / revision / context / queue / stale decision
+  UI / history / retry / circuit breaker / worker lifecycle
+
+Python translation worker:
+  OpenAI client / prompt / extraBody / response normalization
+  error classification / bounded request concurrency
+```
+
+通信继续使用 stdin/stdout UTF-8 JSON Lines。C# 先发送 `configure`，再发送 `translate`。API Key 通过 stdin 配置消息进入 worker，不放在命令行参数中。
+
+translation worker 只接收文本，不接收 WAV 或 Base64 音频。它不管理 vLLM、Ollama、llama.cpp、LM Studio 等本地服务。
+
+V1.2 只支持 OpenAI Chat Completions compatible 协议。用户手动填写 Base URL 和模型名，应用不自动补 `/v1`，并实时预览最终 `/chat/completions` 地址。
+
+翻译请求使用内置版本化 Prompt、最多 3 组且 30 秒内的上下文、非流式响应和可选 extraBody 兼容模板。完整协议见 [v1.2-translation-protocol.md](v1.2-translation-protocol.md)。
+
 ## ASR Concurrency And Ordering
 
 V1.0 允许有限并发：
@@ -318,7 +353,7 @@ V1.0 字幕策略：
 
 - final / final-ish 片段为主。
 - 预留 interim 状态和 UI 替换能力。
-- V1.2 再评估滚动 interim ASR，默认作为实验功能关闭。
+- V1.3 再评估滚动 interim ASR。
 
 V1.1 自适应端点阶段先实现字幕 revision，而不实现 rolling interim：
 
@@ -329,6 +364,17 @@ V1.1 自适应端点阶段先实现字幕 revision，而不实现 rolling interi
 - 后续结果使用确定性去重合并，并更新历史中的同一行。
 - 只有该组仍是悬浮窗当前字幕时才替换悬浮文本。
 - ASR 失败或边界超限时关闭当前组。
+
+V1.2 翻译只消费 final/final-ish source subtitle：
+
+- 原文完成本地去重后立即显示。
+- 每个 `utteranceGroupId + sourceRevision` 单独翻译。
+- 完整译文返回后一次性补充，不显示 token 增量。
+- source revision 后立即清除旧译文并重新翻译。
+- stale translation result 不得覆盖最新原文。
+- 翻译结果乱序返回时独立填充自己的字幕组。
+- 已离开悬浮窗的旧字幕不因迟到译文重新出现。
+- 翻译失败、背压或熔断不影响 source subtitle。
 
 ## Text Deduplication
 
@@ -363,15 +409,25 @@ MainWindow:
 FloatingSubtitleWindow:
   Always on top
   透明/半透明背景
-  最近 1-3 行字幕
+  最近 1-3 个字幕组
 ```
 
 主窗口页面：
 
-- 主页：捕获、VAD、worker、API、字幕输出状态，最近错误和开始/停止按钮。
-- 字幕历史：当天字幕、复制选中、复制最近、复制全部、清空历史。
-- 设置：音频、VAD、识别服务、悬浮窗、快捷键和诊断参数。
+- 主页：捕获、VAD、ASR worker/API、translation worker/API、字幕输出状态，最近错误和开始/停止按钮。
+- 字幕历史：当天双语字幕、复制选中、复制最近、复制全部、清空历史。
+- 设置：音频、VAD、识别服务、翻译、悬浮窗、快捷键和诊断参数。
 - 关于：版本、数据目录、日志目录、复制诊断信息。
+
+V1.2 翻译配置继续放在设置页，不新增导航项。默认页面只暴露翻译开关、目标语言、活动配置、验证状态和测试连接；模型详情放入 ContentDialog。
+
+悬浮窗从单个 TextBlock 改为字幕组列表：
+
+- 原文在上，译文在下。
+- 原文字号强制迁移为 18，译文默认 90%。
+- “最大行数”改为“显示字幕数”，默认 2，范围 1-3。
+- 两层文本都自动换行，不显示目标语言标签或错误文本。
+- 窗口高度最多为当前工作区 40%，超高时移除最旧字幕组。
 
 悬浮窗模式：
 
@@ -401,7 +457,7 @@ Ctrl+Alt+L: 锁定/解锁悬浮窗
 
 ## Process Lifecycle
 
-Python worker 对用户不可见，由 C# 托管。
+Python workers 对用户不可见，由 C# 分别托管。
 
 生命周期：
 
@@ -410,25 +466,29 @@ Python worker 对用户不可见，由 C# 托管。
   不立即启动 worker
 
 用户点击开始字幕:
-  启动 worker
-  ping / health check
+  启动 asr worker
+  翻译开启时启动 translation worker
+  configure / ping
   启动音频捕获
 
 用户点击停止字幕:
   停止音频捕获
   drain 或取消 ASR 队列
-  发送 shutdown
-  等待 worker 退出
+  translation queue 最多 drain 3 秒
+  向两个 worker 发送 shutdown
+  等待 workers 退出
 
 用户关闭主窗口:
   退出整个程序
   停止捕获
   停止/取消队列
-  发送 shutdown
+  向两个 worker 发送 shutdown
   2-3 秒后仍未退出则 Kill entire process tree
 ```
 
 关闭主窗口就是退出整个程序。V1.0 不做最小化到托盘继续运行。
+
+translation worker 跟随捕获会话启动和停止。捕获运行中禁止切换翻译开关、目标语言、活动配置、并发、超时和 extraBody 模板。translation worker 每个会话最多自动重启一次，第二次崩溃只停止翻译，不停止 ASR。
 
 ## Data Layout
 
@@ -443,6 +503,7 @@ StreamTranslator/
   StreamTranslator.exe
   worker/
     asr_worker.exe
+    translation_worker.exe
   models/
     silero_vad.onnx
   data/
@@ -456,11 +517,15 @@ StreamTranslator/
       segments/
       vad/
       sessions/
+    debug-translation/
+    translation-evaluation/
 ```
 
 V1.0 默认保存字幕历史，不保存音频片段。
 
 V1.1 历史保持 append-only。原始字幕行继续保留，合并时追加 `subtitle_revision` 事件。读取历史时按稳定 `utteranceGroupId` 只物化最新 revision；旧版没有事件类型和分组字段的行按独立字幕兼容读取。
+
+V1.2 成功译文继续追加 `translation_result`。读取时只选择与当前 source revision 匹配的最新成功译文。失败、跳过和背压状态可以追加 `translation_status`，普通历史 UI 不显示错误。历史不会自动补翻旧记录。
 
 诊断模式开启后才保存：
 
@@ -480,6 +545,10 @@ V1.0 只对明确可恢复错误自动重试一次，不做无限重试。
 - API 401/403：不重试，停止字幕，提示检查 API Key。
 - API 429：当前 segment 重试 1 次，仍失败则标记失败并提示限流；动态降低并发留到后续版本。
 - 音频设备断开：若开启跟随默认设备，则尝试切换默认设备；否则停止字幕并提示重新选择设备。
+- Translation worker crash：每会话自动重启 1 次，第二次只停止翻译。
+- Translation 401/403、模型、配置或协议错误：停止本会话翻译，ASR 继续。
+- Translation 网络、超时、429、5xx：单任务最多重试 1 次；连续失败进入 10-60 秒熔断。
+- Translation backlog：队列最多 8，等待超过 10 秒允许丢弃旧译文，原文始终保留。
 
 Python 错误响应包含 `errorKind`、`statusCode` 和 `retryable`。C# 对每个请求设置独立硬超时，并使用互斥锁保证整个运行期最多重启 worker 一次。
 
@@ -489,6 +558,9 @@ Python 错误响应包含 `errorKind`、`statusCode` 和 `retryable`。C# 对每
 - VAD
 - ASR worker
 - ASR API
+- Translation worker
+- Translation API / local service
+- Subtitle output
 
 ## Diagnostics
 
@@ -507,6 +579,10 @@ V1.0 内置诊断模式，默认关闭。
 - 有效停顿样本数、P75 和目标值
 - 疑似过早切段与字幕 revision
 - utterance group 大小、跨度和 ASR 调用次数
+- 翻译请求、成功、失败、重试和 revision 重译次数
+- 翻译队列、背压丢弃、stale result 和同语言跳过
+- translation worker 重启、熔断和延迟 P50/P95
+- 目标语言、模型名和本地/远程类型
 
 V1.0 还包含离线音频回放/分段 CLI：
 
@@ -534,3 +610,15 @@ V1.1 自适应算法、历史事件形状和验收标准的完整定义见 [v1.1
 ```text
 scripts/adaptive-vad-evaluate.ps1
 ```
+
+V1.2 翻译评估使用：
+
+```text
+scripts/translation-evaluate.ps1
+```
+
+该脚本只在显式允许时调用真实 API。完整翻译架构、协议和验收标准见：
+
+- [v1.2-translation.md](v1.2-translation.md)
+- [v1.2-translation-protocol.md](v1.2-translation-protocol.md)
+- [v1.2-translation-test-plan.md](v1.2-translation-test-plan.md)
