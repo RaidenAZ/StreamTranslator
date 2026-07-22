@@ -10,6 +10,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using StreamTranslator.Audio.Capture;
 using StreamTranslator.App.Runtime;
+using StreamTranslator.Core.Clipboard;
 using StreamTranslator.Core.Configuration;
 using StreamTranslator.Core.Subtitles;
 using StreamTranslator.Core.Translation;
@@ -40,6 +41,7 @@ public partial class MainWindow : FluentWindow
     private bool _isRunning;
     private bool _isClosing;
     private bool _sessionTranslationEnabled;
+    private Snackbar? _copyFailureSnackbar;
 
     public MainWindow()
     {
@@ -284,15 +286,15 @@ public partial class MainWindow : FluentWindow
         }
     }
 
-    private void OnCopySelectedClick(object sender, RoutedEventArgs e)
+    private async void OnCopySelectedClick(object sender, RoutedEventArgs e)
     {
         if (SubtitleList.SelectedItem is SubtitleItem selected)
         {
-            Clipboard.SetText(FormatSubtitleForCopy(selected));
+            await TryCopyTextAsync(FormatSubtitleForCopy(selected), "选中字幕");
         }
     }
 
-    private void OnCopyAllClick(object sender, RoutedEventArgs e)
+    private async void OnCopyAllClick(object sender, RoutedEventArgs e)
     {
         var builder = new StringBuilder();
         foreach (var item in SubtitleList.Items.OfType<SubtitleItem>())
@@ -301,17 +303,19 @@ public partial class MainWindow : FluentWindow
             builder.AppendLine();
         }
 
-        Clipboard.SetText(builder.ToString());
+        await TryCopyTextAsync(builder.ToString(), "当天全部字幕");
     }
 
-    private void OnCopyRecentClick(object sender, RoutedEventArgs e)
+    private async void OnCopyRecentClick(object sender, RoutedEventArgs e)
     {
         var recent = SubtitleList.Items
             .OfType<SubtitleItem>()
             .Where(static item => !string.IsNullOrWhiteSpace(item.SourceText))
             .TakeLast(10)
             .Select(FormatSubtitleForCopy);
-        Clipboard.SetText(string.Join(Environment.NewLine + Environment.NewLine, recent));
+        await TryCopyTextAsync(
+            string.Join(Environment.NewLine + Environment.NewLine, recent),
+            "最近字幕");
     }
 
     private void OnClearHistoryClick(object sender, RoutedEventArgs e)
@@ -367,7 +371,7 @@ public partial class MainWindow : FluentWindow
         OpenDirectory(Path.Combine(_dataDirectory, "logs"));
     }
 
-    private void OnCopyDiagnosticsClick(object sender, RoutedEventArgs e)
+    private async void OnCopyDiagnosticsClick(object sender, RoutedEventArgs e)
     {
         var diagnostics = $"""
             StreamTranslator V1.2
@@ -381,7 +385,38 @@ public partial class MainWindow : FluentWindow
             Language: {GetSelectedLanguage()}
             MaxConcurrency: {MaxConcurrencyBox.Value}
             """;
-        Clipboard.SetText(diagnostics);
+        await TryCopyTextAsync(diagnostics, "诊断信息");
+    }
+
+    private async Task TryCopyTextAsync(string text, string operation)
+    {
+        var result = await ClipboardWritePolicy.TryWriteAsync(text, Clipboard.SetText);
+        if (result.Succeeded)
+        {
+            SubtitleHistoryCopyStatusText.Text = "已复制";
+            return;
+        }
+
+        SubtitleHistoryCopyStatusText.Text = "剪贴板暂时不可用，请稍后重试";
+        ShowCopyFailureToast();
+        var error = result.Error;
+        AppendAppLog(
+            $"{operation}复制失败: {error?.GetType().Name ?? "UnknownException"}: {error?.Message ?? "未知错误"}");
+    }
+
+    private void ShowCopyFailureToast()
+    {
+        _copyFailureSnackbar ??= new Snackbar(RootSnackbarPresenter)
+        {
+            Title = "复制失败",
+            Content = "暂时无法访问系统剪贴板，请稍后重试。",
+            Appearance = ControlAppearance.Caution,
+            Icon = new SymbolIcon(SymbolRegular.ClipboardError24),
+            Timeout = TimeSpan.FromSeconds(5),
+            IsCloseButtonEnabled = true
+        };
+        AutomationProperties.SetAutomationId(_copyFailureSnackbar, "ClipboardCopyFailureSnackbar");
+        _copyFailureSnackbar.Show();
     }
 
     private void ShowPage(UIElement selectedPage)
