@@ -319,21 +319,35 @@
                         <Grid x:Name="SubtitleHistoryPage" Visibility="Collapsed">
                             <StackPanel>
                                 <DockPanel Margin="0,0,0,18">
-                                    <TextBlock Text="字幕历史" FontSize="24" FontWeight="Medium" />
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="字幕历史" FontSize="24" FontWeight="Medium" />
+                                        <TextBlock x:Name="SubtitleHistoryCopyStatusText"
+                                                   AutomationProperties.AutomationId="SubtitleHistoryCopyStatus"
+                                                   Text=""
+                                                   Margin="12,6,0,0"
+                                                   Foreground="{StaticResource SecondaryTextBrush}"
+                                                   FontSize="13" />
+                                    </StackPanel>
                                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
-                                        <ui:Button Click="OnCopySelectedClick" Margin="0,0,8,0">
+                                        <ui:Button AutomationProperties.AutomationId="CopySelectedSubtitleButton"
+                                                   Click="OnCopySelectedClick"
+                                                   Margin="0,0,8,0">
                                             <StackPanel Orientation="Horizontal">
                                                 <ui:SymbolIcon Symbol="Copy24" Margin="0,0,8,0" />
                                                 <TextBlock Text="复制选中" />
                                             </StackPanel>
                                         </ui:Button>
-                                        <ui:Button Click="OnCopyRecentClick" Margin="0,0,8,0">
+                                        <ui:Button AutomationProperties.AutomationId="CopyRecentSubtitlesButton"
+                                                   Click="OnCopyRecentClick"
+                                                   Margin="0,0,8,0">
                                             <StackPanel Orientation="Horizontal">
                                                 <ui:SymbolIcon Symbol="History24" Margin="0,0,8,0" />
                                                 <TextBlock Text="复制最近 10 条" />
                                             </StackPanel>
                                         </ui:Button>
-                                        <ui:Button Click="OnCopyAllClick" Margin="0,0,8,0">
+                                        <ui:Button AutomationProperties.AutomationId="CopyAllSubtitlesButton"
+                                                   Click="OnCopyAllClick"
+                                                   Margin="0,0,8,0">
                                             <StackPanel Orientation="Horizontal">
                                                 <ui:SymbolIcon Symbol="ClipboardTextLtr24" Margin="0,0,8,0" />
                                                 <TextBlock Text="复制当天全部" />
@@ -946,5 +960,12 @@
             </ui:NavigationView.ContentOverlay>
         </ui:NavigationView>
         <ui:ContentDialogHost x:Name="RootContentDialogHost" Grid.RowSpan="2" />
+        <ui:SnackbarPresenter x:Name="RootSnackbarPresenter"
+                              Grid.RowSpan="2"
+                              Panel.ZIndex="20"
+                              AutomationProperties.AutomationId="RootSnackbarPresenter"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Bottom"
+                              Margin="24,0,24,28" />
     </Grid>
 </ui:FluentWindow>
