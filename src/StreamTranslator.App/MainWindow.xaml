@@ -451,12 +451,14 @@
                                             <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,0,12">
                                                 <TextBlock Text="输出设备" Style="{StaticResource FieldLabelText}" />
                                                 <ComboBox x:Name="AudioDeviceComboBox"
+                                                          AutomationProperties.AutomationId="AudioDeviceComboBox"
                                                           Height="36"
                                                           SelectionChanged="OnAudioDeviceSelectionChanged" />
                                             </StackPanel>
                                             <StackPanel Grid.Row="0" Grid.Column="2" Margin="0,0,0,12">
                                                 <TextBlock Text="默认设备" Style="{StaticResource FieldLabelText}" />
                                                 <ui:ToggleSwitch x:Name="FollowDefaultDeviceSwitch"
+                                                                 AutomationProperties.AutomationId="FollowDefaultDeviceSwitch"
                                                                  Content="跟随系统默认设备"
                                                                  IsChecked="True" />
                                             </StackPanel>
@@ -495,16 +497,23 @@
                                                         </Setter>
                                                     </Style>
                                                 </StackPanel.Resources>
-                                                <DockPanel Margin="0,0,0,6">
-                                                    <TextBlock Text="断句策略" Style="{StaticResource FieldLabelText}" />
+                                                <Grid Margin="0,0,0,6">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="24" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0"
+                                                               Text="断句策略"
+                                                               Style="{StaticResource FieldLabelText}" />
                                                     <TextBlock x:Name="CurrentVadEndpointText"
                                                                AutomationProperties.AutomationId="CurrentVadEndpointText"
-                                                               DockPanel.Dock="Right"
+                                                               Grid.Column="2"
                                                                Text="当前断句等待：400ms（均衡，自适应）"
                                                                FontSize="12"
                                                                Foreground="{StaticResource SecondaryTextBrush}"
-                                                               HorizontalAlignment="Right" />
-                                                </DockPanel>
+                                                               HorizontalAlignment="Left" />
+                                                </Grid>
                                                 <Border BorderBrush="{StaticResource StrokeBrush}"
                                                         BorderThickness="1"
                                                         CornerRadius="6"
@@ -647,34 +656,23 @@
                                 <Border x:Name="TranslationSettingsPanel"
                                         Style="{StaticResource PanelBorder}">
                                     <StackPanel>
-                                        <DockPanel Margin="0,0,0,12" LastChildFill="False">
-                                            <StackPanel DockPanel.Dock="Left">
-                                                <TextBlock Text="字幕翻译"
-                                                           AutomationProperties.AutomationId="SettingsTranslationGroup"
-                                                           Style="{StaticResource SectionTitleText}"
-                                                           Margin="0,0,0,2" />
-                                                <TextBlock Text="OpenAI Chat Completions compatible"
-                                                           FontSize="12"
-                                                           Foreground="{StaticResource SecondaryTextBrush}" />
-                                            </StackPanel>
-                                            <ui:ToggleSwitch x:Name="TranslationEnabledSwitch"
-                                                             DockPanel.Dock="Right"
-                                                             Content="启用翻译"
-                                                             IsChecked="False"
-                                                             Checked="OnTranslationSettingChanged"
-                                                             Unchecked="OnTranslationSettingChanged" />
-                                        </DockPanel>
+                                        <TextBlock Text="字幕翻译"
+                                                   AutomationProperties.AutomationId="SettingsTranslationGroup"
+                                                   Style="{StaticResource SectionTitleText}" />
 
-                                        <Grid Margin="0,0,0,12">
+                                        <Grid Margin="0,0,0,14">
                                             <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="220" />
+                                                <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="24" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
                                             <StackPanel Grid.Column="0">
                                                 <TextBlock Text="目标语言" Style="{StaticResource FieldLabelText}" />
                                                 <ComboBox x:Name="TranslationTargetLanguageBox"
+                                                          AutomationProperties.AutomationId="TranslationTargetLanguageBox"
                                                           Height="36"
+                                                          Width="280"
+                                                          HorizontalAlignment="Left"
                                                           SelectionChanged="OnTranslationSettingChanged">
                                                     <ComboBoxItem Content="中文" Tag="zh-Hans" />
                                                     <ComboBoxItem Content="英语" Tag="en" />
@@ -684,17 +682,33 @@
                                                 </ComboBox>
                                             </StackPanel>
                                             <StackPanel Grid.Column="2">
-                                                <TextBlock Text="活动模型配置" Style="{StaticResource FieldLabelText}" />
-                                                <TextBlock x:Name="TranslationSelectionSummaryText"
-                                                           Text="尚未添加配置"
-                                                           Height="36"
-                                                           VerticalAlignment="Center"
-                                                           FontSize="13"
-                                                           Foreground="{StaticResource SecondaryTextBrush}" />
+                                                <TextBlock Text="翻译" Style="{StaticResource FieldLabelText}" />
+                                                <ui:ToggleSwitch x:Name="TranslationEnabledSwitch"
+                                                                 AutomationProperties.AutomationId="TranslationEnabledSwitch"
+                                                                 Content="启用翻译"
+                                                                 IsChecked="False"
+                                                                 Checked="OnTranslationSettingChanged"
+                                                                 Unchecked="OnTranslationSettingChanged" />
                                             </StackPanel>
                                         </Grid>
 
+                                        <TextBlock Text="模型配置"
+                                                   FontSize="13"
+                                                   FontWeight="Medium"
+                                                   Foreground="{StaticResource PrimaryTextBrush}" />
+                                        <TextBlock x:Name="TranslationSelectionSummaryText"
+                                                   AutomationProperties.AutomationId="TranslationSelectionSummaryText"
+                                                   Text="尚未添加配置"
+                                                   FontSize="12"
+                                                   Foreground="{StaticResource SecondaryTextBrush}"
+                                                   MaxWidth="360"
+                                                   HorizontalAlignment="Left"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding RelativeSource={RelativeSource Self}, Path=Text}"
+                                                   Margin="0,4,0,8" />
+
                                         <ListBox x:Name="TranslationProfileList"
+                                                 AutomationProperties.AutomationId="TranslationProfileList"
                                                  MinHeight="52"
                                                  MaxHeight="176"
                                                  Margin="0,0,0,10"

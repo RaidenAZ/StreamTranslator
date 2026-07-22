@@ -1126,6 +1126,15 @@ public partial class MainWindow : FluentWindow
             Width = 480,
             Margin = new Thickness(0, 4, 0, 0)
         };
+        var protocolNotice = new TextBlock
+        {
+            Text = "接口协议：兼容 OpenAI Chat Completions API",
+            Foreground = FindResource("SecondaryTextBrush") as System.Windows.Media.Brush,
+            FontSize = 12,
+            Margin = new Thickness(0, 0, 0, 12)
+        };
+        AutomationProperties.SetAutomationId(protocolNotice, "TranslationProtocolNotice");
+        form.Children.Add(protocolNotice);
         form.Children.Add(CreateField("配置名称", nameBox));
         var baseUrlField = CreateField("Base URL", baseUrlBox);
         baseUrlField.Children.Add(endpointPreview);
