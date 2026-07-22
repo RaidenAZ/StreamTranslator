@@ -8,6 +8,7 @@ using StreamTranslator.Audio.Segmentation;
 using StreamTranslator.Audio.Vad;
 using StreamTranslator.Core.Configuration;
 using StreamTranslator.Core.Subtitles;
+using StreamTranslator.Core.Translation;
 using StreamTranslator.Core.Worker;
 
 namespace StreamTranslator.App.Runtime;
@@ -27,6 +28,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     private AdaptiveEndpointController? _endpointController;
     private SpeechSegmenter? _segmenter;
     private PythonWorkerClient? _worker;
+    private TranslationSession? _translationSession;
     private SubtitleHistoryStore? _history;
     private readonly SubtitleReorderBuffer _reorderBuffer = new(firstSequence: 1);
     private readonly UtteranceGroupTracker _utteranceGroupTracker;
@@ -39,6 +41,8 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     private long _sequence;
     private string _lastFinalText = "";
     private StreamWriter? _vadTimelineWriter;
+    private StreamWriter? _translationDiagnosticWriter;
+    private readonly object _translationDiagnosticLock = new();
     private string? _diagnosticSessionPath;
     private CancellationTokenSource? _stopCts;
     private Task? _captureRecoveryTask;
@@ -62,6 +66,14 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     public event EventHandler<Exception>? RuntimeError;
     public event EventHandler<double>? AudioLevelChanged;
     public event EventHandler<VadEndpointRuntimeStatus>? VadEndpointChanged;
+    public event EventHandler<TranslationResultUpdate>? TranslationReady;
+    public event EventHandler<TranslationRuntimeStatus>? TranslationStatusChanged;
+    public event EventHandler<TranslationTaskStatusUpdate>? TranslationTaskStatusChanged;
+
+    public void UpdateTranslationVisibleGroups(IReadOnlyCollection<string> visibleGroupIds)
+    {
+        _translationSession?.UpdateVisibleGroups(visibleGroupIds);
+    }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
@@ -78,6 +90,8 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         _worker = CreateWorkerClient();
         await _worker.StartAsync(cancellationToken).ConfigureAwait(false);
         StatusChanged?.Invoke(this, "ASR worker 已启动");
+
+        await StartTranslationSessionAsync(cancellationToken).ConfigureAwait(false);
 
         _capture = new LoopbackCaptureService(
             new AudioDeviceService(),
@@ -105,6 +119,17 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         await WaitForCaptureRecoveryAsync().ConfigureAwait(false);
 
         await WaitForSegmentTasksAsync().ConfigureAwait(false);
+
+        if (_translationSession is not null)
+        {
+            _translationSession.TranslationReady -= OnTranslationReady;
+            _translationSession.StatusChanged -= OnTranslationStatusChanged;
+            _translationSession.TaskStatusChanged -= OnTranslationTaskStatusChanged;
+            await _translationSession.DisposeAsync().ConfigureAwait(false);
+            _translationSession.DiagnosticEvent -= OnTranslationDiagnosticEvent;
+            WriteTranslationMetrics(_translationSession);
+            _translationSession = null;
+        }
 
         _vad?.Dispose();
         _vad = null;
@@ -490,6 +515,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
                 }
 
                 SubtitleReady?.Invoke(this, publication.Item);
+                _translationSession?.Submit(publication.Item);
             }
         }
         finally
@@ -772,12 +798,146 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             Path.Combine(_dataDirectory, "logs", "worker.log"));
     }
 
+    private async Task StartTranslationSessionAsync(CancellationToken cancellationToken)
+    {
+        var profile = _settings.Translation.ActiveProfile;
+        if (!_settings.Translation.Enabled || profile is null)
+        {
+            TranslationStatusChanged?.Invoke(this, new TranslationRuntimeStatus("已关闭", "已关闭", 0, 0));
+            return;
+        }
+
+        var session = new TranslationSession(
+            profile,
+            _settings.Asr.Language,
+            _settings.Translation.TargetLanguage,
+            () => TranslationWorkerClientFactory.Create(_baseDirectory, _dataDirectory),
+            _history);
+        session.TranslationReady += OnTranslationReady;
+        session.StatusChanged += OnTranslationStatusChanged;
+        session.TaskStatusChanged += OnTranslationTaskStatusChanged;
+        session.DiagnosticEvent += OnTranslationDiagnosticEvent;
+        try
+        {
+            await session.StartAsync(cancellationToken).ConfigureAwait(false);
+            _translationSession = session;
+        }
+        catch (Exception ex)
+        {
+            session.TranslationReady -= OnTranslationReady;
+            session.StatusChanged -= OnTranslationStatusChanged;
+            session.TaskStatusChanged -= OnTranslationTaskStatusChanged;
+            session.DiagnosticEvent -= OnTranslationDiagnosticEvent;
+            await session.DisposeAsync().ConfigureAwait(false);
+            throw new TranslationStartupException("翻译 worker 启动失败。", ex);
+        }
+    }
+
+    private void OnTranslationReady(object? sender, TranslationResultUpdate update)
+    {
+        TranslationReady?.Invoke(this, update);
+    }
+
+    private void OnTranslationStatusChanged(object? sender, TranslationRuntimeStatus status)
+    {
+        TranslationStatusChanged?.Invoke(this, status);
+    }
+
+    private void OnTranslationTaskStatusChanged(object? sender, TranslationTaskStatusUpdate status)
+    {
+        TranslationTaskStatusChanged?.Invoke(this, status);
+    }
+
+    private void OnTranslationDiagnosticEvent(object? sender, TranslationDiagnosticUpdate update)
+    {
+        if (_translationDiagnosticWriter is null)
+        {
+            return;
+        }
+        try
+        {
+            var profile = _settings.Translation.ActiveProfile;
+            var line = JsonSerializer.Serialize(new
+            {
+                update.Type,
+                update.TaskId,
+                update.UtteranceGroupId,
+                update.SourceRevision,
+                update.SourceText,
+                update.Context,
+                update.TargetLanguage,
+                update.PromptVersion,
+                update.EnqueuedAt,
+                update.StartedAt,
+                update.CompletedAt,
+                update.TranslatedText,
+                update.ErrorKind,
+                update.WarningCodes,
+                update.LatencyMs,
+                profileId = profile?.Id,
+                model = profile?.Model,
+                finalEndpoint = profile is null ? null : TranslationProfileRules.BuildFinalEndpoint(profile.BaseUrl)
+            }, DiagnosticJsonOptions);
+            lock (_translationDiagnosticLock)
+            {
+                _translationDiagnosticWriter.WriteLine(line);
+                _translationDiagnosticWriter.Flush();
+            }
+        }
+        catch
+        {
+            // Translation diagnostics must not interrupt subtitle delivery.
+        }
+    }
+
+    private void WriteTranslationMetrics(TranslationSession session)
+    {
+        try
+        {
+            var (p50, p95) = session.Metrics.LatencyPercentiles();
+            var profile = _settings.Translation.ActiveProfile;
+            var line = JsonSerializer.Serialize(new
+            {
+                type = "translation_session",
+                timestamp = DateTimeOffset.Now,
+                profileId = profile?.Id,
+                model = profile?.Model,
+                location = profile?.Location.ToString(),
+                targetLanguage = _settings.Translation.TargetLanguage,
+                session.Metrics.Successes,
+                session.Metrics.Failures,
+                session.Metrics.Retries,
+                session.Metrics.StaleResults,
+                session.Metrics.SameLanguageSkips,
+                session.Metrics.BackpressureDrops,
+                session.Metrics.StaleQueueDrops,
+                session.Metrics.WorkerRestarts,
+                session.Metrics.CircuitBreaks,
+                session.Metrics.QueuePeak,
+                latencyP50Ms = p50,
+                latencyP95Ms = p95
+            }, DiagnosticJsonOptions);
+            var logsDirectory = Path.Combine(_dataDirectory, "logs");
+            Directory.CreateDirectory(logsDirectory);
+            File.AppendAllText(Path.Combine(logsDirectory, "translation-metrics.jsonl"), line + Environment.NewLine);
+        }
+        catch
+        {
+            // Metrics must not interrupt shutdown.
+        }
+    }
+
     private string FindWorkerScriptPath()
+    {
+        return FindWorkerScriptPath("asr_worker.py", "ASR");
+    }
+
+    private string FindWorkerScriptPath(string fileName, string workerName)
     {
         var directory = new DirectoryInfo(_baseDirectory);
         while (directory is not null)
         {
-            var candidate = Path.Combine(directory.FullName, "python", "asr_worker.py");
+            var candidate = Path.Combine(directory.FullName, "python", fileName);
             if (File.Exists(candidate))
             {
                 return candidate;
@@ -786,7 +946,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             directory = directory.Parent;
         }
 
-        throw new FileNotFoundException("ASR worker executable and python/asr_worker.py were not found.");
+        throw new FileNotFoundException($"{workerName} worker executable and python/{fileName} were not found.");
     }
 
     private static double CalculateLevel(ReadOnlySpan<short> samples)
@@ -839,6 +999,10 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         Directory.CreateDirectory(Path.Combine(root, "sessions"));
         _vadTimelineWriter = File.CreateText(Path.Combine(root, "vad", $"session-{sessionId}.vad.jsonl"));
         _diagnosticSessionPath = Path.Combine(root, "sessions", $"session-{sessionId}.json");
+        var translationRoot = Path.Combine(_dataDirectory, "debug-translation");
+        Directory.CreateDirectory(translationRoot);
+        _translationDiagnosticWriter = File.CreateText(
+            Path.Combine(translationRoot, $"session-{sessionId}.jsonl"));
     }
 
     private void WriteVadDiagnostic(PcmAudioFrame frame, VadDecision decision)
@@ -925,6 +1089,12 @@ public sealed class SubtitleRuntime : IAsyncDisposable
 
     private async Task StopDiagnosticsSessionAsync()
     {
+        if (_translationDiagnosticWriter is not null)
+        {
+            await _translationDiagnosticWriter.DisposeAsync().ConfigureAwait(false);
+            _translationDiagnosticWriter = null;
+        }
+
         if (_vadTimelineWriter is not null)
         {
             await _vadTimelineWriter.DisposeAsync().ConfigureAwait(false);

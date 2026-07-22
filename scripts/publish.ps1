@@ -43,6 +43,14 @@ if (-not $SkipWorker) {
         --workpath (Join-Path $root "artifacts\pyinstaller-work") `
         --specpath (Join-Path $root "artifacts") `
         (Join-Path $pythonRoot "asr_worker.py")
+
+    & $Python -m PyInstaller `
+        --onefile `
+        --name translation_worker `
+        --distpath $workerRoot `
+        --workpath (Join-Path $root "artifacts\pyinstaller-translation-work") `
+        --specpath (Join-Path $root "artifacts") `
+        (Join-Path $pythonRoot "translation_worker.py")
 }
 
 New-Item -ItemType Directory -Force -Path (Join-Path $publishRoot "data") | Out-Null

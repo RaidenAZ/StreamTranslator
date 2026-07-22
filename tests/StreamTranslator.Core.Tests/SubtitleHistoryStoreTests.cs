@@ -18,6 +18,105 @@ public sealed class SubtitleHistoryStoreTests
     }
 
     [TestMethod]
+    public async Task LoadLatestAsync_MaterializesTranslationForCurrentSourceRevision()
+    {
+        var directory = Directory.CreateTempSubdirectory("streamtranslator-history-");
+        var store = new SubtitleHistoryStore(directory.FullName);
+        var date = new DateOnly(2026, 7, 14);
+        var source = Item(1, "Hello") with
+        {
+            UtteranceGroupId = "session:1",
+            Revision = 1,
+            GeneratedAt = DateTimeOffset.Parse("2026-07-14T01:23:45+08:00")
+        };
+        await store.AppendAsync(source, date);
+        await store.AppendTranslationResultAsync(new TranslationHistoryEvent
+        {
+            UtteranceGroupId = "session:1",
+            SourceRevision = 1,
+            TargetLanguage = "zh-Hans",
+            TranslatedText = "你好",
+            TranslationProfileId = Guid.NewGuid(),
+            Model = "model",
+            CompletedAt = DateTimeOffset.Parse("2026-07-14T01:23:46+08:00")
+        }, date);
+
+        var loaded = await store.LoadLatestAsync(date);
+
+        Assert.AreEqual(1, loaded.Count);
+        Assert.AreEqual("Hello", loaded[0].SourceText);
+        Assert.AreEqual("你好", loaded[0].TranslatedText);
+        Assert.AreEqual("01:23:45", loaded[0].GeneratedTimeText);
+    }
+
+    [TestMethod]
+    public async Task LoadLatestAsync_IgnoresStaleTranslationAndCorruptTranslationEvent()
+    {
+        var directory = Directory.CreateTempSubdirectory("streamtranslator-history-");
+        var store = new SubtitleHistoryStore(directory.FullName);
+        var date = new DateOnly(2026, 7, 14);
+        var first = Item(1, "Hello") with { UtteranceGroupId = "session:1", Revision = 1 };
+        var revision = Item(1, "Hello again") with
+        {
+            Type = "subtitle_revision",
+            UtteranceGroupId = "session:1",
+            Revision = 2,
+            ReplacesSequences = [1, 2]
+        };
+        await store.AppendAsync(first, date);
+        await store.AppendRevisionAsync(revision, date);
+        await store.AppendTranslationResultAsync(new TranslationHistoryEvent
+        {
+            UtteranceGroupId = "session:1",
+            SourceRevision = 1,
+            TargetLanguage = "zh-Hans",
+            TranslatedText = "过期译文",
+            TranslationProfileId = Guid.NewGuid(),
+            Model = "model",
+            CompletedAt = DateTimeOffset.Now
+        }, date);
+        await File.AppendAllTextAsync(
+            Path.Combine(directory.FullName, "2026-07-14.jsonl"),
+            "{\"type\":\"translation_result\",broken}" + Environment.NewLine);
+
+        var loaded = await store.LoadLatestAsync(date);
+
+        Assert.AreEqual(1, loaded.Count);
+        Assert.AreEqual("Hello again", loaded[0].SourceText);
+        Assert.IsNull(loaded[0].TranslatedText);
+    }
+
+    [TestMethod]
+    public async Task TranslationStatus_DoesNotOverwriteSuccessfulTranslation()
+    {
+        var directory = Directory.CreateTempSubdirectory("streamtranslator-history-");
+        var store = new SubtitleHistoryStore(directory.FullName);
+        var date = new DateOnly(2026, 7, 14);
+        await store.AppendAsync(Item(1, "Hello") with { UtteranceGroupId = "session:1" }, date);
+        await store.AppendTranslationResultAsync(new TranslationHistoryEvent
+        {
+            UtteranceGroupId = "session:1",
+            SourceRevision = 1,
+            TargetLanguage = "zh-Hans",
+            TranslatedText = "你好",
+            TranslationProfileId = Guid.NewGuid(),
+            Model = "model",
+            CompletedAt = DateTimeOffset.Now
+        }, date);
+        await store.AppendTranslationStatusAsync(new TranslationStatusHistoryEvent
+        {
+            UtteranceGroupId = "session:1",
+            SourceRevision = 1,
+            Status = "translation_failed",
+            CompletedAt = DateTimeOffset.Now
+        }, date);
+
+        var loaded = await store.LoadLatestAsync(date);
+
+        Assert.AreEqual("你好", loaded[0].TranslatedText);
+    }
+
+    [TestMethod]
     public void GeneratedTimeText_UsesFallbackForLegacyHistory()
     {
         var item = new SubtitleItem();
@@ -114,6 +213,11 @@ public sealed class SubtitleHistoryStoreTests
             SourceText = text,
             Status = SubtitleStatus.Final
         };
+    }
+
+    private static SubtitleItem Item(long sequence, string text)
+    {
+        return HistoryItem(sequence, text, $"session:{sequence}");
     }
 
 }

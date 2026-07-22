@@ -48,6 +48,18 @@ if (Test-Path $mainWindowXaml) {
         throw "Subtitle history text should wrap within the available width."
     }
 
+    if ($mainWindowMarkup -notmatch 'Text="\{Binding TranslatedText\}"[\s\S]*?TextWrapping="Wrap"') {
+        throw "Subtitle history translation should wrap below the source text."
+    }
+
+    if ($mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="SettingsTranslationGroup"') {
+        throw "Settings should expose the V1.2 translation group."
+    }
+
+    if ($mainWindowMarkup -notmatch 'Text="显示字幕数"') {
+        throw "Floating subtitle capacity should be expressed as subtitle groups, not lines."
+    }
+
     if ($mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="VadModeBalanced"') {
         throw "Settings should expose the balanced adaptive VAD mode."
     }
@@ -58,6 +70,29 @@ if (Test-Path $mainWindowXaml) {
 
     if ($mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="CurrentVadEndpointText"') {
         throw "Settings should display the current effective VAD endpoint."
+    }
+}
+
+$mainWindowCode = Join-Path $PSScriptRoot "..\src\StreamTranslator.App\MainWindow.xaml.cs"
+if (Test-Path $mainWindowCode) {
+    $mainWindowSource = Get-Content -LiteralPath $mainWindowCode -Raw
+    if ($mainWindowSource -match 'SelectedItem\s*=\s*items\.FirstOrDefault\([^\r\n]+\)\s*\?\?\s*items\.FirstOrDefault') {
+        throw "Translation profiles must not auto-select the first item when no active profile exists."
+    }
+    if ($mainWindowSource -notmatch 'OnFloatingVisibleGroupsChanged') {
+        throw "Floating-window visibility changes should update translation backpressure priorities."
+    }
+}
+
+$floatingWindowCode = Join-Path $PSScriptRoot "..\src\StreamTranslator.App\FloatingSubtitleWindow.xaml.cs"
+if (Test-Path $floatingWindowCode) {
+    $floatingWindowSource = Get-Content -LiteralPath $floatingWindowCode -Raw
+    if ($floatingWindowSource -notmatch 'WorkArea\.Height \* 0\.4') {
+        throw "Floating subtitles should remain within 40% of the work area."
+    }
+    if ($floatingWindowSource -notmatch 'Chrome\.Measure\([\s\S]*double\.PositiveInfinity' -or
+        $floatingWindowSource -notmatch 'Entries\.RemoveAt\(0\)') {
+        throw "Floating subtitles should measure rendered height and trim the oldest group first."
     }
 }
 
@@ -264,6 +299,8 @@ try {
     $speechDetectionStatus = Find-ByAutomationId "OverviewSpeechDetectionStatus"
     $recognitionWorkerStatus = Find-ByAutomationId "OverviewRecognitionWorkerStatus"
     $recognitionApiStatus = Find-ByAutomationId "OverviewRecognitionApiStatus"
+    $translationWorkerStatus = Find-ByAutomationId "OverviewTranslationWorkerStatus"
+    $translationApiStatus = Find-ByAutomationId "OverviewTranslationApiStatus"
     $subtitleOutputStatus = Find-ByAutomationId "OverviewSubtitleOutputStatus"
     $homeDeviceText = Find-ByAutomationId "HomeAudioDeviceText"
     $homeAudioLevel = Find-ByAutomationId "HomeAudioLevelBar"
@@ -293,6 +330,8 @@ try {
     if ($null -eq $speechDetectionStatus) { throw "Speech detection status was not found in the overview panel." }
     if ($null -eq $recognitionWorkerStatus) { throw "Recognition worker status was not found in the overview panel." }
     if ($null -eq $recognitionApiStatus) { throw "Recognition API status was not found in the overview panel." }
+    if ($null -eq $translationWorkerStatus) { throw "Translation worker status was not found in the overview panel." }
+    if ($null -eq $translationApiStatus) { throw "Translation API status was not found in the overview panel." }
     if ($null -eq $subtitleOutputStatus) { throw "Subtitle output status was not found in the overview panel." }
     if ($null -eq $homeDeviceText) { throw "Home audio device text was not found." }
     if ($null -eq $homeAudioLevel) { throw "Home audio level bar was not found." }
@@ -325,6 +364,7 @@ try {
     $audioSettingsGroup = Find-ByAutomationId "SettingsAudioGroup"
     $recognitionSettingsGroup = Find-ByAutomationId "SettingsRecognitionGroup"
     $floatingSettingsGroup = Find-ByAutomationId "SettingsFloatingGroup"
+    $translationSettingsGroup = Find-ByAutomationId "SettingsTranslationGroup"
     $diagnosticsSettingsGroup = Find-ByAutomationId "SettingsDiagnosticsGroup"
     $balancedVadMode = Find-ByAutomationId "VadModeBalanced"
     $fixedEndSilenceBox = Find-ByAutomationId "FixedEndSilenceBox"
@@ -341,6 +381,7 @@ try {
     if ($null -eq $audioSettingsGroup) { throw "Settings audio group was not found." }
     if ($null -eq $recognitionSettingsGroup) { throw "Settings recognition service group was not found." }
     if ($null -eq $floatingSettingsGroup) { throw "Settings floating subtitle group was not found." }
+    if ($null -eq $translationSettingsGroup) { throw "Settings translation group was not found." }
     if ($null -eq $diagnosticsSettingsGroup) { throw "Settings diagnostics group was not found." }
     if ($null -eq $balancedVadMode) { throw "Balanced adaptive VAD mode was not found." }
     if ($null -eq $fixedEndSilenceBox) { throw "Fixed end-silence input was not found." }

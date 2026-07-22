@@ -28,26 +28,55 @@ public sealed class SettingsStore
 
         var json = await File.ReadAllTextAsync(_settingsPath, cancellationToken).ConfigureAwait(false);
         using var document = JsonDocument.Parse(json);
-        var isCurrentSchema = document.RootElement.TryGetProperty("schemaVersion", out var schemaVersion) &&
-                              schemaVersion.TryGetInt32(out var version) &&
-                              version >= 2;
+        var existingVersion = 1;
+        if (document.RootElement.TryGetProperty("schemaVersion", out var schemaVersion) &&
+            schemaVersion.TryGetInt32(out var parsedVersion))
+        {
+            existingVersion = parsedVersion;
+        }
         var settings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? new AppSettings();
 
-        if (!isCurrentSchema)
+        if (existingVersion < 2)
         {
             settings = settings with
             {
-                SchemaVersion = 2,
                 Vad = settings.Vad with
                 {
                     EndpointMode = VadEndpointMode.Balanced,
                     EndSilenceMs = 400
                 }
             };
+        }
+
+        if (existingVersion < 3)
+        {
+            var legacyMaxLines = ReadLegacyMaxLines(document.RootElement);
+            settings = settings with
+            {
+                SchemaVersion = 3,
+                Translation = new TranslationSettings(),
+                SubtitleWindow = settings.SubtitleWindow with
+                {
+                    FontSize = 18,
+                    MaxSubtitleItems = Math.Clamp(legacyMaxLines ?? 2, 1, 3)
+                }
+            };
             await SaveAsync(settings, cancellationToken).ConfigureAwait(false);
         }
 
         return settings;
+    }
+
+    private static int? ReadLegacyMaxLines(JsonElement root)
+    {
+        if (root.TryGetProperty("subtitleWindow", out var subtitleWindow) &&
+            subtitleWindow.TryGetProperty("maxLines", out var maxLines) &&
+            maxLines.TryGetInt32(out var value))
+        {
+            return value;
+        }
+
+        return null;
     }
 
     public async Task SaveAsync(AppSettings settings, CancellationToken cancellationToken = default)

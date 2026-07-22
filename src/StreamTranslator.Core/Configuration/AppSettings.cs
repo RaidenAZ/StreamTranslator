@@ -1,13 +1,15 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace StreamTranslator.Core.Configuration;
 
 public sealed record AppSettings
 {
-    public int SchemaVersion { get; init; } = 2;
+    public int SchemaVersion { get; init; } = 3;
     public AudioSettings Audio { get; init; } = new();
     public VadSettings Vad { get; init; } = new();
     public AsrSettings Asr { get; init; } = new();
+    public TranslationSettings Translation { get; init; } = new();
     public SubtitleWindowSettings SubtitleWindow { get; init; } = new();
     public HotkeySettings Hotkeys { get; init; } = new();
     public DiagnosticsSettings Diagnostics { get; init; } = new();
@@ -53,10 +55,59 @@ public sealed record AsrSettings
 
 public sealed record SubtitleWindowSettings
 {
-    public double FontSize { get; init; } = 28;
-    public int MaxLines { get; init; } = 2;
+    public double FontSize { get; init; } = 18;
+    public int MaxSubtitleItems { get; init; } = 2;
     public double Opacity { get; init; } = 0.72;
     public bool ClickThroughWhenLocked { get; init; } = true;
+}
+
+public sealed record TranslationSettings
+{
+    public bool Enabled { get; init; }
+    public string TargetLanguage { get; init; } = "zh-Hans";
+    public Guid? ActiveProfileId { get; init; }
+    public List<TranslationProfile> Profiles { get; init; } = [];
+
+    [JsonIgnore]
+    public TranslationProfile? ActiveProfile => ActiveProfileId is { } id
+        ? Profiles.FirstOrDefault(profile => profile.Id == id)
+        : null;
+
+    [JsonIgnore]
+    public bool IsEffectivelyEnabled => Enabled && ActiveProfile is not null;
+}
+
+public sealed record TranslationProfile
+{
+    public Guid Id { get; init; } = Guid.NewGuid();
+    public string Name { get; init; } = "";
+    public string BaseUrl { get; init; } = "";
+    public string Model { get; init; } = "";
+    public string ApiKey { get; init; } = "";
+    public TranslationServiceLocation Location { get; init; } = TranslationServiceLocation.Remote;
+    public TranslationRequestCompatibility RequestCompatibility { get; init; } = TranslationRequestCompatibility.Standard;
+    public JsonElement CustomExtraBody { get; init; } = JsonDocument.Parse("{}").RootElement.Clone();
+    public int TimeoutMs { get; init; } = 10000;
+    public int MaxConcurrency { get; init; } = 2;
+    public string? ValidationFingerprint { get; init; }
+    public DateTimeOffset? LastValidatedAt { get; init; }
+    public int? LastValidationLatencyMs { get; init; }
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<TranslationServiceLocation>))]
+public enum TranslationServiceLocation
+{
+    Local,
+    Remote
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<TranslationRequestCompatibility>))]
+public enum TranslationRequestCompatibility
+{
+    Standard,
+    DeepSeek,
+    QwenVllm,
+    Custom
 }
 
 public sealed record HotkeySettings

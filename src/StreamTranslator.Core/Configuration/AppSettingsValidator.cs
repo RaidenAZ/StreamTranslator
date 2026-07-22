@@ -1,5 +1,7 @@
 namespace StreamTranslator.Core.Configuration;
 
+using StreamTranslator.Core.Translation;
+
 public static class AppSettingsValidator
 {
     private static readonly HashSet<string> SupportedLanguages = new(StringComparer.OrdinalIgnoreCase)
@@ -7,6 +9,10 @@ public static class AppSettingsValidator
         "auto",
         "zh",
         "en"
+    };
+    private static readonly HashSet<string> SupportedTranslationTargets = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "zh-Hans", "en", "de", "fr", "ja"
     };
 
     public static IReadOnlyList<string> ValidateForStart(AppSettings settings)
@@ -63,6 +69,31 @@ public static class AppSettingsValidator
             errors.Add("VAD 分段参数无效，请恢复默认设置后重试。");
         }
 
+        return errors;
+    }
+
+    public static IReadOnlyList<string> ValidateTranslation(AppSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        var errors = new List<string>();
+        if (!settings.Translation.Enabled)
+        {
+            return errors;
+        }
+
+        if (!SupportedTranslationTargets.Contains(settings.Translation.TargetLanguage))
+        {
+            errors.Add("翻译目标语言无效，请重新选择。");
+        }
+
+        var profile = settings.Translation.ActiveProfile;
+        if (profile is null)
+        {
+            errors.Add("启用翻译前，请选择一个模型配置。");
+            return errors;
+        }
+
+        errors.AddRange(TranslationProfileRules.Validate(profile));
         return errors;
     }
 }

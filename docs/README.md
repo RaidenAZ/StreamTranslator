@@ -41,3 +41,4 @@
 - 疑似误切只在字幕/UI/历史层修订，不拼接 WAV，也不增加 MiMo 请求。
 - V1.2 使用独立 translation worker 和 OpenAI Chat Completions compatible 协议，翻译故障不影响原文字幕。
 - V1.2 原文立即显示，完整译文随后一次性补充；rolling interim ASR 移到 V1.3。
+- V1.2 代码、便携包和默认 fake 评估已落地；真实 DeepSeek 人工质量验收需显式提供评估专用 Key 后执行。

@@ -591,7 +591,7 @@ V1.2 使用内置、版本化 Prompt，不允许用户编辑，也不提供术�
 - stale revision 误覆盖为 0。
 - same-language false skip 为 0。
 - DeepSeek 首轮延迟目标为 P50 1.5 秒、P95 3 秒，测试后允许基于数据细化。
-- 德语、法语和日语各执行一次真实最小 smoke。
+- 德语、法语和日语保留为可选目标语言，但不重复执行真实 API 验收；V1.2 真实质量验收只覆盖中文和英语。
 
 本地模型由用户手工测试，不阻塞 V1.2 发布。真实 API 测试默认关闭并要求显式开关。
 
@@ -606,3 +606,14 @@ V1.2 只实现翻译字幕，不同时实现 rolling interim ASR。rolling inter
 - [v1.2-translation.md](v1.2-translation.md)
 - [v1.2-translation-protocol.md](v1.2-translation-protocol.md)
 - [v1.2-translation-test-plan.md](v1.2-translation-test-plan.md)
+
+## D043: Live Translation Evaluation Keys Use A Process Environment Variable
+
+状态：Accepted
+
+`scripts/translation-evaluate.ps1` 默认只运行无费用 fake 评估。真实 API 评估必须显式传入 `-AllowLiveApi`，并从当前 PowerShell 会话的 `STREAMTRANSLATOR_TRANSLATION_API_KEY` 环境变量读取评估专用 Key。
+
+- 不提供 API Key 命令行参数，避免进入 shell history 和 process arguments。
+- 不从样本、请求记录或结果文件读取或写入 Key。
+- Base URL、模型名和兼容模板从现有 `data/settings.json` profile 读取。
+- 环境变量仅继承到本次评估 worker 进程，不改变应用配置。

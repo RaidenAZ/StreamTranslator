@@ -43,4 +43,33 @@ public sealed class AppSettingsValidatorTests
 
         Assert.IsTrue(errors.Any(error => error.Contains("断句策略", StringComparison.Ordinal)));
     }
+
+    [TestMethod]
+    public void ValidateTranslation_RequiresActiveValidProfileOnlyWhenEnabled()
+    {
+        var disabled = new AppSettings();
+        Assert.AreEqual(0, AppSettingsValidator.ValidateTranslation(disabled).Count);
+
+        var missing = disabled with { Translation = new TranslationSettings { Enabled = true } };
+        Assert.IsTrue(AppSettingsValidator.ValidateTranslation(missing)
+            .Any(error => error.Contains("模型配置", StringComparison.Ordinal)));
+
+        var profile = new TranslationProfile
+        {
+            Name = "Remote",
+            BaseUrl = "http://api.example.com/v1",
+            Model = "model",
+            Location = TranslationServiceLocation.Remote
+        };
+        var invalid = missing with
+        {
+            Translation = missing.Translation with
+            {
+                ActiveProfileId = profile.Id,
+                Profiles = [profile]
+            }
+        };
+        Assert.IsTrue(AppSettingsValidator.ValidateTranslation(invalid)
+            .Any(error => error.Contains("HTTPS", StringComparison.Ordinal)));
+    }
 }
