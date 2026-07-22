@@ -1346,10 +1346,10 @@ public partial class MainWindow : FluentWindow
 
     private static string CompatibilityLabel(TranslationRequestCompatibility compatibility) => compatibility switch
     {
-        TranslationRequestCompatibility.Standard => "Standard",
-        TranslationRequestCompatibility.DeepSeek => "DeepSeek（关闭思考）",
-        TranslationRequestCompatibility.QwenVllm => "Qwen + vLLM（关闭思考）",
-        TranslationRequestCompatibility.Custom => "Custom extraBody",
+        TranslationRequestCompatibility.Standard => "标准兼容（不设置思考模式）",
+        TranslationRequestCompatibility.DeepSeek => "DeepSeek（thinking.type=disabled）",
+        TranslationRequestCompatibility.QwenVllm => "Qwen + vLLM（enable_thinking=false）",
+        TranslationRequestCompatibility.Custom => "自定义 extraBody",
         _ => compatibility.ToString()
     };
 
