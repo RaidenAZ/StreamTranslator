@@ -513,10 +513,12 @@ Base URL 不自动添加 `/v1`。UI 实时预览最终 `/chat/completions` 地�
 
 请求兼容模板：
 
-- Standard：空 `extraBody`。
-- DeepSeek：`thinking.type=disabled`。
-- Qwen + vLLM：`chat_template_kwargs.enable_thinking=false`。
-- Custom：受保留字段和大小限制的 JSON object。
+- 标准兼容（配置值 `Standard`）：空 `extraBody`，不设置思考模式。
+- DeepSeek（配置值 `DeepSeek`）：`thinking.type=disabled`。
+- Qwen + vLLM（配置值 `QwenVllm`）：`chat_template_kwargs.enable_thinking=false`。
+- 自定义 extraBody（配置值 `Custom`）：受保留字段和大小限制的 JSON object。
+
+显示名称必须说明实际思考控制行为，避免把 `Standard` 误解为默认关闭思考。持久化配置值保持稳定，不因 UI 文案调整而迁移。
 
 ## D035: Translation Is Immediate, Non-Streaming And Revision-Aware
 

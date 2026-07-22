@@ -116,6 +116,12 @@ if (Test-Path $mainWindowCode) {
         $mainWindowSource -notmatch '兼容 OpenAI Chat Completions API') {
         throw "The translation profile editor should display the OpenAI Chat Completions compatibility notice."
     }
+    if ($mainWindowSource -notmatch '标准兼容（不设置思考模式）' -or
+        $mainWindowSource -notmatch 'DeepSeek（thinking\.type=disabled）' -or
+        $mainWindowSource -notmatch 'Qwen \+ vLLM（enable_thinking=false）' -or
+        $mainWindowSource -notmatch '自定义 extraBody') {
+        throw "Translation request compatibility choices should describe their effective thinking behavior."
+    }
 }
 
 $floatingWindowCode = Join-Path $PSScriptRoot "..\src\StreamTranslator.App\FloatingSubtitleWindow.xaml.cs"
