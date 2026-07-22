@@ -3,9 +3,9 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="字幕"
         Width="760"
-        Height="150"
         MinWidth="420"
-        MinHeight="96"
+        MinHeight="76"
+        SizeToContent="Height"
         WindowStartupLocation="CenterScreen"
         WindowStyle="None"
         ResizeMode="CanResizeWithGrip"
@@ -20,14 +20,30 @@
             BorderBrush="#80FFFFFF"
             BorderThickness="1"
             Padding="18,12">
-        <TextBlock x:Name="CaptionText"
-                   Text="等待字幕..."
-                   Foreground="White"
-                   FontSize="28"
-                   FontWeight="SemiBold"
-                   TextWrapping="Wrap"
-                   TextAlignment="Center"
-                   LineStackingStrategy="BlockLineHeight"
-                   LineHeight="36" />
+        <ItemsControl x:Name="SubtitleGroups"
+                      ItemsSource="{Binding Entries, RelativeSource={RelativeSource AncestorType=Window}}"
+                      HorizontalContentAlignment="Stretch">
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <StackPanel Margin="0,4,0,6">
+                        <TextBlock Text="{Binding SourceText}"
+                                   Foreground="White"
+                                   FontSize="{DynamicResource FloatingSourceFontSize}"
+                                   FontWeight="SemiBold"
+                                   TextWrapping="Wrap"
+                                   TextAlignment="Center"
+                                   LineStackingStrategy="BlockLineHeight" />
+                        <TextBlock Text="{Binding TranslatedText}"
+                                   Visibility="{Binding TranslationVisibility}"
+                                   Foreground="#D9FFFFFF"
+                                   FontSize="{DynamicResource FloatingTranslationFontSize}"
+                                   TextWrapping="Wrap"
+                                   TextAlignment="Center"
+                                   Margin="0,3,0,0"
+                                   LineStackingStrategy="BlockLineHeight" />
+                    </StackPanel>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
     </Border>
 </Window>

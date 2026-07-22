@@ -201,7 +201,7 @@ def run_protocol(
     executor = ThreadPoolExecutor(max_workers=max(1, max_concurrency), thread_name_prefix="mimo-asr")
     try:
         for line in input_stream:
-            line = line.strip()
+            line = line.strip().lstrip("\ufeff")
             if not line:
                 continue
 

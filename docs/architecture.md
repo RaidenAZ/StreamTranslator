@@ -619,6 +619,8 @@ scripts/translation-evaluate.ps1
 
 该脚本只在显式允许时调用真实 API。完整翻译架构、协议和验收标准见：
 
+真实评估的专用 Key 只从当前进程环境变量 `STREAMTRANSLATOR_TRANSLATION_API_KEY` 读取，不进入命令行参数和评估产物。默认模式使用 fake client，不读取 Key、不访问网络。
+
 - [v1.2-translation.md](v1.2-translation.md)
 - [v1.2-translation-protocol.md](v1.2-translation-protocol.md)
 - [v1.2-translation-test-plan.md](v1.2-translation-test-plan.md)

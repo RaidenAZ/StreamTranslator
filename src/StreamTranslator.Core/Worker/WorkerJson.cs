@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Encodings.Web;
 
 namespace StreamTranslator.Core.Worker;
 
@@ -7,7 +8,8 @@ public static class WorkerJson
     public static readonly JsonSerializerOptions Options = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
     public static string Serialize<T>(T value)
@@ -20,4 +22,3 @@ public static class WorkerJson
         return JsonSerializer.Deserialize<T>(json, Options);
     }
 }
-

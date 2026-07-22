@@ -48,6 +48,18 @@ if (Test-Path $mainWindowXaml) {
         throw "Subtitle history text should wrap within the available width."
     }
 
+    if ($mainWindowMarkup -notmatch 'Text="\{Binding TranslatedText\}"[\s\S]*?TextWrapping="Wrap"') {
+        throw "Subtitle history translation should wrap below the source text."
+    }
+
+    if ($mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="SettingsTranslationGroup"') {
+        throw "Settings should expose the V1.2 translation group."
+    }
+
+    if ($mainWindowMarkup -notmatch 'Text="显示字幕数"') {
+        throw "Floating subtitle capacity should be expressed as subtitle groups, not lines."
+    }
+
     if ($mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="VadModeBalanced"') {
         throw "Settings should expose the balanced adaptive VAD mode."
     }
@@ -58,6 +70,63 @@ if (Test-Path $mainWindowXaml) {
 
     if ($mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="CurrentVadEndpointText"') {
         throw "Settings should display the current effective VAD endpoint."
+    }
+
+    if ($mainWindowMarkup -notmatch 'x:Name="CurrentVadEndpointText"[\s\S]*?Grid\.Column="2"') {
+        throw "The effective VAD endpoint should align with the default-device controls in the right settings column."
+    }
+
+    if ($mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="FollowDefaultDeviceSwitch"') {
+        throw "The default-device toggle should expose a stable alignment boundary."
+    }
+
+    if ($mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="TranslationTargetLanguageBox"' -or
+        $mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="TranslationEnabledSwitch"' -or
+        $mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="TranslationProfileList"') {
+        throw "Translation settings should expose stable automation boundaries for the two-column form and profile list."
+    }
+
+    if ($mainWindowMarkup -notmatch 'Text="模型配置"[\s\S]*?x:Name="TranslationProfileList"') {
+        throw "Translation profiles should be presented as a labeled full-width settings section."
+    }
+
+    if ($mainWindowMarkup -match 'OpenAI Chat Completions compatible') {
+        throw "The translation card should not display the API compatibility notice below its title."
+    }
+
+    if ($mainWindowMarkup -notmatch 'x:Name="TranslationTargetLanguageBox"[\s\S]*?Width="280"') {
+        throw "The target-language selector should use a compact fixed width."
+    }
+
+    if ($mainWindowMarkup -notmatch 'Text="模型配置"[\s\S]*?x:Name="TranslationSelectionSummaryText"[\s\S]*?x:Name="TranslationProfileList"') {
+        throw "Translation profile status should appear below the section heading and above the profile list."
+    }
+}
+
+$mainWindowCode = Join-Path $PSScriptRoot "..\src\StreamTranslator.App\MainWindow.xaml.cs"
+if (Test-Path $mainWindowCode) {
+    $mainWindowSource = Get-Content -LiteralPath $mainWindowCode -Raw
+    if ($mainWindowSource -match 'SelectedItem\s*=\s*items\.FirstOrDefault\([^\r\n]+\)\s*\?\?\s*items\.FirstOrDefault') {
+        throw "Translation profiles must not auto-select the first item when no active profile exists."
+    }
+    if ($mainWindowSource -notmatch 'OnFloatingVisibleGroupsChanged') {
+        throw "Floating-window visibility changes should update translation backpressure priorities."
+    }
+    if ($mainWindowSource -notmatch 'AutomationProperties\.SetAutomationId\(protocolNotice, "TranslationProtocolNotice"\)' -or
+        $mainWindowSource -notmatch '兼容 OpenAI Chat Completions API') {
+        throw "The translation profile editor should display the OpenAI Chat Completions compatibility notice."
+    }
+}
+
+$floatingWindowCode = Join-Path $PSScriptRoot "..\src\StreamTranslator.App\FloatingSubtitleWindow.xaml.cs"
+if (Test-Path $floatingWindowCode) {
+    $floatingWindowSource = Get-Content -LiteralPath $floatingWindowCode -Raw
+    if ($floatingWindowSource -notmatch 'WorkArea\.Height \* 0\.4') {
+        throw "Floating subtitles should remain within 40% of the work area."
+    }
+    if ($floatingWindowSource -notmatch 'Chrome\.Measure\([\s\S]*double\.PositiveInfinity' -or
+        $floatingWindowSource -notmatch 'Entries\.RemoveAt\(0\)') {
+        throw "Floating subtitles should measure rendered height and trim the oldest group first."
     }
 }
 
@@ -264,6 +333,8 @@ try {
     $speechDetectionStatus = Find-ByAutomationId "OverviewSpeechDetectionStatus"
     $recognitionWorkerStatus = Find-ByAutomationId "OverviewRecognitionWorkerStatus"
     $recognitionApiStatus = Find-ByAutomationId "OverviewRecognitionApiStatus"
+    $translationWorkerStatus = Find-ByAutomationId "OverviewTranslationWorkerStatus"
+    $translationApiStatus = Find-ByAutomationId "OverviewTranslationApiStatus"
     $subtitleOutputStatus = Find-ByAutomationId "OverviewSubtitleOutputStatus"
     $homeDeviceText = Find-ByAutomationId "HomeAudioDeviceText"
     $homeAudioLevel = Find-ByAutomationId "HomeAudioLevelBar"
@@ -293,6 +364,8 @@ try {
     if ($null -eq $speechDetectionStatus) { throw "Speech detection status was not found in the overview panel." }
     if ($null -eq $recognitionWorkerStatus) { throw "Recognition worker status was not found in the overview panel." }
     if ($null -eq $recognitionApiStatus) { throw "Recognition API status was not found in the overview panel." }
+    if ($null -eq $translationWorkerStatus) { throw "Translation worker status was not found in the overview panel." }
+    if ($null -eq $translationApiStatus) { throw "Translation API status was not found in the overview panel." }
     if ($null -eq $subtitleOutputStatus) { throw "Subtitle output status was not found in the overview panel." }
     if ($null -eq $homeDeviceText) { throw "Home audio device text was not found." }
     if ($null -eq $homeAudioLevel) { throw "Home audio level bar was not found." }
@@ -325,10 +398,17 @@ try {
     $audioSettingsGroup = Find-ByAutomationId "SettingsAudioGroup"
     $recognitionSettingsGroup = Find-ByAutomationId "SettingsRecognitionGroup"
     $floatingSettingsGroup = Find-ByAutomationId "SettingsFloatingGroup"
+    $translationSettingsGroup = Find-ByAutomationId "SettingsTranslationGroup"
     $diagnosticsSettingsGroup = Find-ByAutomationId "SettingsDiagnosticsGroup"
     $balancedVadMode = Find-ByAutomationId "VadModeBalanced"
     $fixedEndSilenceBox = Find-ByAutomationId "FixedEndSilenceBox"
+    $audioDeviceComboBox = Find-ByAutomationId "AudioDeviceComboBox"
     $currentVadEndpointText = Find-ByAutomationId "CurrentVadEndpointText"
+    $followDefaultDeviceSwitch = Find-ByAutomationId "FollowDefaultDeviceSwitch"
+    $translationTargetLanguageBox = Find-ByAutomationId "TranslationTargetLanguageBox"
+    $translationEnabledSwitch = Find-ByAutomationId "TranslationEnabledSwitch"
+    $translationSelectionSummaryText = Find-ByAutomationId "TranslationSelectionSummaryText"
+    $translationProfileList = Find-ByAutomationId "TranslationProfileList"
 
     if ($settingsNav.Current.ItemStatus -ne "Active") {
         throw "Navigation active state did not move to the clicked settings page."
@@ -341,11 +421,52 @@ try {
     if ($null -eq $audioSettingsGroup) { throw "Settings audio group was not found." }
     if ($null -eq $recognitionSettingsGroup) { throw "Settings recognition service group was not found." }
     if ($null -eq $floatingSettingsGroup) { throw "Settings floating subtitle group was not found." }
+    if ($null -eq $translationSettingsGroup) { throw "Settings translation group was not found." }
     if ($null -eq $diagnosticsSettingsGroup) { throw "Settings diagnostics group was not found." }
     if ($null -eq $balancedVadMode) { throw "Balanced adaptive VAD mode was not found." }
     if ($null -eq $fixedEndSilenceBox) { throw "Fixed end-silence input was not found." }
     if ($fixedEndSilenceBox.Current.IsEnabled) { throw "Fixed end-silence input should be disabled in balanced mode." }
+    if ($null -eq $audioDeviceComboBox) { throw "Audio-device selector was not found." }
     if ($null -eq $currentVadEndpointText) { throw "Current VAD endpoint status was not found." }
+    if ($null -eq $followDefaultDeviceSwitch) { throw "Default-device toggle was not found." }
+    if ($null -eq $translationTargetLanguageBox) { throw "Translation target-language control was not found." }
+    if ($null -eq $translationEnabledSwitch) { throw "Translation enable toggle was not found." }
+    if ($null -eq $translationSelectionSummaryText) { throw "Translation profile status was not found." }
+    if ($null -eq $translationProfileList) { throw "Translation profile list was not found." }
+
+    $vadStatusRect = $currentVadEndpointText.Current.BoundingRectangle
+    $followDefaultRect = $followDefaultDeviceSwitch.Current.BoundingRectangle
+    if ([Math]::Abs($vadStatusRect.Left - $followDefaultRect.Left) -gt 2) {
+        throw "Current VAD endpoint status is not aligned with the default-device toggle."
+    }
+
+    $targetLanguageRect = $translationTargetLanguageBox.Current.BoundingRectangle
+    $audioDeviceRect = $audioDeviceComboBox.Current.BoundingRectangle
+    $profileStatusRect = $translationSelectionSummaryText.Current.BoundingRectangle
+    $profileListRect = $translationProfileList.Current.BoundingRectangle
+    if ($targetLanguageRect.Width -ge ($audioDeviceRect.Width * 0.65)) {
+        throw "Translation target-language control is not visibly shorter than a full-width settings field."
+    }
+    if ($profileStatusRect.Top -le $targetLanguageRect.Bottom -or
+        $profileStatusRect.Bottom -gt $profileListRect.Top) {
+        throw "Translation profile status is not positioned below the form and above the profile list."
+    }
+
+    $addTranslationProfileButton = Find-ByAutomationId "AddTranslationProfileButton"
+    Invoke-Element $addTranslationProfileButton "Add translation profile button"
+    $protocolNoticeDeadline = (Get-Date).AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 100
+        $translationProtocolNotice = Find-ByAutomationId "TranslationProtocolNotice"
+    } while ($null -eq $translationProtocolNotice -and (Get-Date) -lt $protocolNoticeDeadline)
+    if ($null -eq $translationProtocolNotice) {
+        throw "Translation profile editor did not display the Chat Completions compatibility notice."
+    }
+
+    $cancelCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, "取消")
+    $cancelTranslationProfileButton = $mainElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cancelCondition)
+    Invoke-Element $cancelTranslationProfileButton "Cancel translation profile editor button"
+    Start-Sleep -Milliseconds 300
 
     Invoke-Element $floatingButton "Top command floating window button"
     Start-Sleep -Milliseconds 900

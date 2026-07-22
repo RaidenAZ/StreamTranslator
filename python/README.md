@@ -1,6 +1,8 @@
-# ASR Worker
+# Python Workers
 
-The Python worker is launched by the C# app in V1.0. It reads JSON Lines from stdin and writes JSON Lines to stdout.
+Both workers are launched and stopped by the C# app. They read UTF-8 JSON Lines from stdin and write protocol messages only to stdout.
+
+## ASR Worker
 
 Required environment variables:
 
@@ -13,3 +15,18 @@ Required environment variables:
 The worker validates `wav`/`mp3`, the MiMo 10MB Base64 limit, and languages `auto`/`zh`/`en`. Errors are returned with `errorKind`, `statusCode`, and `retryable` fields so C# can apply the V1.0 retry policy.
 
 The worker is an implementation detail. Users should not start or stop it manually.
+
+## Translation Worker
+
+`translation_worker.py` is the independent V1.2 OpenAI Chat Completions compatible worker. C# sends one `configure` message over stdin, followed by concurrent `translate` messages. API Keys are never passed in process arguments.
+
+The worker:
+
+- keeps the ASR process and failure state independent;
+- uses the configured Base URL exactly as supplied and resolves `chat/completions` without adding `/v1`;
+- disables OpenAI SDK retries so C# owns the single retry policy;
+- supports Standard, DeepSeek, Qwen + vLLM, and validated Custom `extra_body` templates;
+- uses the built-in `translation-v1` prompt and non-streaming responses;
+- normalizes text content and classifies protocol, authentication, timeout, rate-limit, connection, and server failures.
+
+The translation service itself is user-managed. StreamTranslator does not start or stop vLLM, Ollama, llama.cpp, or LM Studio.

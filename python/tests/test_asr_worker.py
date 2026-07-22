@@ -66,6 +66,21 @@ def test_health_check_rejects_missing_api_key():
         worker.health_check()
 
 
+def test_protocol_accepts_utf8_bom_before_first_json_message():
+    output = io.StringIO()
+    worker = TrackingWorker()
+
+    run_protocol(
+        io.StringIO("\ufeff" + json.dumps({"id": "shutdown-1", "type": "shutdown"})),
+        output,
+        worker,
+        max_concurrency=1,
+    )
+
+    response = json.loads(output.getvalue())
+    assert response == {"id": "shutdown-1", "type": "shutdown", "ok": True}
+
+
 def test_transcribe_rejects_unsupported_language_before_api_call():
     worker = AsrWorker(config(api_key="key"), client=FakeClient(FakeCompletions()))
 

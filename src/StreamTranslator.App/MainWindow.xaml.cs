@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -11,8 +12,12 @@ using StreamTranslator.Audio.Capture;
 using StreamTranslator.App.Runtime;
 using StreamTranslator.Core.Configuration;
 using StreamTranslator.Core.Subtitles;
+using StreamTranslator.Core.Translation;
 using Wpf.Ui.Controls;
 using System.Windows.Interop;
+using PasswordBox = System.Windows.Controls.PasswordBox;
+using TextBlock = System.Windows.Controls.TextBlock;
+using TextBox = System.Windows.Controls.TextBox;
 
 namespace StreamTranslator.App;
 
@@ -32,9 +37,9 @@ public partial class MainWindow : FluentWindow
     private FloatingSubtitleWindow? _floatingWindow;
     private SubtitleRuntime? _runtime;
     private HwndSource? _hwndSource;
-    private string? _currentFloatingGroupId;
     private bool _isRunning;
     private bool _isClosing;
+    private bool _sessionTranslationEnabled;
 
     public MainWindow()
     {
@@ -116,6 +121,7 @@ public partial class MainWindow : FluentWindow
 
     private async Task StartRuntimeAsync()
     {
+        AppSettings? runtimeSettings = null;
         try
         {
             await SaveSettingsAsync();
@@ -125,33 +131,46 @@ public partial class MainWindow : FluentWindow
                 throw new InvalidOperationException(string.Join(Environment.NewLine, validationErrors));
             }
 
-            _runtime = new SubtitleRuntime(AppContext.BaseDirectory, _dataDirectory, _settings);
-            _runtime.StatusChanged += OnRuntimeStatusChanged;
-            _runtime.SubtitleReady += OnSubtitleReady;
-            _runtime.RuntimeError += OnRuntimeError;
-            _runtime.AudioLevelChanged += OnAudioLevelChanged;
-            _runtime.VadEndpointChanged += OnVadEndpointChanged;
+            runtimeSettings = ResolveRuntimeTranslationSettings();
+            if (runtimeSettings is null)
+            {
+                return;
+            }
 
-            AudioStatusText.Text = "等待捕获";
-            VadStatusText.Text = "加载中";
-            WorkerStatusText.Text = "启动中";
-            ApiStatusText.Text = "等待请求";
-            SubtitleOutputStatusText.Text = "等待字幕";
-            HomeRuntimeSummaryText.Text = "启动中，正在连接音频与识别服务";
-            HomeStateBadgeText.Text = "启动中";
-            StartStopButton.IsEnabled = false;
+            await StartRuntimeCoreAsync(runtimeSettings);
+        }
+        catch (TranslationStartupException ex) when (runtimeSettings?.Translation.IsEffectivelyEnabled == true)
+        {
+            await StopRuntimeAsync();
+            AppendAppLog($"翻译 worker 启动失败: {ex.InnerException?.Message ?? ex.Message}");
+            var result = System.Windows.MessageBox.Show(
+                this,
+                $"翻译 worker 启动失败：{ex.InnerException?.Message ?? ex.Message}{Environment.NewLine}{Environment.NewLine}是否仅启动原文字幕？选择“否”返回设置。",
+                "翻译暂不可用",
+                System.Windows.MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                System.Windows.MessageBoxResult.Yes);
+            if (result != System.Windows.MessageBoxResult.Yes)
+            {
+                ShowPage(SettingsPage);
+                SetActiveNavigationItem("SettingsPage");
+                return;
+            }
 
-            await _runtime.StartAsync();
-
-            _isRunning = true;
-            StartStopText.Text = "停止字幕";
-            StartStopIcon.Symbol = SymbolRegular.Stop24;
-            StartStopButton.IsEnabled = true;
-            HomeRuntimeSummaryText.Text = "运行中，正在监听系统输出声音";
-            HomeStateBadgeText.Text = "运行中";
-            AppendAppLog("字幕 runtime 已启动");
-            TryShowFloatingWindow();
-            _floatingWindow?.SetCaption("等待字幕...");
+            try
+            {
+                await StartRuntimeCoreAsync(runtimeSettings with
+                {
+                    Translation = runtimeSettings.Translation with { Enabled = false }
+                });
+            }
+            catch (Exception sourceOnlyException)
+            {
+                StartStopButton.IsEnabled = true;
+                await StopRuntimeAsync();
+                AppendAppLog($"原文模式启动失败: {sourceOnlyException.Message}");
+                LastErrorText.Text = sourceOnlyException.Message;
+            }
         }
         catch (Exception ex)
         {
@@ -160,6 +179,44 @@ public partial class MainWindow : FluentWindow
             AppendAppLog($"字幕 runtime 启动失败: {ex.Message}");
             LastErrorText.Text = ex.Message;
         }
+    }
+
+    private async Task StartRuntimeCoreAsync(AppSettings runtimeSettings)
+    {
+        _sessionTranslationEnabled = runtimeSettings.Translation.IsEffectivelyEnabled;
+        _runtime = new SubtitleRuntime(AppContext.BaseDirectory, _dataDirectory, runtimeSettings);
+        _runtime.StatusChanged += OnRuntimeStatusChanged;
+        _runtime.SubtitleReady += OnSubtitleReady;
+        _runtime.RuntimeError += OnRuntimeError;
+        _runtime.AudioLevelChanged += OnAudioLevelChanged;
+        _runtime.VadEndpointChanged += OnVadEndpointChanged;
+        _runtime.TranslationReady += OnTranslationReady;
+        _runtime.TranslationStatusChanged += OnTranslationStatusChanged;
+        _runtime.TranslationTaskStatusChanged += OnTranslationTaskStatusChanged;
+
+        AudioStatusText.Text = "等待捕获";
+        VadStatusText.Text = "加载中";
+        WorkerStatusText.Text = "启动中";
+        ApiStatusText.Text = "等待请求";
+        SubtitleOutputStatusText.Text = "等待字幕";
+        TranslationWorkerStatusText.Text = _sessionTranslationEnabled ? "启动中" : "已关闭";
+        TranslationApiStatusText.Text = _sessionTranslationEnabled ? "等待请求" : "已关闭";
+        HomeRuntimeSummaryText.Text = "启动中，正在连接音频与识别服务";
+        HomeStateBadgeText.Text = "启动中";
+        StartStopButton.IsEnabled = false;
+
+        await _runtime.StartAsync();
+
+        _isRunning = true;
+        TranslationSettingsPanel.IsEnabled = false;
+        StartStopText.Text = "停止字幕";
+        StartStopIcon.Symbol = SymbolRegular.Stop24;
+        StartStopButton.IsEnabled = true;
+        HomeRuntimeSummaryText.Text = "运行中，正在监听系统输出声音";
+        HomeStateBadgeText.Text = "运行中";
+        AppendAppLog("字幕 runtime 已启动");
+        TryShowFloatingWindow();
+        _floatingWindow?.SetCaption("等待字幕...");
     }
 
     private async Task StopRuntimeAsync()
@@ -172,16 +229,22 @@ public partial class MainWindow : FluentWindow
             _runtime.RuntimeError -= OnRuntimeError;
             _runtime.AudioLevelChanged -= OnAudioLevelChanged;
             _runtime.VadEndpointChanged -= OnVadEndpointChanged;
+            _runtime.TranslationReady -= OnTranslationReady;
+            _runtime.TranslationStatusChanged -= OnTranslationStatusChanged;
+            _runtime.TranslationTaskStatusChanged -= OnTranslationTaskStatusChanged;
             await _runtime.DisposeAsync();
             _runtime = null;
         }
 
         _isRunning = false;
+        _sessionTranslationEnabled = false;
         AudioStatusText.Text = "未启动";
         VadStatusText.Text = "等待模型";
         WorkerStatusText.Text = "未启动";
         ApiStatusText.Text = "未测试";
         SubtitleOutputStatusText.Text = "等待字幕";
+        TranslationWorkerStatusText.Text = _settings.Translation.IsEffectivelyEnabled ? "未启动" : "已关闭";
+        TranslationApiStatusText.Text = _settings.Translation.IsEffectivelyEnabled ? "未测试" : "已关闭";
         AudioLevelBar.Value = 0;
         HomeAudioLevelText.Text = "0%";
         HomeRuntimeSummaryText.Text = "未启动，等待开始";
@@ -189,6 +252,7 @@ public partial class MainWindow : FluentWindow
         StartStopText.Text = "开始字幕";
         StartStopIcon.Symbol = SymbolRegular.Play24;
         StartStopButton.IsEnabled = true;
+        TranslationSettingsPanel.IsEnabled = true;
         UpdateVadEndpointModeUi();
         AppendAppLog("字幕 runtime 已停止");
     }
@@ -222,19 +286,19 @@ public partial class MainWindow : FluentWindow
 
     private void OnCopySelectedClick(object sender, RoutedEventArgs e)
     {
-        if (SubtitleList.SelectedItem is SubtitleItem { SourceText: { } selectedText } &&
-            !string.IsNullOrWhiteSpace(selectedText))
+        if (SubtitleList.SelectedItem is SubtitleItem selected)
         {
-            Clipboard.SetText(selectedText);
+            Clipboard.SetText(FormatSubtitleForCopy(selected));
         }
     }
 
     private void OnCopyAllClick(object sender, RoutedEventArgs e)
     {
         var builder = new StringBuilder();
-        foreach (var item in SubtitleTexts())
+        foreach (var item in SubtitleList.Items.OfType<SubtitleItem>())
         {
-            builder.AppendLine(item);
+            builder.AppendLine(FormatSubtitleForCopy(item));
+            builder.AppendLine();
         }
 
         Clipboard.SetText(builder.ToString());
@@ -244,10 +308,10 @@ public partial class MainWindow : FluentWindow
     {
         var recent = SubtitleList.Items
             .OfType<SubtitleItem>()
-            .Select(static item => item.SourceText)
-            .Where(static text => !string.IsNullOrWhiteSpace(text))
-            .TakeLast(10);
-        Clipboard.SetText(string.Join(Environment.NewLine, recent));
+            .Where(static item => !string.IsNullOrWhiteSpace(item.SourceText))
+            .TakeLast(10)
+            .Select(FormatSubtitleForCopy);
+        Clipboard.SetText(string.Join(Environment.NewLine + Environment.NewLine, recent));
     }
 
     private void OnClearHistoryClick(object sender, RoutedEventArgs e)
@@ -274,19 +338,18 @@ public partial class MainWindow : FluentWindow
         ResetSubtitlePlaceholder();
     }
 
-    private IEnumerable<string> SubtitleTexts()
+    private static string FormatSubtitleForCopy(SubtitleItem item)
     {
-        return SubtitleList.Items
-            .OfType<SubtitleItem>()
-            .Select(static item => item.SourceText)
-            .Where(static text => !string.IsNullOrWhiteSpace(text));
+        var firstLine = $"{item.GeneratedTimeText}  {item.SourceText}";
+        return string.IsNullOrWhiteSpace(item.TranslatedText)
+            ? firstLine
+            : $"{firstLine}{Environment.NewLine}          {item.TranslatedText}";
     }
 
     private void ResetSubtitlePlaceholder()
     {
         SubtitleList.Items.Clear();
         SubtitlePlaceholderText.Visibility = Visibility.Visible;
-        _currentFloatingGroupId = null;
     }
 
     private void RemoveSubtitlePlaceholder()
@@ -307,7 +370,7 @@ public partial class MainWindow : FluentWindow
     private void OnCopyDiagnosticsClick(object sender, RoutedEventArgs e)
     {
         var diagnostics = $"""
-            StreamTranslator V1.0
+            StreamTranslator V1.2
             OS: {Environment.OSVersion}
             DataDirectory: {_dataDirectory}
             AudioStatus: {AudioStatusText.Text}
@@ -390,29 +453,61 @@ public partial class MainWindow : FluentWindow
             if (!string.IsNullOrWhiteSpace(text))
             {
                 RemoveSubtitlePlaceholder();
-                var updateFloatingWindow = true;
                 if (string.Equals(item.Type, "subtitle_revision", StringComparison.Ordinal))
                 {
                     ApplySubtitleRevision(item);
-                    updateFloatingWindow = string.Equals(
-                        _currentFloatingGroupId,
-                        item.UtteranceGroupId,
-                        StringComparison.Ordinal);
                 }
                 else
                 {
                     SubtitleList.Items.Add(item);
-                    _currentFloatingGroupId = item.UtteranceGroupId;
                 }
 
                 SubtitleList.ScrollIntoView(item);
-                if (updateFloatingWindow)
-                {
-                    _floatingWindow?.SetCaption(text);
-                }
+                var translationPending = _sessionTranslationEnabled &&
+                    !SourceLanguageDecision.ShouldSkip(
+                        _settings.Asr.Language,
+                        _settings.Translation.TargetLanguage,
+                        item.SourceText);
+                _floatingWindow?.PublishSource(item, translationPending);
                 SubtitleOutputStatusText.Text = "输出中";
             }
         });
+    }
+
+    private void OnTranslationReady(object? sender, TranslationResultUpdate update)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            var match = SubtitleList.Items
+                .OfType<SubtitleItem>()
+                .Select((item, index) => new { item, index })
+                .FirstOrDefault(entry =>
+                    string.Equals(entry.item.UtteranceGroupId, update.UtteranceGroupId, StringComparison.Ordinal) &&
+                    entry.item.Revision == update.SourceRevision);
+            if (match is not null)
+            {
+                var translated = match.item with { TranslatedText = update.TranslatedText };
+                SubtitleList.Items[match.index] = translated;
+            }
+            _floatingWindow?.ApplyTranslation(update);
+            SubtitleOutputStatusText.Text = "双语输出中";
+        });
+    }
+
+    private void OnTranslationStatusChanged(object? sender, TranslationRuntimeStatus status)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            TranslationWorkerStatusText.Text = status.WorkerStatus;
+            TranslationApiStatusText.Text = status.QueueLength > 0
+                ? $"{status.ServiceStatus} · 队列 {status.QueueLength}"
+                : status.ServiceStatus;
+        });
+    }
+
+    private void OnTranslationTaskStatusChanged(object? sender, TranslationTaskStatusUpdate status)
+    {
+        Dispatcher.BeginInvoke(() => _floatingWindow?.ClearTranslationPending(status));
     }
 
     private void ApplySubtitleRevision(SubtitleItem revision)
@@ -493,8 +588,13 @@ public partial class MainWindow : FluentWindow
         if (_floatingWindow is null)
         {
             _floatingWindow = new FloatingSubtitleWindow();
-            _floatingWindow.Closed += (_, _) =>
+            _floatingWindow.VisibleGroupsChanged += OnFloatingVisibleGroupsChanged;
+            _floatingWindow.Closed += (closedWindow, _) =>
             {
+                if (closedWindow is FloatingSubtitleWindow floatingWindow)
+                {
+                    floatingWindow.VisibleGroupsChanged -= OnFloatingVisibleGroupsChanged;
+                }
                 _floatingWindow = null;
                 UpdateFloatingWindowButtonState();
             };
@@ -513,10 +613,15 @@ public partial class MainWindow : FluentWindow
         _floatingWindow.Activate();
 
         _floatingWindow.ApplySettings(
-            NumberValue(FloatingFontSizeBox, 28),
+            NumberValue(FloatingFontSizeBox, 18),
             (int)NumberValue(FloatingLinesBox, 2),
             FloatingOpacitySlider.Value);
         UpdateFloatingWindowButtonState();
+    }
+
+    private void OnFloatingVisibleGroupsChanged(IReadOnlyCollection<string> visibleGroupIds)
+    {
+        _runtime?.UpdateTranslationVisibleGroups(visibleGroupIds);
     }
 
     private void TryShowFloatingWindow()
@@ -623,10 +728,13 @@ public partial class MainWindow : FluentWindow
         TimeoutBox.Value = settings.Asr.TimeoutMs;
         MaxConcurrencyBox.Value = settings.Asr.MaxConcurrency;
         FloatingFontSizeBox.Value = settings.SubtitleWindow.FontSize;
-        FloatingLinesBox.Value = settings.SubtitleWindow.MaxLines;
+        FloatingLinesBox.Value = settings.SubtitleWindow.MaxSubtitleItems;
         FloatingOpacitySlider.Value = settings.SubtitleWindow.Opacity;
         HotkeysEnabledSwitch.IsChecked = settings.Hotkeys.Enabled;
         SelectLanguage(settings.Asr.Language);
+        TranslationEnabledSwitch.IsChecked = settings.Translation.Enabled;
+        SelectTranslationTargetLanguage(settings.Translation.TargetLanguage);
+        RefreshTranslationProfileList(settings.Translation.ActiveProfileId);
     }
 
     private async Task SaveSettingsAsync()
@@ -638,7 +746,7 @@ public partial class MainWindow : FluentWindow
 
         _settings = _settings with
         {
-            SchemaVersion = 2,
+            SchemaVersion = 3,
             Audio = _settings.Audio with
             {
                 DeviceId = FollowDefaultDeviceSwitch.IsChecked == true ? "default" : SelectedAudioDeviceId(),
@@ -659,10 +767,16 @@ public partial class MainWindow : FluentWindow
                 TimeoutMs = (int)NumberValue(TimeoutBox, 30000),
                 MaxConcurrency = (int)NumberValue(MaxConcurrencyBox, 2)
             },
+            Translation = _settings.Translation with
+            {
+                Enabled = TranslationEnabledSwitch.IsChecked == true,
+                TargetLanguage = GetSelectedTranslationTargetLanguage(),
+                ActiveProfileId = SelectedTranslationProfile()?.Id
+            },
             SubtitleWindow = _settings.SubtitleWindow with
             {
-                FontSize = NumberValue(FloatingFontSizeBox, 28),
-                MaxLines = (int)NumberValue(FloatingLinesBox, 2),
+                FontSize = NumberValue(FloatingFontSizeBox, 18),
+                MaxSubtitleItems = (int)NumberValue(FloatingLinesBox, 2),
                 Opacity = FloatingOpacitySlider.Value
             },
             Diagnostics = _settings.Diagnostics with
@@ -679,6 +793,548 @@ public partial class MainWindow : FluentWindow
 
         await _settingsStore.SaveAsync(_settings);
     }
+
+    private AppSettings? ResolveRuntimeTranslationSettings()
+    {
+        if (!_settings.Translation.Enabled)
+        {
+            return _settings;
+        }
+
+        var errors = AppSettingsValidator.ValidateTranslation(_settings);
+        var profile = _settings.Translation.ActiveProfile;
+        var isValidated = profile is not null && TranslationProfileRules.IsValidated(profile);
+        if (errors.Count == 0 && isValidated)
+        {
+            return _settings;
+        }
+
+        var reason = errors.Count > 0
+            ? string.Join(Environment.NewLine, errors)
+            : "当前翻译模型配置尚未通过连接测试。";
+        var result = System.Windows.MessageBox.Show(
+            this,
+            $"{reason}{Environment.NewLine}{Environment.NewLine}是否仅启动原文字幕？",
+            "翻译暂不可用",
+            System.Windows.MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            System.Windows.MessageBoxResult.Yes);
+        if (result == System.Windows.MessageBoxResult.Yes)
+        {
+            return _settings with
+            {
+                Translation = _settings.Translation with { Enabled = false }
+            };
+        }
+
+        ShowPage(SettingsPage);
+        SetActiveNavigationItem("SettingsPage");
+        return null;
+    }
+
+    private void OnTranslationSettingChanged(object sender, RoutedEventArgs e)
+    {
+        if (TranslationSelectionSummaryText is not null)
+        {
+            UpdateTranslationProfileSelectionUi();
+        }
+    }
+
+    private void OnTranslationProfileSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (TranslationProfileList.SelectedItem is TranslationProfileDisplayItem selected)
+        {
+            _settings = _settings with
+            {
+                Translation = _settings.Translation with { ActiveProfileId = selected.Id }
+            };
+        }
+        UpdateTranslationProfileSelectionUi();
+    }
+
+    private async void OnAddTranslationProfileClick(object sender, RoutedEventArgs e)
+    {
+        var profile = await ShowTranslationProfileEditorAsync(null);
+        if (profile is null)
+        {
+            return;
+        }
+        var profiles = _settings.Translation.Profiles.ToList();
+        profiles.Add(profile);
+        _settings = _settings with
+        {
+            Translation = _settings.Translation with
+            {
+                Profiles = profiles,
+                ActiveProfileId = profile.Id
+            }
+        };
+        RefreshTranslationProfileList(profile.Id);
+        await SaveSettingsAsync();
+    }
+
+    private async void OnEditTranslationProfileClick(object sender, RoutedEventArgs e)
+    {
+        var selected = SelectedTranslationProfile();
+        if (selected is null)
+        {
+            return;
+        }
+        var edited = await ShowTranslationProfileEditorAsync(selected);
+        if (edited is null)
+        {
+            return;
+        }
+        ReplaceTranslationProfile(edited);
+        RefreshTranslationProfileList(edited.Id);
+        await SaveSettingsAsync();
+    }
+
+    private async void OnCopyTranslationProfileClick(object sender, RoutedEventArgs e)
+    {
+        var selected = SelectedTranslationProfile();
+        if (selected is null)
+        {
+            return;
+        }
+        var copy = selected with
+        {
+            Id = Guid.NewGuid(),
+            Name = $"{selected.Name} 副本",
+            ValidationFingerprint = null,
+            LastValidatedAt = null,
+            LastValidationLatencyMs = null
+        };
+        var profiles = _settings.Translation.Profiles.ToList();
+        profiles.Add(copy);
+        _settings = _settings with
+        {
+            Translation = _settings.Translation with
+            {
+                Profiles = profiles,
+                ActiveProfileId = copy.Id
+            }
+        };
+        RefreshTranslationProfileList(copy.Id);
+        await SaveSettingsAsync();
+    }
+
+    private async void OnDeleteTranslationProfileClick(object sender, RoutedEventArgs e)
+    {
+        var selected = SelectedTranslationProfile();
+        if (selected is null)
+        {
+            return;
+        }
+        var result = System.Windows.MessageBox.Show(
+            this,
+            $"确定删除模型配置“{selected.Name}”吗？",
+            "删除翻译配置",
+            System.Windows.MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            System.Windows.MessageBoxResult.No);
+        if (result != System.Windows.MessageBoxResult.Yes)
+        {
+            return;
+        }
+        var profiles = _settings.Translation.Profiles.Where(profile => profile.Id != selected.Id).ToList();
+        _settings = _settings with
+        {
+            Translation = _settings.Translation with
+            {
+                Profiles = profiles,
+                ActiveProfileId = null
+            }
+        };
+        RefreshTranslationProfileList(null);
+        await SaveSettingsAsync();
+    }
+
+    private async void OnTestTranslationProfileClick(object sender, RoutedEventArgs e)
+    {
+        var profile = SelectedTranslationProfile();
+        if (profile is null)
+        {
+            return;
+        }
+        var errors = TranslationProfileRules.Validate(profile);
+        if (errors.Count > 0)
+        {
+            TranslationTestResultText.Text = string.Join(Environment.NewLine, errors);
+            return;
+        }
+
+        TestTranslationProfileButton.IsEnabled = false;
+        TranslationTestResultText.Text = "正在发送测试翻译...";
+        var sourceText = GetSelectedTranslationTargetLanguage() == "en"
+            ? "直播将在9:30开始。"
+            : "The live stream starts at 9:30.";
+        var sourceLanguage = GetSelectedTranslationTargetLanguage() == "en" ? "zh" : "en";
+        var started = Stopwatch.StartNew();
+        try
+        {
+            await using var client = TranslationWorkerClientFactory.Create(AppContext.BaseDirectory, _dataDirectory);
+            await client.StartAsync(profile);
+            var response = await client.TranslateAsync(TranslationWorkerRequest.Translate(
+                $"test-{Guid.NewGuid():N}",
+                0,
+                "connection-test",
+                1,
+                sourceLanguage,
+                GetSelectedTranslationTargetLanguage(),
+                sourceText,
+                [],
+                DateTimeOffset.Now,
+                isConnectionTest: true));
+            await client.ShutdownAsync();
+            started.Stop();
+
+            if (!response.Ok || string.IsNullOrWhiteSpace(response.TranslatedText))
+            {
+                TranslationTestResultText.Text =
+                    $"失败 · {response.ErrorKind ?? response.ErrorCode ?? "unknown"} · {response.ErrorMessage}";
+                return;
+            }
+
+            var validated = profile with
+            {
+                ValidationFingerprint = TranslationProfileRules.CreateValidationFingerprint(profile),
+                LastValidatedAt = DateTimeOffset.Now,
+                LastValidationLatencyMs = (int)started.ElapsedMilliseconds
+            };
+            ReplaceTranslationProfile(validated);
+            RefreshTranslationProfileList(validated.Id);
+            var warnings = response.WarningCodes.Length == 0
+                ? ""
+                : $" · 警告: {string.Join(", ", response.WarningCodes)}";
+            TranslationTestResultText.Text =
+                $"成功 · {started.ElapsedMilliseconds} ms · {sourceText} → {response.TranslatedText}{warnings}";
+            await SaveSettingsAsync();
+        }
+        catch (Exception ex)
+        {
+            TranslationTestResultText.Text = $"失败 · connection · {ex.Message}";
+        }
+        finally
+        {
+            TestTranslationProfileButton.IsEnabled = SelectedTranslationProfile() is not null;
+        }
+    }
+
+    private async Task<TranslationProfile?> ShowTranslationProfileEditorAsync(TranslationProfile? existing)
+    {
+        var nameBox = new TextBox { Text = existing?.Name ?? "", Height = 34 };
+        var baseUrlBox = new TextBox { Text = existing?.BaseUrl ?? "", Height = 34 };
+        var endpointPreview = new TextBlock
+        {
+            Foreground = FindResource("SecondaryTextBrush") as System.Windows.Media.Brush,
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        var modelBox = new TextBox { Text = existing?.Model ?? "", Height = 34 };
+        var apiKeyBox = new PasswordBox { Password = existing?.ApiKey ?? "", Height = 34 };
+        var locationBox = new ComboBox { Height = 34 };
+        locationBox.Items.Add(new ComboBoxItem { Content = "本地服务", Tag = TranslationServiceLocation.Local });
+        locationBox.Items.Add(new ComboBoxItem { Content = "远程服务", Tag = TranslationServiceLocation.Remote });
+        locationBox.SelectedIndex = existing?.Location == TranslationServiceLocation.Local ? 0 : 1;
+        var compatibilityBox = new ComboBox { Height = 34 };
+        foreach (var compatibility in Enum.GetValues<TranslationRequestCompatibility>())
+        {
+            compatibilityBox.Items.Add(new ComboBoxItem { Content = CompatibilityLabel(compatibility), Tag = compatibility });
+        }
+        compatibilityBox.SelectedIndex = Math.Max(0, Array.IndexOf(
+            Enum.GetValues<TranslationRequestCompatibility>(),
+            existing?.RequestCompatibility ?? TranslationRequestCompatibility.Standard));
+        var timeoutBox = new NumberBox
+        {
+            Value = existing?.TimeoutMs ?? 10000,
+            Minimum = 3000,
+            Maximum = 30000,
+            SmallChange = 1000
+        };
+        var concurrencyBox = new NumberBox
+        {
+            Value = existing?.MaxConcurrency ?? 2,
+            Minimum = 1,
+            Maximum = 4,
+            SmallChange = 1
+        };
+        var customExtraBodyBox = new TextBox
+        {
+            Text = existing?.CustomExtraBody.GetRawText() ?? "{}",
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            MinHeight = 72,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+        };
+        var validationText = new TextBlock
+        {
+            Foreground = System.Windows.Media.Brushes.IndianRed,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 8, 0, 0)
+        };
+        var advancedPanel = new StackPanel();
+        advancedPanel.Children.Add(CreateField("请求兼容", compatibilityBox));
+        var limits = new Grid();
+        limits.ColumnDefinitions.Add(new ColumnDefinition());
+        limits.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+        limits.ColumnDefinitions.Add(new ColumnDefinition());
+        var timeoutField = CreateField("超时 ms", timeoutBox);
+        var concurrencyField = CreateField("最大并发", concurrencyBox);
+        Grid.SetColumn(concurrencyField, 2);
+        limits.Children.Add(timeoutField);
+        limits.Children.Add(concurrencyField);
+        advancedPanel.Children.Add(limits);
+        var customField = CreateField("Custom extraBody", customExtraBodyBox);
+        advancedPanel.Children.Add(customField);
+
+        void UpdateCompatibilityVisibility()
+        {
+            customField.Visibility = SelectedEnum<TranslationRequestCompatibility>(compatibilityBox) ==
+                                     TranslationRequestCompatibility.Custom
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        }
+        compatibilityBox.SelectionChanged += (_, _) => UpdateCompatibilityVisibility();
+        UpdateCompatibilityVisibility();
+
+        void UpdateEndpointPreview()
+        {
+            try
+            {
+                endpointPreview.Text = $"最终请求: {TranslationProfileRules.BuildFinalEndpoint(baseUrlBox.Text)}";
+            }
+            catch
+            {
+                endpointPreview.Text = "最终请求: 等待有效 Base URL";
+            }
+        }
+        baseUrlBox.TextChanged += (_, _) => UpdateEndpointPreview();
+        baseUrlBox.LostKeyboardFocus += (_, _) =>
+        {
+            if (existing is null)
+            {
+                locationBox.SelectedIndex = TranslationProfileRules.SuggestLocation(baseUrlBox.Text) ==
+                                            TranslationServiceLocation.Local ? 0 : 1;
+            }
+        };
+        UpdateEndpointPreview();
+
+        var form = new StackPanel
+        {
+            Width = 480,
+            Margin = new Thickness(0, 4, 0, 0)
+        };
+        var protocolNotice = new TextBlock
+        {
+            Text = "接口协议：兼容 OpenAI Chat Completions API",
+            Foreground = FindResource("SecondaryTextBrush") as System.Windows.Media.Brush,
+            FontSize = 12,
+            Margin = new Thickness(0, 0, 0, 12)
+        };
+        AutomationProperties.SetAutomationId(protocolNotice, "TranslationProtocolNotice");
+        form.Children.Add(protocolNotice);
+        form.Children.Add(CreateField("配置名称", nameBox));
+        var baseUrlField = CreateField("Base URL", baseUrlBox);
+        baseUrlField.Children.Add(endpointPreview);
+        form.Children.Add(baseUrlField);
+        form.Children.Add(CreateField("模型名称", modelBox));
+        form.Children.Add(CreateField("API Key", apiKeyBox));
+        form.Children.Add(CreateField("服务位置", locationBox));
+        form.Children.Add(new Expander
+        {
+            Header = "高级设置",
+            Content = advancedPanel,
+            Margin = new Thickness(0, 4, 0, 0)
+        });
+        form.Children.Add(validationText);
+
+        TranslationProfile? candidate = null;
+        var dialog = new ContentDialog(RootContentDialogHost)
+        {
+            Title = existing is null ? "添加翻译模型" : "编辑翻译模型",
+            PrimaryButtonText = "保存",
+            CloseButtonText = "取消",
+            DialogWidth = 560,
+            DialogMaxHeight = 680,
+            Content = new ScrollViewer
+            {
+                Content = form,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+            }
+        };
+        dialog.Closing += (_, args) =>
+        {
+            if (args.Result != ContentDialogResult.Primary)
+            {
+                return;
+            }
+            JsonElement customBody;
+            try
+            {
+                customBody = JsonDocument.Parse(customExtraBodyBox.Text).RootElement.Clone();
+            }
+            catch (JsonException ex)
+            {
+                validationText.Text = $"extraBody JSON 错误: line {ex.LineNumber}, byte {ex.BytePositionInLine}";
+                args.Cancel = true;
+                return;
+            }
+
+            var edited = new TranslationProfile
+            {
+                Id = existing?.Id ?? Guid.NewGuid(),
+                Name = nameBox.Text.Trim(),
+                BaseUrl = baseUrlBox.Text.Trim(),
+                Model = modelBox.Text.Trim(),
+                ApiKey = apiKeyBox.Password,
+                Location = SelectedEnum<TranslationServiceLocation>(locationBox),
+                RequestCompatibility = SelectedEnum<TranslationRequestCompatibility>(compatibilityBox),
+                CustomExtraBody = customBody,
+                TimeoutMs = (int)NumberValue(timeoutBox, 10000),
+                MaxConcurrency = (int)NumberValue(concurrencyBox, 2)
+            };
+            var errors = TranslationProfileRules.Validate(edited);
+            if (errors.Count > 0)
+            {
+                validationText.Text = string.Join(Environment.NewLine, errors);
+                args.Cancel = true;
+                return;
+            }
+
+            var fingerprint = TranslationProfileRules.CreateValidationFingerprint(edited);
+            candidate = edited with
+            {
+                ValidationFingerprint = existing?.ValidationFingerprint == fingerprint ? fingerprint : null,
+                LastValidatedAt = existing?.ValidationFingerprint == fingerprint ? existing.LastValidatedAt : null,
+                LastValidationLatencyMs = existing?.ValidationFingerprint == fingerprint
+                    ? existing.LastValidationLatencyMs
+                    : null
+            };
+        };
+
+        var result = await dialog.ShowAsync();
+        return result == ContentDialogResult.Primary ? candidate : null;
+    }
+
+    private static StackPanel CreateField(string label, Control control)
+    {
+        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 10) };
+        panel.Children.Add(new TextBlock
+        {
+            Text = label,
+            FontSize = 12,
+            Foreground = System.Windows.Media.Brushes.DimGray,
+            Margin = new Thickness(0, 0, 0, 4)
+        });
+        panel.Children.Add(control);
+        return panel;
+    }
+
+    private void RefreshTranslationProfileList(Guid? selectedId)
+    {
+        var items = _settings.Translation.Profiles
+            .Select(profile => new TranslationProfileDisplayItem(
+                profile.Id,
+                profile.Name,
+                SafeFinalEndpoint(profile.BaseUrl),
+                TranslationProfileRules.IsValidated(profile) ? "已验证" : "未验证"))
+            .ToArray();
+        TranslationProfileList.ItemsSource = items;
+        TranslationProfileList.SelectedItem = selectedId is { } id
+            ? items.FirstOrDefault(item => item.Id == id)
+            : null;
+        UpdateTranslationProfileSelectionUi();
+    }
+
+    private void UpdateTranslationProfileSelectionUi()
+    {
+        var profile = SelectedTranslationProfile();
+        var hasProfile = profile is not null;
+        EditTranslationProfileButton.IsEnabled = hasProfile;
+        CopyTranslationProfileButton.IsEnabled = hasProfile;
+        DeleteTranslationProfileButton.IsEnabled = hasProfile;
+        TestTranslationProfileButton.IsEnabled = hasProfile;
+        TranslationSelectionSummaryText.Text = profile is null
+            ? _settings.Translation.Profiles.Count == 0 ? "尚未添加配置" : "请选择活动配置"
+            : $"{profile.Name} · {(TranslationProfileRules.IsValidated(profile) ? "已验证" : "未验证")}";
+        TranslationRemoteNoticeText.Visibility = profile?.Location == TranslationServiceLocation.Remote
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+    }
+
+    private TranslationProfile? SelectedTranslationProfile()
+    {
+        if (TranslationProfileList.SelectedItem is not TranslationProfileDisplayItem selected)
+        {
+            return null;
+        }
+        return _settings.Translation.Profiles.FirstOrDefault(profile => profile.Id == selected.Id);
+    }
+
+    private void ReplaceTranslationProfile(TranslationProfile profile)
+    {
+        var profiles = _settings.Translation.Profiles
+            .Select(existing => existing.Id == profile.Id ? profile : existing)
+            .ToList();
+        _settings = _settings with
+        {
+            Translation = _settings.Translation with
+            {
+                Profiles = profiles,
+                ActiveProfileId = profile.Id
+            }
+        };
+    }
+
+    private void SelectTranslationTargetLanguage(string targetLanguage)
+    {
+        TranslationTargetLanguageBox.SelectedItem = TranslationTargetLanguageBox.Items
+            .OfType<ComboBoxItem>()
+            .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), targetLanguage, StringComparison.OrdinalIgnoreCase));
+        if (TranslationTargetLanguageBox.SelectedIndex < 0)
+        {
+            TranslationTargetLanguageBox.SelectedIndex = 0;
+        }
+    }
+
+    private string GetSelectedTranslationTargetLanguage()
+    {
+        return (TranslationTargetLanguageBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "zh-Hans";
+    }
+
+    private static T SelectedEnum<T>(ComboBox comboBox) where T : struct, Enum
+    {
+        return comboBox.SelectedItem is ComboBoxItem { Tag: T value } ? value : default;
+    }
+
+    private static string CompatibilityLabel(TranslationRequestCompatibility compatibility) => compatibility switch
+    {
+        TranslationRequestCompatibility.Standard => "Standard",
+        TranslationRequestCompatibility.DeepSeek => "DeepSeek（关闭思考）",
+        TranslationRequestCompatibility.QwenVllm => "Qwen + vLLM（关闭思考）",
+        TranslationRequestCompatibility.Custom => "Custom extraBody",
+        _ => compatibility.ToString()
+    };
+
+    private static string SafeFinalEndpoint(string baseUrl)
+    {
+        try
+        {
+            return TranslationProfileRules.BuildFinalEndpoint(baseUrl);
+        }
+        catch
+        {
+            return baseUrl;
+        }
+    }
+
+    private sealed record TranslationProfileDisplayItem(
+        Guid Id,
+        string Name,
+        string Endpoint,
+        string ValidationStatus);
 
     private void SelectVadEndpointMode(VadEndpointMode mode)
     {
