@@ -5,7 +5,7 @@ namespace StreamTranslator.Core.Configuration;
 
 public sealed record AppSettings
 {
-    public int SchemaVersion { get; init; } = 3;
+    public int SchemaVersion { get; init; } = 4;
     public AudioSettings Audio { get; init; } = new();
     public VadSettings Vad { get; init; } = new();
     public AsrSettings Asr { get; init; } = new();

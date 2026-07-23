@@ -619,3 +619,29 @@ V1.2 只实现翻译字幕，不同时实现 rolling interim ASR。rolling inter
 - 不从样本、请求记录或结果文件读取或写入 Key。
 - Base URL、模型名和兼容模板从现有 `data/settings.json` profile 读取。
 - 环境变量仅继承到本次评估 worker 进程，不改变应用配置。
+
+## D044: Product ASR Language Is Locked To Auto
+
+状态：Accepted
+
+真实反馈显示，MiMo ASR 在强制 `language=en` 时可能把 `think>`、`<chinese>` 等模型或协议标签直接写入原文，而同一音频使用 `auto` 时输出正常。异常标签在翻译前已经存在，因此翻译 worker 和 VAD 不是首要原因。
+
+schema V4 将旧配置中的 `zh`、`en` 强制迁移为 `auto`；设置页只读显示自动检测，启动校验和 C# 请求边界只允许 `auto`。底层 Python worker 暂时保留协议兼容值。应用不猜测性清洗未知标签，避免误删合法字幕。
+
+## D045: Hard Maximum Segment Duration Is User Configurable
+
+状态：Accepted
+
+`MinSegmentMs` 单位为毫秒，默认 900ms。`HardMaxSegmentMs` 默认 10000ms，在设置页开放 6000-20000ms、步进 1000ms，并且只允许停止字幕后修改。
+
+`SoftMaxSegmentMs=4000`、`SoftBreakSilenceMs=128` 和 `OverlapMs=600` 继续保持内部参数。最长片段必须大于最短片段和 soft max，避免配置破坏切片状态机。
+
+## D046: Adaptive Endpoint Evaluations Are Observable
+
+状态：Accepted
+
+`data/logs/adaptive-vad.jsonl` 在保留 `session_start`、`quick_resume` 和 `endpoint_adjustment` 的基础上，增加事件驱动的 `endpoint_evaluation`。它只在有效停顿、quick-resume 或空闲回归时写入，不逐帧记录。
+
+评估事件必须区分实际调整、样本不足、等待连续 quick-resume、等待稳定停顿、冷却、10 秒频率限制、模式边界和目标不变。设置页显示当前样本数、P75 与最近判断摘要，使用户可以确认自适应控制器确实在学习和决策。
+
+空闲状态的评估最多每 2 秒记录一次；端点仍按既有 25ms 步进逐步回归，不因日志节流改变算法行为。

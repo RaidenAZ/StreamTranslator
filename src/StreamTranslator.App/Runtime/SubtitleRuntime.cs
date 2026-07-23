@@ -56,7 +56,10 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     {
         _baseDirectory = baseDirectory;
         _dataDirectory = dataDirectory;
-        _settings = settings;
+        _settings = settings with
+        {
+            Asr = settings.Asr with { Language = "auto" }
+        };
         _utteranceGroupTracker = new UtteranceGroupTracker($"utt-{Guid.NewGuid():N}");
         _asrSemaphore = new SemaphoreSlim(Math.Max(1, settings.Asr.MaxConcurrency), Math.Max(1, settings.Asr.MaxConcurrency));
     }
@@ -175,6 +178,29 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             AudioLevelChanged?.Invoke(this, CalculateLevel(frame.Samples));
             WriteVadDiagnostic(frame, decision);
             var endpointObservation = endpointController.ObserveVad(frame.StartMs, frame.DurationMs, decision.IsSpeech);
+            if (endpointObservation.Evaluation is { } evaluation)
+            {
+                WriteAdaptiveMetric(new
+                {
+                    type = "endpoint_evaluation",
+                    timestamp = DateTimeOffset.Now,
+                    timelineMs = evaluation.TimestampMs,
+                    mode = endpointController.Mode.ToString(),
+                    signal = evaluation.Signal.ToString(),
+                    decision = evaluation.Decision.ToString(),
+                    effectiveEndSilenceMs = evaluation.EffectiveEndSilenceMs,
+                    minimumEndSilenceMs = endpointController.MinimumEndSilenceMs,
+                    maximumEndSilenceMs = endpointController.MaximumEndSilenceMs,
+                    sampleCount = evaluation.SampleCount,
+                    p75PauseMs = evaluation.P75PauseMs,
+                    targetEndSilenceMs = evaluation.TargetEndSilenceMs,
+                    consecutiveQuickResumes = evaluation.ConsecutiveQuickResumes,
+                    recentAdjustmentCount = evaluation.RecentAdjustmentCount,
+                    cooldownRemainingMs = evaluation.CooldownRemainingMs
+                });
+                PublishVadEndpointStatus(endpointController, endpointObservation.Adjustment, evaluation);
+            }
+
             if (endpointObservation.QuickResume is { } quickResume)
             {
                 if (quickResume.ShouldMergeWithPreviousSegment)
@@ -391,7 +417,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
                 startMs: segment.StartMs,
                 endMs: segment.EndMs,
                 sampleRate: segment.SampleRate,
-                language: _settings.Asr.Language,
+                language: "auto",
                 audioBase64: Convert.ToBase64String(wav));
 
             response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
@@ -558,7 +584,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             _settings.Vad.EndSilenceMs,
             _settings.Vad.StartSpeechMs);
         controller.EndpointAdjusted += OnEndpointAdjusted;
-        PublishVadEndpointStatus(controller, adjustment: null);
+        PublishVadEndpointStatus(controller, adjustment: null, evaluation: null);
         WriteAdaptiveMetric(new
         {
             type = "session_start",
@@ -566,7 +592,12 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             mode = controller.Mode.ToString(),
             effectiveEndSilenceMs = controller.EffectiveEndSilenceMs,
             minimumEndSilenceMs = controller.MinimumEndSilenceMs,
-            maximumEndSilenceMs = controller.MaximumEndSilenceMs
+            maximumEndSilenceMs = controller.MaximumEndSilenceMs,
+            minSegmentMs = _settings.Vad.MinSegmentMs,
+            softMaxSegmentMs = _settings.Vad.SoftMaxSegmentMs,
+            hardMaxSegmentMs = _settings.Vad.HardMaxSegmentMs,
+            asrModel = _settings.Asr.Model,
+            asrLanguage = "auto"
         });
         return controller;
     }
@@ -591,10 +622,12 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             p75PauseMs = adjustment.P75PauseMs,
             targetEndSilenceMs = adjustment.TargetEndSilenceMs
         });
-        PublishVadEndpointStatus(controller, adjustment);
     }
 
-    private void PublishVadEndpointStatus(AdaptiveEndpointController controller, EndpointAdjustment? adjustment)
+    private void PublishVadEndpointStatus(
+        AdaptiveEndpointController controller,
+        EndpointAdjustment? adjustment,
+        EndpointEvaluation? evaluation)
     {
         VadEndpointChanged?.Invoke(
             this,
@@ -602,7 +635,8 @@ public sealed class SubtitleRuntime : IAsyncDisposable
                 controller.Mode,
                 controller.EffectiveEndSilenceMs,
                 controller.IsAdaptive,
-                adjustment));
+                adjustment,
+                evaluation));
     }
 
     private void WriteAdaptiveMetric(object metric)
@@ -1161,4 +1195,5 @@ public sealed record VadEndpointRuntimeStatus(
     VadEndpointMode Mode,
     int EffectiveEndSilenceMs,
     bool IsAdaptive,
-    EndpointAdjustment? Adjustment);
+    EndpointAdjustment? Adjustment,
+    EndpointEvaluation? Evaluation);

@@ -12,7 +12,7 @@ Required environment variables:
 - `MIMO_TIMEOUT_SECONDS`, optional, defaults to `30`
 - `MIMO_MAX_CONCURRENCY`, optional, defaults to `2`
 
-The worker validates `wav`/`mp3`, the MiMo 10MB Base64 limit, and languages `auto`/`zh`/`en`. Errors are returned with `errorKind`, `statusCode`, and `retryable` fields so C# can apply the V1.0 retry policy.
+The worker validates `wav`/`mp3`, the MiMo 10MB Base64 limit, and protocol languages `auto`/`zh`/`en`. The production C# app locks recognition to `auto`; `zh` and `en` remain worker-level compatibility values and are not exposed in the UI. Errors are returned with `errorKind`, `statusCode`, and `retryable` fields so C# can apply the V1.0 retry policy.
 
 The worker is an implementation detail. Users should not start or stop it manually.
 

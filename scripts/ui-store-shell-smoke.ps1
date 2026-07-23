@@ -72,6 +72,20 @@ if (Test-Path $mainWindowXaml) {
         throw "Settings should display the current effective VAD endpoint."
     }
 
+    if ($mainWindowMarkup -notmatch 'x:Name="HardMaxSegmentBox"[\s\S]*?AutomationProperties\.AutomationId="HardMaxSegmentBox"[\s\S]*?Minimum="6000"[\s\S]*?Maximum="20000"') {
+        throw "Settings should expose a bounded hard maximum segment duration."
+    }
+
+    if ($mainWindowMarkup -notmatch 'x:Name="LanguageBox"[\s\S]*?AutomationProperties\.AutomationId="AsrLanguageBox"' -or
+        $mainWindowMarkup -notmatch 'x:Name="LanguageBox"[\s\S]*?IsReadOnly="True"' -or
+        $mainWindowMarkup -notmatch 'x:Name="LanguageBox"[\s\S]*?自动检测') {
+        throw "ASR language should be presented as a read-only auto-detection setting."
+    }
+
+    if ($mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="AdaptiveVadStatusText"') {
+        throw "Settings should expose the live adaptive VAD status."
+    }
+
     if ($mainWindowMarkup -notmatch 'x:Name="CurrentVadEndpointText"[\s\S]*?Grid\.Column="2"') {
         throw "The effective VAD endpoint should align with the default-device controls in the right settings column."
     }
@@ -297,6 +311,12 @@ try {
         catch [System.InvalidOperationException] {
         }
 
+        $rect = $element.Current.BoundingRectangle
+        if ($rect.Width -gt 0 -and $rect.Height -gt 0) {
+            [UiSmokeNative]::ClickScreenPoint($rect.Left + ($rect.Width / 2), $rect.Top + ($rect.Height / 2))
+            return
+        }
+
         try {
             $pattern = $element.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
             $pattern.Select()
@@ -305,13 +325,31 @@ try {
         catch [System.InvalidOperationException] {
         }
 
-        $rect = $element.Current.BoundingRectangle
-        if ($rect.Width -gt 0 -and $rect.Height -gt 0) {
-            [UiSmokeNative]::ClickScreenPoint($rect.Left + ($rect.Width / 2), $rect.Top + ($rect.Height / 2))
-            return
+        throw "$description cannot be invoked, selected, or clicked through UI Automation."
+    }
+
+    function Click-Element($element, [string]$description) {
+        if ($null -eq $element) {
+            throw "$description was not found."
         }
 
-        throw "$description cannot be invoked, selected, or clicked through UI Automation."
+        $rect = $element.Current.BoundingRectangle
+        if ($rect.Width -le 0 -or $rect.Height -le 0) {
+            throw "$description does not expose a clickable boundary."
+        }
+
+        [UiSmokeNative]::ClickScreenPoint($rect.Left + ($rect.Width / 2), $rect.Top + ($rect.Height / 2))
+    }
+
+    $uiReadyDeadline = (Get-Date).AddSeconds(8)
+    do {
+        $homeReadyBoundary = Find-ByAutomationId "HomeControlBar"
+        if ($null -eq $homeReadyBoundary) {
+            Start-Sleep -Milliseconds 200
+        }
+    } while ($null -eq $homeReadyBoundary -and (Get-Date) -lt $uiReadyDeadline)
+    if ($null -eq $homeReadyBoundary) {
+        throw "Main window UI Automation tree did not become ready."
     }
 
     $navigation = Find-ByAutomationId "MainNavigation"
@@ -332,7 +370,7 @@ try {
     $removedAudioNav = Find-ByAutomationId "NavAudioPage"
     $removedServiceNav = Find-ByAutomationId "NavServicePage"
     $removedFloatingNav = Find-ByAutomationId "NavFloatingPage"
-    $homeControlBar = Find-ByAutomationId "HomeControlBar"
+    $homeControlBar = $homeReadyBoundary
     $homeOverviewPanel = Find-ByAutomationId "HomeOverviewPanel"
     $removedHomeStatusTiles = Find-ByAutomationId "HomeStatusTiles"
     $audioInputStatus = Find-ByAutomationId "OverviewAudioInputStatus"
@@ -386,9 +424,10 @@ try {
         throw "Start/stop button still appears in the title bar instead of the home workbench."
     }
 
-    Invoke-Element $subtitleHistoryNav "Subtitle history navigation item"
+    Click-Element $subtitleHistoryNav "Subtitle history navigation item"
     Start-Sleep -Milliseconds 500
-    Invoke-Element $settingsNav "Settings navigation item"
+    $settingsNav = Find-ByAutomationId "NavSettingsPage"
+    Click-Element $settingsNav "Settings navigation item"
     $navigationDeadline = (Get-Date).AddSeconds(3)
     do {
         Start-Sleep -Milliseconds 100
@@ -408,6 +447,9 @@ try {
     $diagnosticsSettingsGroup = Find-ByAutomationId "SettingsDiagnosticsGroup"
     $balancedVadMode = Find-ByAutomationId "VadModeBalanced"
     $fixedEndSilenceBox = Find-ByAutomationId "FixedEndSilenceBox"
+    $hardMaxSegmentBox = Find-ByAutomationId "HardMaxSegmentBox"
+    $asrLanguageBox = Find-ByAutomationId "AsrLanguageBox"
+    $adaptiveVadStatusText = Find-ByAutomationId "AdaptiveVadStatusText"
     $audioDeviceComboBox = Find-ByAutomationId "AudioDeviceComboBox"
     $currentVadEndpointText = Find-ByAutomationId "CurrentVadEndpointText"
     $followDefaultDeviceSwitch = Find-ByAutomationId "FollowDefaultDeviceSwitch"
@@ -432,6 +474,11 @@ try {
     if ($null -eq $balancedVadMode) { throw "Balanced adaptive VAD mode was not found." }
     if ($null -eq $fixedEndSilenceBox) { throw "Fixed end-silence input was not found." }
     if ($fixedEndSilenceBox.Current.IsEnabled) { throw "Fixed end-silence input should be disabled in balanced mode." }
+    if ($null -eq $hardMaxSegmentBox) { throw "Hard maximum segment input was not found." }
+    if ($null -eq $asrLanguageBox) { throw "ASR language auto-detection field was not found." }
+    $asrLanguageValuePattern = $asrLanguageBox.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+    if (-not $asrLanguageValuePattern.Current.IsReadOnly) { throw "ASR language should not be user-editable." }
+    if ($null -eq $adaptiveVadStatusText) { throw "Adaptive VAD live status was not found." }
     if ($null -eq $audioDeviceComboBox) { throw "Audio-device selector was not found." }
     if ($null -eq $currentVadEndpointText) { throw "Current VAD endpoint status was not found." }
     if ($null -eq $followDefaultDeviceSwitch) { throw "Default-device toggle was not found." }
@@ -474,27 +521,30 @@ try {
     Invoke-Element $cancelTranslationProfileButton "Cancel translation profile editor button"
     Start-Sleep -Milliseconds 300
 
-    Invoke-Element $floatingButton "Top command floating window button"
+    Click-Element $homeNav "Home navigation item"
+    Start-Sleep -Milliseconds 500
+    $floatingButton = Find-ByAutomationId "HomeFloatingWindowButton"
+    Invoke-Element $floatingButton "Home floating window button"
     Start-Sleep -Milliseconds 900
 
     $floatingWindow = [UiSmokeNative]::GetWindows($process.Id) |
         Where-Object { $_.Visible -and $_.Title -and $_.Title -ne "StreamTranslator" } |
         Select-Object -First 1
     if ($null -eq $floatingWindow) {
-        throw "Floating subtitle window did not open from the top command button."
+        throw "Floating subtitle window did not open from the home command button."
     }
 
-    Invoke-Element $floatingButton "Top command floating window button"
+    Invoke-Element $floatingButton "Home floating window button"
     Start-Sleep -Milliseconds 900
 
     $floatingWindow = [UiSmokeNative]::GetWindows($process.Id) |
         Where-Object { $_.Visible -and $_.Title -and $_.Title -ne "StreamTranslator" } |
         Select-Object -First 1
     if ($null -ne $floatingWindow) {
-        throw "Floating subtitle window did not hide after the top command button was invoked again."
+        throw "Floating subtitle window did not hide after the home command button was invoked again."
     }
 
-    Invoke-Element $subtitleHistoryNav "Subtitle history navigation item"
+    Click-Element $subtitleHistoryNav "Subtitle history navigation item"
     Start-Sleep -Milliseconds 500
     $clearHistoryButton = Find-ByAutomationId "ClearHistoryButton"
     if ($null -eq $clearHistoryButton) { throw "Clear history button was not found." }

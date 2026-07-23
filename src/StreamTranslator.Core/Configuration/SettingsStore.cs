@@ -35,6 +35,7 @@ public sealed class SettingsStore
             existingVersion = parsedVersion;
         }
         var settings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? new AppSettings();
+        var shouldSave = false;
 
         if (existingVersion < 2)
         {
@@ -46,6 +47,7 @@ public sealed class SettingsStore
                     EndSilenceMs = 400
                 }
             };
+            shouldSave = true;
         }
 
         if (existingVersion < 3)
@@ -61,6 +63,23 @@ public sealed class SettingsStore
                     MaxSubtitleItems = Math.Clamp(legacyMaxLines ?? 2, 1, 3)
                 }
             };
+            shouldSave = true;
+        }
+
+        if (existingVersion < 4 ||
+            settings.SchemaVersion != 4 ||
+            !string.Equals(settings.Asr.Language, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            settings = settings with
+            {
+                SchemaVersion = 4,
+                Asr = settings.Asr with { Language = "auto" }
+            };
+            shouldSave = true;
+        }
+
+        if (shouldSave)
+        {
             await SaveAsync(settings, cancellationToken).ConfigureAwait(false);
         }
 
