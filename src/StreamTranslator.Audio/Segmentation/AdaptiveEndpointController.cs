@@ -12,9 +12,11 @@ public sealed class AdaptiveEndpointController
     private long? _pendingSpeechStartedAtMs;
     private int _pendingSpeechMs;
     private bool _speechConfirmed;
+    private bool _idleInitialReported;
     private int _consecutiveQuickResumes;
     private long? _lastAdjustmentAtMs;
     private long? _lastConfirmedSpeechAtMs;
+    private long? _lastIdleEvaluationAtMs;
 
     public AdaptiveEndpointController(VadEndpointMode mode, int fixedEndSilenceMs, int startSpeechMs = 96)
     {
@@ -64,10 +66,18 @@ public sealed class AdaptiveEndpointController
                 _silenceStartedAtMs = startMs;
             }
 
-            var idleAdjustment = IsAdaptive ? TryHandleIdle(startMs + durationMs) : null;
-            return new AdaptiveEndpointObservation(EffectiveEndSilenceMs, null, idleAdjustment);
+            var idleResult = IsAdaptive
+                ? TryHandleIdle(startMs + durationMs)
+                : (Adjustment: null, Evaluation: null);
+            return new AdaptiveEndpointObservation(
+                EffectiveEndSilenceMs,
+                null,
+                idleResult.Adjustment,
+                idleResult.Evaluation);
         }
 
+        _idleInitialReported = false;
+        _lastIdleEvaluationAtMs = null;
         if (_speechConfirmed)
         {
             _lastConfirmedSpeechAtMs = startMs + durationMs;
@@ -89,6 +99,7 @@ public sealed class AdaptiveEndpointController
 
         QuickResumeSignal? quickResume = null;
         EndpointAdjustment? adjustment = null;
+        EndpointEvaluation? evaluation = null;
         if (_pendingCut is not null)
         {
             var postCutGapMs = Math.Max(0, confirmedSpeechStartMs - _pendingCut.CutAtMs);
@@ -105,16 +116,48 @@ public sealed class AdaptiveEndpointController
                 if (IsAdaptive)
                 {
                     _consecutiveQuickResumes++;
-                    if (_pauseSamples.Count >= 3 && _consecutiveQuickResumes >= 2)
+                    var p75PauseMs = CalculateP75PauseMs();
+                    var targetEndSilenceMs = Math.Clamp(
+                        p75PauseMs + 50,
+                        MinimumEndSilenceMs,
+                        MaximumEndSilenceMs);
+                    var decision = EndpointEvaluationDecision.WaitingForSamples;
+                    if (_pauseSamples.Count >= 3)
                     {
-                        var p75PauseMs = CalculateP75PauseMs();
-                        adjustment = TryAdjust(
-                            startMs + durationMs,
-                            Math.Min(MaximumEndSilenceMs, EffectiveEndSilenceMs + 50),
-                            EndpointAdjustmentReason.QuickResume,
-                            p75PauseMs,
-                            Math.Clamp(p75PauseMs + 50, MinimumEndSilenceMs, MaximumEndSilenceMs));
+                        if (_consecutiveQuickResumes < 2)
+                        {
+                            decision = EndpointEvaluationDecision.WaitingForQuickResumes;
+                        }
+                        else
+                        {
+                            var requestedEndSilenceMs = Math.Min(MaximumEndSilenceMs, EffectiveEndSilenceMs + 50);
+                            adjustment = TryAdjust(
+                                startMs + durationMs,
+                                requestedEndSilenceMs,
+                                EndpointAdjustmentReason.QuickResume,
+                                p75PauseMs,
+                                targetEndSilenceMs);
+                            decision = adjustment is not null
+                                ? EndpointEvaluationDecision.Adjusted
+                                : ClassifyBlockedAdjustment(startMs + durationMs, requestedEndSilenceMs);
+                        }
                     }
+
+                    evaluation = CreateEvaluation(
+                        startMs + durationMs,
+                        EndpointEvaluationSignal.QuickResume,
+                        decision,
+                        p75PauseMs,
+                        targetEndSilenceMs);
+                }
+                else
+                {
+                    evaluation = CreateEvaluation(
+                        startMs + durationMs,
+                        EndpointEvaluationSignal.QuickResume,
+                        EndpointEvaluationDecision.FixedMode,
+                        CalculateP75PauseMs(),
+                        EffectiveEndSilenceMs);
                 }
             }
             else
@@ -129,11 +172,11 @@ public sealed class AdaptiveEndpointController
             var pauseMs = checked((int)Math.Max(0, confirmedSpeechStartMs - _silenceStartedAtMs.Value));
             AddPauseSample(pauseMs, startMs + durationMs, isQuickResume: false);
             _consecutiveQuickResumes = 0;
-            adjustment = TryLowerEndpoint(startMs + durationMs);
+            evaluation = EvaluateStablePause(startMs + durationMs, out adjustment);
         }
 
         _silenceStartedAtMs = null;
-        return new AdaptiveEndpointObservation(EffectiveEndSilenceMs, quickResume, adjustment);
+        return new AdaptiveEndpointObservation(EffectiveEndSilenceMs, quickResume, adjustment, evaluation);
     }
 
     public void NotifySegmentCut(long cutAtMs, SpeechSegmentCutReason cutReason)
@@ -159,33 +202,53 @@ public sealed class AdaptiveEndpointController
         }
     }
 
-    private EndpointAdjustment? TryLowerEndpoint(long timestampMs)
+    private EndpointEvaluation EvaluateStablePause(long timestampMs, out EndpointAdjustment? adjustment)
     {
-        if (_pauseSamples.Count < 6 || _pauseSamples.Any(static sample => sample.IsQuickResume))
-        {
-            return null;
-        }
-
         var p75PauseMs = CalculateP75PauseMs();
         var targetEndSilenceMs = Math.Clamp(p75PauseMs + 50, MinimumEndSilenceMs, MaximumEndSilenceMs);
-        if (targetEndSilenceMs >= EffectiveEndSilenceMs)
+        if (_pauseSamples.Count < 6 || _pauseSamples.Any(static sample => sample.IsQuickResume))
         {
-            return null;
+            adjustment = null;
+            return CreateEvaluation(
+                timestampMs,
+                EndpointEvaluationSignal.StablePause,
+                EndpointEvaluationDecision.WaitingForStablePauses,
+                p75PauseMs,
+                targetEndSilenceMs);
         }
 
-        return TryAdjust(
+        if (targetEndSilenceMs >= EffectiveEndSilenceMs)
+        {
+            adjustment = null;
+            return CreateEvaluation(
+                timestampMs,
+                EndpointEvaluationSignal.StablePause,
+                EndpointEvaluationDecision.TargetUnchanged,
+                p75PauseMs,
+                targetEndSilenceMs);
+        }
+
+        adjustment = TryAdjust(
             timestampMs,
             Math.Max(targetEndSilenceMs, EffectiveEndSilenceMs - 25),
             EndpointAdjustmentReason.StablePauses,
             p75PauseMs,
             targetEndSilenceMs);
+        return CreateEvaluation(
+            timestampMs,
+            EndpointEvaluationSignal.StablePause,
+            adjustment is not null
+                ? EndpointEvaluationDecision.Adjusted
+                : ClassifyBlockedAdjustment(timestampMs, Math.Max(targetEndSilenceMs, EffectiveEndSilenceMs - 25)),
+            p75PauseMs,
+            targetEndSilenceMs);
     }
 
-    private EndpointAdjustment? TryHandleIdle(long timestampMs)
+    private (EndpointAdjustment? Adjustment, EndpointEvaluation? Evaluation) TryHandleIdle(long timestampMs)
     {
         if (_lastConfirmedSpeechAtMs is null || timestampMs - _lastConfirmedSpeechAtMs.Value < 10000)
         {
-            return null;
+            return (null, null);
         }
 
         _pauseSamples.Clear();
@@ -193,19 +256,61 @@ public sealed class AdaptiveEndpointController
         _pendingCut = null;
         if (EffectiveEndSilenceMs == InitialEndSilenceMs)
         {
-            return null;
+            if (_idleInitialReported)
+            {
+                return (null, null);
+            }
+
+            _idleInitialReported = true;
+            _lastIdleEvaluationAtMs = timestampMs;
+            return (
+                null,
+                CreateEvaluation(
+                    timestampMs,
+                    EndpointEvaluationSignal.Idle,
+                    EndpointEvaluationDecision.IdleNoChange,
+                    InitialEndSilenceMs,
+                    InitialEndSilenceMs));
         }
+
+        if (_lastIdleEvaluationAtMs is not null && timestampMs - _lastIdleEvaluationAtMs.Value < 2000)
+        {
+            return (null, null);
+        }
+
+        _lastIdleEvaluationAtMs = timestampMs;
 
         var step = EffectiveEndSilenceMs > InitialEndSilenceMs ? -25 : 25;
         var requested = step < 0
             ? Math.Max(InitialEndSilenceMs, EffectiveEndSilenceMs + step)
             : Math.Min(InitialEndSilenceMs, EffectiveEndSilenceMs + step);
-        return TryAdjust(
+        var adjustment = TryAdjust(
             timestampMs,
             requested,
             EndpointAdjustmentReason.IdleReturn,
             InitialEndSilenceMs,
             InitialEndSilenceMs);
+        if (adjustment is null)
+        {
+            return (
+                null,
+                CreateEvaluation(
+                    timestampMs,
+                    EndpointEvaluationSignal.Idle,
+                    ClassifyBlockedAdjustment(timestampMs, requested),
+                    InitialEndSilenceMs,
+                    InitialEndSilenceMs));
+        }
+
+        _idleInitialReported = EffectiveEndSilenceMs == InitialEndSilenceMs;
+        return (
+            adjustment,
+            CreateEvaluation(
+                timestampMs,
+                EndpointEvaluationSignal.Idle,
+                EndpointEvaluationDecision.IdleReturning,
+                InitialEndSilenceMs,
+                InitialEndSilenceMs));
     }
 
     private int CalculateP75PauseMs()
@@ -249,13 +354,69 @@ public sealed class AdaptiveEndpointController
         return adjustment;
     }
 
-    private bool CanAdjust(long timestampMs)
+    private EndpointEvaluation CreateEvaluation(
+        long timestampMs,
+        EndpointEvaluationSignal signal,
+        EndpointEvaluationDecision decision,
+        int p75PauseMs,
+        int targetEndSilenceMs)
+    {
+        return new EndpointEvaluation(
+            timestampMs,
+            signal,
+            decision,
+            EffectiveEndSilenceMs,
+            _pauseSamples.Count,
+            p75PauseMs,
+            targetEndSilenceMs,
+            _consecutiveQuickResumes,
+            RecentAdjustmentCount(timestampMs),
+            CooldownRemainingMs(timestampMs));
+    }
+
+    private EndpointEvaluationDecision ClassifyBlockedAdjustment(long timestampMs, int requestedEndSilenceMs)
+    {
+        if (requestedEndSilenceMs == EffectiveEndSilenceMs)
+        {
+            return EndpointEvaluationDecision.AtBoundary;
+        }
+
+        if (CooldownRemainingMs(timestampMs) > 0)
+        {
+            return EndpointEvaluationDecision.Cooldown;
+        }
+
+        if (RecentAdjustmentCount(timestampMs) >= 2)
+        {
+            return EndpointEvaluationDecision.RateLimited;
+        }
+
+        return EndpointEvaluationDecision.TargetUnchanged;
+    }
+
+    private int RecentAdjustmentCount(long timestampMs)
     {
         while (_adjustmentTimes.Count > 0 && timestampMs - _adjustmentTimes.Peek() > 10000)
         {
             _adjustmentTimes.Dequeue();
         }
 
+        return _adjustmentTimes.Count;
+    }
+
+    private int CooldownRemainingMs(long timestampMs)
+    {
+        if (_lastAdjustmentAtMs is null)
+        {
+            return 0;
+        }
+
+        return Math.Max(0, 2000 - checked((int)(timestampMs - _lastAdjustmentAtMs.Value)));
+    }
+
+    private bool CanAdjust(long timestampMs)
+    {
+        RecentAdjustmentCount(timestampMs);
         return (_lastAdjustmentAtMs is null || timestampMs - _lastAdjustmentAtMs.Value >= 2000) &&
                _adjustmentTimes.Count < 2;
     }
@@ -267,7 +428,8 @@ public sealed class AdaptiveEndpointController
 public sealed record AdaptiveEndpointObservation(
     int EffectiveEndSilenceMs,
     QuickResumeSignal? QuickResume,
-    EndpointAdjustment? Adjustment);
+    EndpointAdjustment? Adjustment,
+    EndpointEvaluation? Evaluation = null);
 
 public sealed record QuickResumeSignal(int CompletePauseMs, bool ShouldMergeWithPreviousSegment);
 
@@ -285,4 +447,38 @@ public enum EndpointAdjustmentReason
     QuickResume,
     StablePauses,
     IdleReturn
+}
+
+public sealed record EndpointEvaluation(
+    long TimestampMs,
+    EndpointEvaluationSignal Signal,
+    EndpointEvaluationDecision Decision,
+    int EffectiveEndSilenceMs,
+    int SampleCount,
+    int P75PauseMs,
+    int TargetEndSilenceMs,
+    int ConsecutiveQuickResumes,
+    int RecentAdjustmentCount,
+    int CooldownRemainingMs);
+
+public enum EndpointEvaluationSignal
+{
+    QuickResume,
+    StablePause,
+    Idle
+}
+
+public enum EndpointEvaluationDecision
+{
+    Adjusted,
+    WaitingForSamples,
+    WaitingForQuickResumes,
+    WaitingForStablePauses,
+    TargetUnchanged,
+    Cooldown,
+    RateLimited,
+    AtBoundary,
+    IdleReturning,
+    IdleNoChange,
+    FixedMode
 }

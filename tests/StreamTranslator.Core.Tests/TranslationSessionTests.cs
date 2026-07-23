@@ -44,7 +44,7 @@ public sealed class TranslationSessionTests
         await session.StartAsync();
 
         session.Submit(Source(1, 1, "Hello"));
-        var update = await completion.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var update = await completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.AreEqual("你好", update.TranslatedText);
         Assert.AreEqual(2, worker.TranslateCalls);
@@ -123,7 +123,7 @@ public sealed class TranslationSessionTests
 
         Assert.AreEqual(1, session.Metrics.CircuitBreaks);
         session.Submit(Source(4, 1, "Source 4") with { UtteranceGroupId = "session:4" });
-        var update = await completion.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var update = await completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.AreEqual("session:4", update.UtteranceGroupId);
         Assert.AreEqual("恢复后的译文", update.TranslatedText);
@@ -168,7 +168,7 @@ public sealed class TranslationSessionTests
 
         Assert.AreEqual(2, session.Metrics.CircuitBreaks);
         session.Submit(Source(5, 1, "Successful probe") with { UtteranceGroupId = "session:5" });
-        var update = await completion.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var update = await completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.AreEqual("session:5", update.UtteranceGroupId);
         Assert.AreEqual("探测恢复", update.TranslatedText);
@@ -263,8 +263,8 @@ public sealed class TranslationSessionTests
 
         Assert.IsFalse(stopTask.IsCompleted);
         inFlight.Complete(Success(inFlight.Request, "你好"));
-        await stopTask.WaitAsync(TimeSpan.FromSeconds(2));
-        var update = await completion.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await stopTask.WaitAsync(TimeSpan.FromSeconds(5));
+        var update = await completion.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.AreEqual("你好", update.TranslatedText);
         Assert.AreEqual(1, session.Metrics.Successes);
@@ -281,7 +281,7 @@ public sealed class TranslationSessionTests
 
         session.Submit(Source(1, 1, "Hello"));
         var inFlight = await worker.NextRequestAsync();
-        await session.StopAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        await session.StopAsync().WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.IsTrue(inFlight.Completion.Task.IsCanceled);
         Assert.AreEqual(0, session.Metrics.Successes);

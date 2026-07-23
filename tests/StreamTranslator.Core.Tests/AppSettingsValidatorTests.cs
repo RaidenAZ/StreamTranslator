@@ -16,7 +16,7 @@ public sealed class AppSettingsValidatorTests
         var errors = AppSettingsValidator.ValidateForStart(settings);
 
         Assert.IsTrue(errors.Any(error => error.Contains("API Key", StringComparison.Ordinal)));
-        Assert.IsTrue(errors.Any(error => error.Contains("auto、zh、en", StringComparison.Ordinal)));
+        Assert.IsTrue(errors.Any(error => error.Contains("auto", StringComparison.Ordinal)));
     }
 
     [TestMethod]
@@ -42,6 +42,54 @@ public sealed class AppSettingsValidatorTests
         var errors = AppSettingsValidator.ValidateForStart(settings);
 
         Assert.IsTrue(errors.Any(error => error.Contains("断句策略", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public void ValidateForStart_RejectsForcedAsrLanguage()
+    {
+        var settings = new AppSettings
+        {
+            Asr = new AsrSettings { ApiKey = "test-key", Language = "en" }
+        };
+
+        var errors = AppSettingsValidator.ValidateForStart(settings);
+
+        Assert.IsTrue(errors.Any(error => error.Contains("自动检测", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    [DataRow(5000)]
+    [DataRow(20001)]
+    public void ValidateForStart_RejectsHardMaxSegmentOutsideSupportedRange(int hardMaxSegmentMs)
+    {
+        var settings = new AppSettings
+        {
+            Asr = new AsrSettings { ApiKey = "test-key", Language = "auto" },
+            Vad = new VadSettings { HardMaxSegmentMs = hardMaxSegmentMs }
+        };
+
+        var errors = AppSettingsValidator.ValidateForStart(settings);
+
+        Assert.IsTrue(errors.Any(error => error.Contains("最长片段", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public void ValidateForStart_RejectsHardMaxSegmentNotAboveMinimumOrSoftMax()
+    {
+        var settings = new AppSettings
+        {
+            Asr = new AsrSettings { ApiKey = "test-key", Language = "auto" },
+            Vad = new VadSettings
+            {
+                MinSegmentMs = 7000,
+                SoftMaxSegmentMs = 8000,
+                HardMaxSegmentMs = 8000
+            }
+        };
+
+        var errors = AppSettingsValidator.ValidateForStart(settings);
+
+        Assert.IsTrue(errors.Any(error => error.Contains("最长片段", StringComparison.Ordinal)));
     }
 
     [TestMethod]

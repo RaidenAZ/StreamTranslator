@@ -460,6 +460,7 @@
                                                 <RowDefinition Height="Auto" />
                                                 <RowDefinition Height="Auto" />
                                                 <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
                                             </Grid.RowDefinitions>
 
                                             <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,0,12">
@@ -590,7 +591,7 @@
                                                               HorizontalAlignment="Left" />
                                             </StackPanel>
                                             <StackPanel Grid.Row="2" Grid.Column="2" Margin="0,0,0,12">
-                                                <TextBlock Text="最短片段" Style="{StaticResource FieldLabelText}" />
+                                                <TextBlock Text="最短片段 (ms)" Style="{StaticResource FieldLabelText}" />
                                                 <ui:NumberBox x:Name="MinSegmentBox"
                                                               Value="900"
                                                               Minimum="300"
@@ -599,6 +600,27 @@
                                                               LargeChange="300"
                                                               Width="180"
                                                               HorizontalAlignment="Left" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Row="3" Grid.Column="0">
+                                                <TextBlock Text="最长片段 (ms)" Style="{StaticResource FieldLabelText}" />
+                                                <ui:NumberBox x:Name="HardMaxSegmentBox"
+                                                              AutomationProperties.AutomationId="HardMaxSegmentBox"
+                                                              Value="10000"
+                                                              Minimum="6000"
+                                                              Maximum="20000"
+                                                              SmallChange="1000"
+                                                              LargeChange="2000"
+                                                              Width="180"
+                                                              HorizontalAlignment="Left" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Row="3" Grid.Column="2">
+                                                <TextBlock Text="自适应状态" Style="{StaticResource FieldLabelText}" />
+                                                <TextBlock x:Name="AdaptiveVadStatusText"
+                                                           AutomationProperties.AutomationId="AdaptiveVadStatusText"
+                                                           Text="等待运行"
+                                                           FontSize="12"
+                                                           Foreground="{StaticResource SecondaryTextBrush}"
+                                                           TextWrapping="Wrap" />
                                             </StackPanel>
                                         </Grid>
                                     </StackPanel>
@@ -634,12 +656,13 @@
                                                 <TextBox x:Name="ModelBox" Text="mimo-v2.5-asr" Height="36" />
                                             </StackPanel>
                                             <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,0,0,12">
-                                                <TextBlock Text="Language" Style="{StaticResource FieldLabelText}" />
-                                                <ComboBox x:Name="LanguageBox" Height="36" SelectedIndex="0">
-                                                    <ComboBoxItem Content="auto" />
-                                                    <ComboBoxItem Content="zh" />
-                                                    <ComboBoxItem Content="en" />
-                                                </ComboBox>
+                                                <TextBlock Text="识别语言" Style="{StaticResource FieldLabelText}" />
+                                                <TextBox x:Name="LanguageBox"
+                                                         AutomationProperties.AutomationId="AsrLanguageBox"
+                                                         Text="自动检测 (auto)"
+                                                         Height="36"
+                                                         IsReadOnly="True"
+                                                         IsTabStop="False" />
                                             </StackPanel>
                                             <StackPanel Grid.Row="2" Grid.Column="0">
                                                 <TextBlock Text="请求超时 ms" Style="{StaticResource FieldLabelText}" />

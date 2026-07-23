@@ -33,12 +33,17 @@ public sealed class AdaptiveEndpointControllerTests
         Assert.IsNotNull(firstResume.QuickResume);
         Assert.AreEqual(500, firstResume.QuickResume.CompletePauseMs);
         Assert.IsNull(firstResume.Adjustment);
+        Assert.IsNotNull(firstResume.Evaluation);
+        Assert.AreEqual(EndpointEvaluationSignal.QuickResume, firstResume.Evaluation.Signal);
+        Assert.AreEqual(EndpointEvaluationDecision.WaitingForSamples, firstResume.Evaluation.Decision);
         Assert.IsNotNull(secondResume.QuickResume);
         Assert.IsTrue(secondResume.QuickResume.ShouldMergeWithPreviousSegment);
         Assert.IsNotNull(secondResume.Adjustment);
         Assert.AreEqual(EndpointAdjustmentReason.QuickResume, secondResume.Adjustment.Reason);
         Assert.AreEqual(400, secondResume.Adjustment.PreviousEndSilenceMs);
         Assert.AreEqual(450, secondResume.Adjustment.CurrentEndSilenceMs);
+        Assert.IsNotNull(secondResume.Evaluation);
+        Assert.AreEqual(EndpointEvaluationDecision.Adjusted, secondResume.Evaluation.Decision);
         Assert.AreEqual(450, controller.EffectiveEndSilenceMs);
     }
 
@@ -62,6 +67,9 @@ public sealed class AdaptiveEndpointControllerTests
         Assert.AreEqual(6, observation.Adjustment.SampleCount);
         Assert.AreEqual(200, observation.Adjustment.P75PauseMs);
         Assert.AreEqual(280, observation.Adjustment.TargetEndSilenceMs);
+        Assert.IsNotNull(observation.Evaluation);
+        Assert.AreEqual(EndpointEvaluationSignal.StablePause, observation.Evaluation.Signal);
+        Assert.AreEqual(EndpointEvaluationDecision.Adjusted, observation.Evaluation.Decision);
         Assert.AreEqual(375, controller.EffectiveEndSilenceMs);
     }
 
@@ -79,8 +87,27 @@ public sealed class AdaptiveEndpointControllerTests
         Assert.IsNotNull(idleObservation.Adjustment);
         Assert.AreEqual(EndpointAdjustmentReason.IdleReturn, idleObservation.Adjustment.Reason);
         Assert.AreEqual(0, idleObservation.Adjustment.SampleCount);
+        Assert.IsNotNull(idleObservation.Evaluation);
+        Assert.AreEqual(EndpointEvaluationSignal.Idle, idleObservation.Evaluation.Signal);
         Assert.AreEqual(425, controller.EffectiveEndSilenceMs);
         Assert.AreEqual(0, controller.PauseSampleCount);
+    }
+
+    [TestMethod]
+    public void ObserveVad_ContinuedIdleReturnsAllTheWayToInitialEndpoint()
+    {
+        var controller = new AdaptiveEndpointController(VadEndpointMode.Balanced, fixedEndSilenceMs: 400);
+        controller.ObserveVad(startMs: 0, durationMs: 100, isSpeech: true);
+        StablePause(controller, silenceStartMs: 100, pauseMs: 200);
+        QuickResume(controller, silenceStartMs: 400, resumeStartMs: 900);
+        QuickResume(controller, silenceStartMs: 1000, resumeStartMs: 1500);
+
+        controller.ObserveVad(startMs: 11600, durationMs: 100, isSpeech: false);
+        var returned = controller.ObserveVad(startMs: 13700, durationMs: 100, isSpeech: false);
+
+        Assert.IsNotNull(returned.Adjustment);
+        Assert.AreEqual(EndpointAdjustmentReason.IdleReturn, returned.Adjustment.Reason);
+        Assert.AreEqual(400, controller.EffectiveEndSilenceMs);
     }
 
     [TestMethod]
@@ -101,6 +128,9 @@ public sealed class AdaptiveEndpointControllerTests
 
         Assert.AreEqual(2, adjustments.Count);
         Assert.IsNull(fourthResume.Adjustment);
+        Assert.IsNotNull(fourthResume.Evaluation);
+        Assert.AreEqual(EndpointEvaluationDecision.RateLimited, fourthResume.Evaluation.Decision);
+        Assert.AreEqual(2, fourthResume.Evaluation.RecentAdjustmentCount);
         Assert.AreEqual(500, controller.EffectiveEndSilenceMs);
     }
 
@@ -141,6 +171,7 @@ public sealed class AdaptiveEndpointControllerTests
         Assert.IsNotNull(acceptedResume.QuickResume);
         Assert.AreEqual(800, acceptedResume.QuickResume.CompletePauseMs);
         Assert.IsNull(rejectedResume.QuickResume);
+        Assert.IsNull(rejectedResume.Evaluation);
     }
 
     [TestMethod]
@@ -157,6 +188,8 @@ public sealed class AdaptiveEndpointControllerTests
         Assert.IsFalse(resume.QuickResume.ShouldMergeWithPreviousSegment);
         Assert.IsNull(resume.Adjustment);
         Assert.AreEqual(0, controller.PauseSampleCount);
+        Assert.IsNotNull(resume.Evaluation);
+        Assert.AreEqual(EndpointEvaluationDecision.FixedMode, resume.Evaluation.Decision);
         Assert.AreEqual(350, controller.EffectiveEndSilenceMs);
     }
 

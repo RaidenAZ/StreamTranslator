@@ -6,9 +6,7 @@ public static class AppSettingsValidator
 {
     private static readonly HashSet<string> SupportedLanguages = new(StringComparer.OrdinalIgnoreCase)
     {
-        "auto",
-        "zh",
-        "en"
+        "auto"
     };
     private static readonly HashSet<string> SupportedTranslationTargets = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -38,7 +36,7 @@ public static class AppSettingsValidator
 
         if (!SupportedLanguages.Contains(settings.Asr.Language))
         {
-            errors.Add("识别语言仅支持 auto、zh、en。");
+            errors.Add("识别语言暂时仅支持自动检测（auto）。");
         }
 
         if (settings.Asr.TimeoutMs is < 5000 or > 120000)
@@ -61,9 +59,16 @@ public static class AppSettingsValidator
             errors.Add("断句等待必须在 200 到 800 ms 之间。");
         }
 
+        if (settings.Vad.HardMaxSegmentMs is < 6000 or > 20000 ||
+            settings.Vad.HardMaxSegmentMs <= settings.Vad.SoftMaxSegmentMs ||
+            settings.Vad.HardMaxSegmentMs <= settings.Vad.MinSegmentMs)
+        {
+            errors.Add("最长片段必须在 6000 到 20000 ms 之间，并大于最短片段和软分段上限。");
+        }
+
         if (settings.Vad.StartSpeechMs <= 0 || settings.Vad.PreRollMs < 0 ||
             settings.Vad.SoftBreakSilenceMs <= 0 || settings.Vad.MinSegmentMs < 0 ||
-            settings.Vad.SoftMaxSegmentMs <= 0 || settings.Vad.HardMaxSegmentMs <= settings.Vad.SoftMaxSegmentMs ||
+            settings.Vad.SoftMaxSegmentMs <= 0 ||
             settings.Vad.OverlapMs < 0 || settings.Vad.OverlapMs >= settings.Vad.HardMaxSegmentMs)
         {
             errors.Add("VAD 分段参数无效，请恢复默认设置后重试。");

@@ -9,6 +9,7 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
 using StreamTranslator.Audio.Capture;
+using StreamTranslator.Audio.Segmentation;
 using StreamTranslator.App.Runtime;
 using StreamTranslator.Core.Clipboard;
 using StreamTranslator.Core.Configuration;
@@ -211,6 +212,7 @@ public partial class MainWindow : FluentWindow
 
         _isRunning = true;
         TranslationSettingsPanel.IsEnabled = false;
+        HardMaxSegmentBox.IsEnabled = false;
         StartStopText.Text = "停止字幕";
         StartStopIcon.Symbol = SymbolRegular.Stop24;
         StartStopButton.IsEnabled = true;
@@ -255,6 +257,8 @@ public partial class MainWindow : FluentWindow
         StartStopIcon.Symbol = SymbolRegular.Play24;
         StartStopButton.IsEnabled = true;
         TranslationSettingsPanel.IsEnabled = true;
+        HardMaxSegmentBox.IsEnabled = true;
+        AdaptiveVadStatusText.Text = "等待运行";
         UpdateVadEndpointModeUi();
         AppendAppLog("字幕 runtime 已停止");
     }
@@ -615,6 +619,9 @@ public partial class MainWindow : FluentWindow
             var label = VadEndpointModeLabel(status.Mode);
             var suffix = status.IsAdaptive ? "自适应" : "固定";
             CurrentVadEndpointText.Text = $"当前断句等待：{status.EffectiveEndSilenceMs}ms（{label}，{suffix}）";
+            AdaptiveVadStatusText.Text = status.IsAdaptive
+                ? FormatAdaptiveVadStatus(status.Evaluation)
+                : "固定值模式，不参与自适应";
         });
     }
 
@@ -756,6 +763,7 @@ public partial class MainWindow : FluentWindow
         SelectVadEndpointMode(settings.Vad.EndpointMode);
         UpdateVadEndpointModeUi();
         MinSegmentBox.Value = settings.Vad.MinSegmentMs;
+        HardMaxSegmentBox.Value = settings.Vad.HardMaxSegmentMs;
         DiagnosticsSwitch.IsChecked = settings.Diagnostics.Enabled;
         ApiKeyBox.Password = settings.Asr.ApiKey;
         BaseUrlBox.Text = settings.Asr.BaseUrl;
@@ -766,7 +774,7 @@ public partial class MainWindow : FluentWindow
         FloatingLinesBox.Value = settings.SubtitleWindow.MaxSubtitleItems;
         FloatingOpacitySlider.Value = settings.SubtitleWindow.Opacity;
         HotkeysEnabledSwitch.IsChecked = settings.Hotkeys.Enabled;
-        SelectLanguage(settings.Asr.Language);
+        LanguageBox.Text = "自动检测 (auto)";
         TranslationEnabledSwitch.IsChecked = settings.Translation.Enabled;
         SelectTranslationTargetLanguage(settings.Translation.TargetLanguage);
         RefreshTranslationProfileList(settings.Translation.ActiveProfileId);
@@ -781,7 +789,7 @@ public partial class MainWindow : FluentWindow
 
         _settings = _settings with
         {
-            SchemaVersion = 3,
+            SchemaVersion = 4,
             Audio = _settings.Audio with
             {
                 DeviceId = FollowDefaultDeviceSwitch.IsChecked == true ? "default" : SelectedAudioDeviceId(),
@@ -791,14 +799,15 @@ public partial class MainWindow : FluentWindow
             {
                 EndpointMode = SelectedVadEndpointMode(),
                 EndSilenceMs = (int)NumberValue(EndSilenceBox, 400),
-                MinSegmentMs = (int)NumberValue(MinSegmentBox, 900)
+                MinSegmentMs = (int)NumberValue(MinSegmentBox, 900),
+                HardMaxSegmentMs = (int)NumberValue(HardMaxSegmentBox, 10000)
             },
             Asr = _settings.Asr with
             {
                 ApiKey = ApiKeyBox.Password,
                 BaseUrl = BaseUrlBox.Text,
                 Model = ModelBox.Text,
-                Language = GetSelectedLanguage(),
+                Language = "auto",
                 TimeoutMs = (int)NumberValue(TimeoutBox, 30000),
                 MaxConcurrency = (int)NumberValue(MaxConcurrencyBox, 2)
             },
@@ -1412,6 +1421,32 @@ public partial class MainWindow : FluentWindow
         var suffix = profile.IsAdaptive ? "自适应" : "固定";
         CurrentVadEndpointText.Text =
             $"当前断句等待：{profile.InitialEndSilenceMs}ms（{VadEndpointModeLabel(mode)}，{suffix}）";
+        AdaptiveVadStatusText.Text = profile.IsAdaptive ? "等待运行" : "固定值模式，不参与自适应";
+    }
+
+    private static string FormatAdaptiveVadStatus(EndpointEvaluation? evaluation)
+    {
+        if (evaluation is null)
+        {
+            return "等待收集停顿样本";
+        }
+
+        var decision = evaluation.Decision switch
+        {
+            EndpointEvaluationDecision.Adjusted => $"已调整至 {evaluation.EffectiveEndSilenceMs}ms",
+            EndpointEvaluationDecision.WaitingForSamples => "样本不足，持续学习",
+            EndpointEvaluationDecision.WaitingForQuickResumes => "等待连续快速恢复",
+            EndpointEvaluationDecision.WaitingForStablePauses => "等待稳定停顿",
+            EndpointEvaluationDecision.Cooldown => "调整冷却中",
+            EndpointEvaluationDecision.RateLimited => "调整频率受限",
+            EndpointEvaluationDecision.AtBoundary => "已到模式边界",
+            EndpointEvaluationDecision.TargetUnchanged => "当前端点保持不变",
+            EndpointEvaluationDecision.IdleReturning => "空闲后回归初始值",
+            EndpointEvaluationDecision.IdleNoChange => "空闲后保持初始值",
+            _ => "已完成判断"
+        };
+
+        return $"样本 {evaluation.SampleCount}/8 · P75 {evaluation.P75PauseMs}ms · {decision}";
     }
 
     private static string VadEndpointModeLabel(VadEndpointMode mode)
@@ -1509,21 +1544,7 @@ public partial class MainWindow : FluentWindow
 
     private string GetSelectedLanguage()
     {
-        return (LanguageBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "auto";
-    }
-
-    private void SelectLanguage(string language)
-    {
-        foreach (var item in LanguageBox.Items.OfType<ComboBoxItem>())
-        {
-            if (string.Equals(item.Content?.ToString(), language, StringComparison.OrdinalIgnoreCase))
-            {
-                LanguageBox.SelectedItem = item;
-                return;
-            }
-        }
-
-        LanguageBox.SelectedIndex = 0;
+        return "auto";
     }
 
     private static double NumberValue(NumberBox numberBox, double fallback)

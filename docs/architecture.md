@@ -126,7 +126,7 @@ V1.0 以准确度优先，C# 侧内置 Silero VAD ONNX。正式运行缺少模�
 
 VAD 只判断短帧是否像语音。句子边界由 `SpeechSegmenter` 决定。
 
-推荐默认参数：
+V1.0 固定模式基线参数：
 
 ```text
 EndSilenceMs: 300
@@ -139,10 +139,12 @@ HardMaxSegmentMs: 10000
 OverlapMs: 600
 ```
 
-用户可配置项：
+V1.0 固定模式用户可配置项：
 
 ```text
 断句等待: 200-800ms, 默认 300ms, 步进 50ms
+最短片段: 300-3000ms, 默认 900ms
+最长片段: 6000-20000ms, 默认 10000ms, 步进 1000ms
 ```
 
 用户侧命名建议：
@@ -152,7 +154,7 @@ OverlapMs: 600
 声音停止后等待多久生成字幕
 ```
 
-以上固定 300ms 是 V1.0 基线。V1.1 默认改为目标驱动的单变量自适应端点：
+以上固定 300ms 仅是 V1.0 基线。当前 V1.1 默认使用均衡自适应端点，初始值为 400ms；固定值模式仍保留 200-800ms 范围，用于复现 V1.0 行为或做对比测试。V1.1 的目标驱动单变量自适应端点如下：
 
 | 模式 | 初始值 | 范围 |
 |---|---:|---:|
@@ -183,6 +185,10 @@ OverlapMs: 600
 - 硬上限：达到 `HardMaxSegmentMs` 后强制切片。
 - overlap：硬切或连续切片时，下一段带上一段末尾 `OverlapMs` 的音频。
 - 去重：文本层做本地 suffix/prefix 去重，避免 overlap 造成重复字幕。
+
+设置页只开放 `MinSegmentMs` 和 `HardMaxSegmentMs`。`SoftMaxSegmentMs`、`SoftBreakSilenceMs` 与 `OverlapMs` 继续作为内部参数，避免用户配置出不一致的切片策略。最长片段仅在停止字幕后可修改。
+
+ASR 识别语言在 schema V4 中固定为自动检测 `auto`。旧配置中的 `zh` 或 `en` 在加载时强制迁移为 `auto`，C# 运行时也只发送 `auto`。底层 Python worker 保留协议兼容能力，但产品 UI 不开放强制语言，且应用不对未知模型标签做猜测性文本清洗。
 
 ## ASR Worker Boundary
 
@@ -220,7 +226,7 @@ stderr 写入 worker 日志
   "endMs": 54240,
   "audioFormat": "wav",
   "sampleRate": 16000,
-  "language": "zh",
+  "language": "auto",
   "audioBase64": "..."
 }
 ```
