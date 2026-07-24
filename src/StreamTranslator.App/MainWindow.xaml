@@ -311,6 +311,13 @@
                                                    TextWrapping="Wrap"
                                                    FontSize="14"
                                                    Foreground="{StaticResource PrimaryTextBrush}" />
+                                        <TextBlock x:Name="TranslationIssueText"
+                                                   AutomationProperties.AutomationId="HomeTranslationIssueText"
+                                                   Visibility="Collapsed"
+                                                   TextWrapping="Wrap"
+                                                   FontSize="14"
+                                                   Foreground="#B54708"
+                                                   Margin="0,12,0,0" />
                                     </StackPanel>
                                 </Border>
                             </StackPanel>

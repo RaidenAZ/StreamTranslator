@@ -13,6 +13,7 @@ using StreamTranslator.Audio.Segmentation;
 using StreamTranslator.App.Runtime;
 using StreamTranslator.Core.Clipboard;
 using StreamTranslator.Core.Configuration;
+using StreamTranslator.Core.Diagnostics;
 using StreamTranslator.Core.Subtitles;
 using StreamTranslator.Core.Translation;
 using Wpf.Ui.Controls;
@@ -43,6 +44,8 @@ public partial class MainWindow : FluentWindow
     private bool _isClosing;
     private bool _sessionTranslationEnabled;
     private Snackbar? _copyFailureSnackbar;
+    private readonly TranslationIssueTracker _translationIssueTracker = new();
+    private TranslationRuntimeStatus _translationRuntimeStatus = new("已关闭", "已关闭", 0, 0);
 
     public MainWindow()
     {
@@ -187,6 +190,13 @@ public partial class MainWindow : FluentWindow
     private async Task StartRuntimeCoreAsync(AppSettings runtimeSettings)
     {
         _sessionTranslationEnabled = runtimeSettings.Translation.IsEffectivelyEnabled;
+        _translationIssueTracker.MarkSuccess();
+        _translationRuntimeStatus = new TranslationRuntimeStatus(
+            _sessionTranslationEnabled ? "启动中" : "已关闭",
+            _sessionTranslationEnabled ? "等待请求" : "已关闭",
+            0,
+            0);
+        UpdateTranslationIssueUi(TranslationIssueState.Healthy);
         _runtime = new SubtitleRuntime(AppContext.BaseDirectory, _dataDirectory, runtimeSettings);
         _runtime.StatusChanged += OnRuntimeStatusChanged;
         _runtime.SubtitleReady += OnSubtitleReady;
@@ -242,6 +252,12 @@ public partial class MainWindow : FluentWindow
 
         _isRunning = false;
         _sessionTranslationEnabled = false;
+        _translationRuntimeStatus = new TranslationRuntimeStatus(
+            _settings.Translation.IsEffectivelyEnabled ? "未启动" : "已关闭",
+            _settings.Translation.IsEffectivelyEnabled ? "未测试" : "已关闭",
+            0,
+            0);
+        UpdateTranslationIssueUi(_translationIssueTracker.MarkSuccess());
         AudioStatusText.Text = "未启动";
         VadStatusText.Text = "等待模型";
         WorkerStatusText.Text = "未启动";
@@ -377,18 +393,29 @@ public partial class MainWindow : FluentWindow
 
     private async void OnCopyDiagnosticsClick(object sender, RoutedEventArgs e)
     {
-        var diagnostics = $"""
-            StreamTranslator V1.2
-            OS: {Environment.OSVersion}
-            DataDirectory: {_dataDirectory}
-            AudioStatus: {AudioStatusText.Text}
-            VadStatus: {VadStatusText.Text}
-            WorkerStatus: {WorkerStatusText.Text}
-            ApiStatus: {ApiStatusText.Text}
-            Model: {ModelBox.Text}
-            Language: {GetSelectedLanguage()}
-            MaxConcurrency: {MaxConcurrencyBox.Value}
-            """;
+        var diagnostics = DiagnosticsReportBuilder.Build(new DiagnosticsSnapshot
+        {
+            Version = "V1.2",
+            OperatingSystem = Environment.OSVersion.ToString(),
+            DataDirectory = _dataDirectory,
+            AudioStatus = AudioStatusText.Text,
+            VadStatus = VadStatusText.Text,
+            AsrWorkerStatus = WorkerStatusText.Text,
+            AsrApiStatus = ApiStatusText.Text,
+            AsrModel = ModelBox.Text,
+            AsrLanguage = GetSelectedLanguage(),
+            AsrMaxConcurrency = (int)NumberValue(MaxConcurrencyBox, 2),
+            TranslationEnabled = _sessionTranslationEnabled,
+            TranslationWorkerStatus = _translationRuntimeStatus.WorkerStatus,
+            TranslationApiStatus = _translationRuntimeStatus.ServiceStatus,
+            TranslationProfile = _settings.Translation.ActiveProfile,
+            TranslationTargetLanguage = _settings.Translation.TargetLanguage,
+            TranslationQueueLength = _translationRuntimeStatus.QueueLength,
+            TranslationQueuePeak = _translationRuntimeStatus.QueuePeak,
+            TranslationRecentError = _translationIssueTracker.State.HasIssue
+                ? _translationIssueTracker.State.Summary
+                : null
+        });
         await TryCopyTextAsync(diagnostics, "诊断信息");
     }
 
@@ -517,6 +544,7 @@ public partial class MainWindow : FluentWindow
     {
         Dispatcher.BeginInvoke(() =>
         {
+            UpdateTranslationIssueUi(_translationIssueTracker.MarkSuccess());
             var match = SubtitleList.Items
                 .OfType<SubtitleItem>()
                 .Select((item, index) => new { item, index })
@@ -535,6 +563,7 @@ public partial class MainWindow : FluentWindow
 
     private void OnTranslationStatusChanged(object? sender, TranslationRuntimeStatus status)
     {
+        _translationRuntimeStatus = status;
         Dispatcher.BeginInvoke(() =>
         {
             TranslationWorkerStatusText.Text = status.WorkerStatus;
@@ -546,7 +575,18 @@ public partial class MainWindow : FluentWindow
 
     private void OnTranslationTaskStatusChanged(object? sender, TranslationTaskStatusUpdate status)
     {
-        Dispatcher.BeginInvoke(() => _floatingWindow?.ClearTranslationPending(status));
+        var issue = _translationIssueTracker.Apply(status);
+        Dispatcher.BeginInvoke(() =>
+        {
+            UpdateTranslationIssueUi(issue);
+            _floatingWindow?.ClearTranslationPending(status);
+        });
+    }
+
+    private void UpdateTranslationIssueUi(TranslationIssueState state)
+    {
+        TranslationIssueText.Text = state.Summary;
+        TranslationIssueText.Visibility = state.HasIssue ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void ApplySubtitleRevision(SubtitleItem revision)
