@@ -1226,15 +1226,45 @@ public partial class MainWindow : FluentWindow
         form.Children.Add(CreateField("模型名称", modelBox));
         form.Children.Add(CreateField("API Key", apiKeyBox));
         form.Children.Add(CreateField("服务位置", locationBox));
-        form.Children.Add(new Expander
+        var advancedExpander = new Expander
         {
             Header = "高级设置",
             Content = advancedPanel,
             Margin = new Thickness(0, 4, 0, 0)
-        });
+        };
+        AutomationProperties.SetAutomationId(advancedExpander, "TranslationAdvancedSettingsExpander");
+        form.Children.Add(advancedExpander);
         form.Children.Add(validationText);
 
         TranslationProfile? candidate = null;
+        var dialogScrollViewer = new ScrollViewer
+        {
+            MaxHeight = 500,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            CanContentScroll = false,
+            Content = form
+        };
+        dialogScrollViewer.PreviewMouseWheel += (_, args) =>
+        {
+            if (FindScrollableAncestor(args.OriginalSource as DependencyObject, dialogScrollViewer, args.Delta) is not null)
+            {
+                return;
+            }
+
+            if (dialogScrollViewer.ScrollableHeight <= 0)
+            {
+                return;
+            }
+
+            var direction = args.Delta > 0 ? -1 : 1;
+            var step = Math.Max(24, dialogScrollViewer.ViewportHeight * 0.12);
+            dialogScrollViewer.ScrollToVerticalOffset(
+                Math.Clamp(dialogScrollViewer.VerticalOffset + direction * step, 0, dialogScrollViewer.ScrollableHeight));
+            args.Handled = true;
+        };
+        AutomationProperties.SetAutomationId(dialogScrollViewer, "TranslationProfileDialogScrollViewer");
+
         var dialog = new ContentDialog(RootContentDialogHost)
         {
             Title = existing is null ? "添加翻译模型" : "编辑翻译模型",
@@ -1242,12 +1272,11 @@ public partial class MainWindow : FluentWindow
             CloseButtonText = "取消",
             DialogWidth = 560,
             DialogMaxHeight = 680,
-            Content = new ScrollViewer
-            {
-                Content = form,
-                VerticalScrollBarVisibility = ScrollBarVisibility.Auto
-            }
+            Content = dialogScrollViewer
         };
+        // ContentDialog's template has its own ScrollViewer; only the editor content should scroll.
+        ScrollViewer.SetVerticalScrollBarVisibility(dialog, ScrollBarVisibility.Disabled);
+        ScrollViewer.SetHorizontalScrollBarVisibility(dialog, ScrollBarVisibility.Disabled);
         dialog.Closing += (_, args) =>
         {
             if (args.Result != ContentDialogResult.Primary)
@@ -1300,6 +1329,48 @@ public partial class MainWindow : FluentWindow
 
         var result = await dialog.ShowAsync();
         return result == ContentDialogResult.Primary ? candidate : null;
+    }
+
+    private static ScrollViewer? FindScrollableAncestor(
+        DependencyObject? source,
+        ScrollViewer dialogScrollViewer,
+        int delta)
+    {
+        for (var current = source; current is not null; current = GetParent(current))
+        {
+            if (current is not ScrollViewer scrollViewer || ReferenceEquals(scrollViewer, dialogScrollViewer) ||
+                scrollViewer.ScrollableHeight <= 0)
+            {
+                continue;
+            }
+
+            var canScroll = delta > 0
+                ? scrollViewer.VerticalOffset > 0
+                : scrollViewer.VerticalOffset < scrollViewer.ScrollableHeight;
+            if (canScroll)
+            {
+                return scrollViewer;
+            }
+        }
+
+        return null;
+    }
+
+    private static DependencyObject? GetParent(DependencyObject element)
+    {
+        if (element is FrameworkContentElement contentElement)
+        {
+            return contentElement.Parent;
+        }
+
+        if (element is FrameworkElement frameworkElement)
+        {
+            return frameworkElement.Parent ?? System.Windows.Media.VisualTreeHelper.GetParent(element);
+        }
+
+        return element is System.Windows.Media.Visual
+            ? System.Windows.Media.VisualTreeHelper.GetParent(element)
+            : LogicalTreeHelper.GetParent(element);
     }
 
     private static StackPanel CreateField(string label, Control control)

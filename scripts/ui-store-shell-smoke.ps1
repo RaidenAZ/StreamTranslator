@@ -130,6 +130,9 @@ if (Test-Path $mainWindowCode) {
         $mainWindowSource -notmatch '兼容 OpenAI Chat Completions API') {
         throw "The translation profile editor should display the OpenAI Chat Completions compatibility notice."
     }
+    if ($mainWindowSource -notmatch 'ScrollViewer\.SetVerticalScrollBarVisibility\(dialog, ScrollBarVisibility\.Disabled\)') {
+        throw "The translation profile editor should disable the ContentDialog template scrollbar."
+    }
     if ($mainWindowSource -notmatch '标准兼容（不设置思考模式）' -or
         $mainWindowSource -notmatch 'DeepSeek（thinking\.type=disabled）' -or
         $mainWindowSource -notmatch 'Qwen \+ vLLM（enable_thinking=false）' -or
@@ -249,6 +252,12 @@ public static class UiSmokeNative
         SetCursorPos((int)Math.Round(x), (int)Math.Round(y));
         mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
         mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+    }
+
+    public static void ScrollScreenPoint(double x, double y, int delta)
+    {
+        SetCursorPos((int)Math.Round(x), (int)Math.Round(y));
+        mouse_event(0x0800, 0, 0, unchecked((uint)delta), UIntPtr.Zero);
     }
 
 }
@@ -514,6 +523,39 @@ try {
     } while ($null -eq $translationProtocolNotice -and (Get-Date) -lt $protocolNoticeDeadline)
     if ($null -eq $translationProtocolNotice) {
         throw "Translation profile editor did not display the Chat Completions compatibility notice."
+    }
+
+    $advancedSettingsExpander = Find-ByAutomationId "TranslationAdvancedSettingsExpander"
+    if ($null -eq $advancedSettingsExpander) {
+        throw "Translation profile advanced-settings expander was not found."
+    }
+    $expandPattern = $advancedSettingsExpander.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+    $expandPattern.Expand()
+    Start-Sleep -Milliseconds 300
+
+    $dialogScrollViewer = Find-ByAutomationId "TranslationProfileDialogScrollViewer"
+    if ($null -eq $dialogScrollViewer) {
+        throw "Translation profile dialog scroll viewer was not found."
+    }
+    $dialogScrollViewerCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, "TranslationProfileDialogScrollViewer")
+    $dialogScrollViewers = $mainElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $dialogScrollViewerCondition)
+    if ($dialogScrollViewers.Count -ne 1) {
+        throw "Translation profile editor should expose exactly one dialog scroll viewer, found $($dialogScrollViewers.Count)."
+    }
+    $scrollPattern = $dialogScrollViewer.GetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern)
+    if (-not $scrollPattern.Current.VerticallyScrollable) {
+        throw "Expanded translation profile dialog should be vertically scrollable."
+    }
+    $beforeScrollPercent = $scrollPattern.Current.VerticalScrollPercent
+    $dialogRect = $dialogScrollViewer.Current.BoundingRectangle
+    [UiSmokeNative]::ScrollScreenPoint(
+        $dialogRect.Left + ($dialogRect.Width / 2),
+        $dialogRect.Top + ($dialogRect.Height / 2),
+        -120)
+    Start-Sleep -Milliseconds 500
+    $afterScrollPercent = $scrollPattern.Current.VerticalScrollPercent
+    if ($afterScrollPercent -le $beforeScrollPercent) {
+        throw "Expanded translation profile dialog did not respond to the mouse wheel."
     }
 
     $cancelCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, "取消")
