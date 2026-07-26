@@ -92,7 +92,8 @@ public partial class FloatingSubtitleWindow : Window
         Resources["FloatingSourceFontSize"] = normalizedFontSize;
         Resources["FloatingTranslationFontSize"] = Math.Round(normalizedFontSize * 0.9, 1);
         _maxSubtitleItems = Math.Clamp(maxSubtitleItems, 1, 3);
-        Chrome.Opacity = Math.Clamp(opacity, 0.35, 0.95);
+        // Opacity applies to the backdrop brush only, so subtitle text stays fully opaque and readable.
+        ChromeBackgroundBrush.Opacity = Math.Clamp(opacity, 0.35, 0.95);
         MaxHeight = Math.Max(120, SystemParameters.WorkArea.Height * 0.4);
         TrimToMaximum();
         ScheduleRenderedHeightTrim();

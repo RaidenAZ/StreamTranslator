@@ -512,7 +512,17 @@ def run_protocol(input_stream: TextIO, output_stream: TextIO, worker: Translatio
             executor.shutdown(wait=True, cancel_futures=False)
 
 
+def _force_utf8_stdio() -> None:
+    # The host process speaks UTF-8 JSON lines; never fall back to the locale
+    # code page (e.g. GBK on Chinese Windows).
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8")
+
+
 def main() -> int:
+    _force_utf8_stdio()
     worker = TranslationWorker()
     write_json(
         {

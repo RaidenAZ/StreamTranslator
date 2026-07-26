@@ -8,6 +8,7 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using StreamTranslator.Audio.Capture;
 using StreamTranslator.Audio.Segmentation;
 using StreamTranslator.App.Runtime;
@@ -16,8 +17,10 @@ using StreamTranslator.Core.Configuration;
 using StreamTranslator.Core.Diagnostics;
 using StreamTranslator.Core.Subtitles;
 using StreamTranslator.Core.Translation;
+using Wpf.Ui.Appearance;
 using Wpf.Ui.Controls;
 using System.Windows.Interop;
+using System.Windows.Media.Animation;
 using PasswordBox = System.Windows.Controls.PasswordBox;
 using TextBlock = System.Windows.Controls.TextBlock;
 using TextBox = System.Windows.Controls.TextBox;
@@ -50,6 +53,7 @@ public partial class MainWindow : FluentWindow
     public MainWindow()
     {
         InitializeComponent();
+        SystemThemeWatcher.Watch(this);
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -215,7 +219,7 @@ public partial class MainWindow : FluentWindow
         TranslationWorkerStatusText.Text = _sessionTranslationEnabled ? "启动中" : "已关闭";
         TranslationApiStatusText.Text = _sessionTranslationEnabled ? "等待请求" : "已关闭";
         HomeRuntimeSummaryText.Text = "启动中，正在连接音频与识别服务";
-        HomeStateBadgeText.Text = "启动中";
+        SetStateBadge("启动中");
         StartStopButton.IsEnabled = false;
 
         await _runtime.StartAsync();
@@ -227,7 +231,7 @@ public partial class MainWindow : FluentWindow
         StartStopIcon.Symbol = SymbolRegular.Stop24;
         StartStopButton.IsEnabled = true;
         HomeRuntimeSummaryText.Text = "运行中，正在监听系统输出声音";
-        HomeStateBadgeText.Text = "运行中";
+        SetStateBadge("运行中");
         AppendAppLog("字幕 runtime 已启动");
         TryShowFloatingWindow();
         _floatingWindow?.SetCaption("等待字幕...");
@@ -268,7 +272,7 @@ public partial class MainWindow : FluentWindow
         AudioLevelBar.Value = 0;
         HomeAudioLevelText.Text = "0%";
         HomeRuntimeSummaryText.Text = "未启动，等待开始";
-        HomeStateBadgeText.Text = "就绪";
+        SetStateBadge("就绪");
         StartStopText.Text = "开始字幕";
         StartStopIcon.Symbol = SymbolRegular.Play24;
         StartStopButton.IsEnabled = true;
@@ -317,7 +321,7 @@ public partial class MainWindow : FluentWindow
     private async void OnCopyAllClick(object sender, RoutedEventArgs e)
     {
         var builder = new StringBuilder();
-        foreach (var item in SubtitleList.Items.OfType<SubtitleItem>())
+        foreach (var item in SubtitleList.Items.OfType<SubtitleItem>().Reverse())
         {
             builder.AppendLine(FormatSubtitleForCopy(item));
             builder.AppendLine();
@@ -331,7 +335,8 @@ public partial class MainWindow : FluentWindow
         var recent = SubtitleList.Items
             .OfType<SubtitleItem>()
             .Where(static item => !string.IsNullOrWhiteSpace(item.SourceText))
-            .TakeLast(10)
+            .Take(10)
+            .Reverse()
             .Select(FormatSubtitleForCopy);
         await TryCopyTextAsync(
             string.Join(Environment.NewLine + Environment.NewLine, recent),
@@ -421,7 +426,12 @@ public partial class MainWindow : FluentWindow
 
     private async Task TryCopyTextAsync(string text, string operation)
     {
-        var result = await ClipboardWritePolicy.TryWriteAsync(text, Clipboard.SetText);
+        // SetDataObject with minimal internal retries so retry pacing stays under
+        // ClipboardWritePolicy's control; Clipboard.SetText would add its own
+        // ~1s of internal retries per attempt and delay failure feedback by seconds.
+        var result = await ClipboardWritePolicy.TryWriteAsync(
+            text,
+            static value => System.Windows.Forms.Clipboard.SetDataObject(value, true, 1, 10));
         if (result.Succeeded)
         {
             SubtitleHistoryCopyStatusText.Text = "已复制";
@@ -452,11 +462,26 @@ public partial class MainWindow : FluentWindow
 
     private void ShowPage(UIElement selectedPage)
     {
+        var alreadyVisible = selectedPage.Visibility == Visibility.Visible;
         HomePage.Visibility = Visibility.Collapsed;
         SubtitleHistoryPage.Visibility = Visibility.Collapsed;
         SettingsPage.Visibility = Visibility.Collapsed;
         AboutPage.Visibility = Visibility.Collapsed;
         selectedPage.Visibility = Visibility.Visible;
+        if (!alreadyVisible)
+        {
+            PlayPageTransition(selectedPage);
+        }
+    }
+
+    private static void PlayPageTransition(UIElement page)
+    {
+        var slide = new TranslateTransform(0, 16);
+        page.RenderTransform = slide;
+        var easing = new QuadraticEase { EasingMode = EasingMode.EaseOut };
+        var duration = TimeSpan.FromMilliseconds(220);
+        page.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0, 1, duration) { EasingFunction = easing });
+        slide.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(16, 0, duration) { EasingFunction = easing });
     }
 
     private void SetActiveNavigationItem(string pageName)
@@ -525,10 +550,9 @@ public partial class MainWindow : FluentWindow
                 }
                 else
                 {
-                    SubtitleList.Items.Add(item);
+                    SubtitleList.Items.Insert(0, item);
                 }
 
-                SubtitleList.ScrollIntoView(item);
                 var translationPending = _sessionTranslationEnabled &&
                     !SourceLanguageDecision.ShouldSkip(
                         _settings.Asr.Language,
@@ -583,6 +607,19 @@ public partial class MainWindow : FluentWindow
         });
     }
 
+    private void SetStateBadge(string text)
+    {
+        HomeStateBadgeText.Text = text;
+        var foregroundKey = text switch
+        {
+            "运行中" => "SystemFillColorSuccessBrush",
+            "启动中" => "SystemFillColorCautionBrush",
+            "错误" => "SystemFillColorCriticalBrush",
+            _ => "AccentTextFillColorPrimaryBrush"
+        };
+        HomeStateBadgeText.SetResourceReference(TextBlock.ForegroundProperty, foregroundKey);
+    }
+
     private void UpdateTranslationIssueUi(TranslationIssueState state)
     {
         TranslationIssueText.Text = state.Summary;
@@ -597,7 +634,8 @@ public partial class MainWindow : FluentWindow
             .Where(entry => SubtitleRevisionCoordinator.Replaces(revision, entry.item))
             .Select(static entry => entry.index)
             .ToArray();
-        var insertIndex = indexes.Length == 0 ? SubtitleList.Items.Count : indexes.Min();
+        // 列表为倒序显示（最新在顶部），未匹配到旧条目时插入到顶部
+        var insertIndex = indexes.Length == 0 ? 0 : indexes.Min();
         for (var index = indexes.Length - 1; index >= 0; index--)
         {
             SubtitleList.Items.RemoveAt(indexes[index]);
@@ -618,10 +656,8 @@ public partial class MainWindow : FluentWindow
         RemoveSubtitlePlaceholder();
         foreach (var item in items)
         {
-            SubtitleList.Items.Add(item);
+            SubtitleList.Items.Insert(0, item);
         }
-
-        SubtitleList.ScrollIntoView(items[^1]);
     }
 
     private void OnRuntimeError(object? sender, Exception ex)
@@ -629,7 +665,7 @@ public partial class MainWindow : FluentWindow
         Dispatcher.BeginInvoke(async () =>
         {
             LastErrorText.Text = ex.Message;
-            HomeStateBadgeText.Text = "错误";
+            SetStateBadge("错误");
             HomeRuntimeSummaryText.Text = "运行异常，请查看问题信息";
             AppendAppLog($"错误: {ex.GetType().Name}: {ex.Message}");
 
@@ -637,7 +673,7 @@ public partial class MainWindow : FluentWindow
             {
                 await StopRuntimeAsync();
                 LastErrorText.Text = ex.Message;
-                HomeStateBadgeText.Text = "错误";
+                SetStateBadge("错误");
                 HomeRuntimeSummaryText.Text = "字幕已停止，请处理问题后重新开始";
             }
         });
@@ -1111,7 +1147,7 @@ public partial class MainWindow : FluentWindow
         var baseUrlBox = new TextBox { Text = existing?.BaseUrl ?? "", Height = 34 };
         var endpointPreview = new TextBlock
         {
-            Foreground = FindResource("SecondaryTextBrush") as System.Windows.Media.Brush,
+            Foreground = FindResource("TextFillColorSecondaryBrush") as System.Windows.Media.Brush,
             FontSize = 11,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 4, 0, 0)
@@ -1154,7 +1190,8 @@ public partial class MainWindow : FluentWindow
         };
         var validationText = new TextBlock
         {
-            Foreground = System.Windows.Media.Brushes.IndianRed,
+            Foreground = TryFindResource("SystemFillColorCriticalBrush") as System.Windows.Media.Brush
+                ?? System.Windows.Media.Brushes.IndianRed,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 8, 0, 0)
         };
@@ -1213,7 +1250,7 @@ public partial class MainWindow : FluentWindow
         var protocolNotice = new TextBlock
         {
             Text = "接口协议：兼容 OpenAI Chat Completions API",
-            Foreground = FindResource("SecondaryTextBrush") as System.Windows.Media.Brush,
+            Foreground = FindResource("TextFillColorSecondaryBrush") as System.Windows.Media.Brush,
             FontSize = 12,
             Margin = new Thickness(0, 0, 0, 12)
         };
@@ -1380,7 +1417,8 @@ public partial class MainWindow : FluentWindow
         {
             Text = label,
             FontSize = 12,
-            Foreground = System.Windows.Media.Brushes.DimGray,
+            Foreground = Application.Current.TryFindResource("TextFillColorSecondaryBrush") as System.Windows.Media.Brush
+                ?? System.Windows.Media.Brushes.DimGray,
             Margin = new Thickness(0, 0, 0, 4)
         });
         panel.Children.Add(control);

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Text;
 
 namespace StreamTranslator.Core.Worker;
 
@@ -44,7 +45,12 @@ public sealed class PythonWorkerClient : IAsyncDisposable
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            CreateNoWindow = true
+            CreateNoWindow = true,
+            // The worker protocol is UTF-8 JSON lines; without this the OS ANSI
+            // code page (e.g. GBK) is used and non-ASCII text is corrupted.
+            StandardInputEncoding = new UTF8Encoding(false),
+            StandardOutputEncoding = new UTF8Encoding(false),
+            StandardErrorEncoding = new UTF8Encoding(false)
         };
 
         foreach (var item in _environment)
