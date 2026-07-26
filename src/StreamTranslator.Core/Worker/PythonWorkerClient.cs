@@ -6,8 +6,9 @@ public sealed class PythonWorkerClient : JsonLinesWorkerClient<WorkerResponse>
         string executablePath,
         string arguments,
         IReadOnlyDictionary<string, string> environment,
-        string? stderrLogPath = null)
-        : base(executablePath, arguments, environment, stderrLogPath)
+        string? stderrLogPath = null,
+        TimeSpan? requestTimeout = null)
+        : base(executablePath, arguments, environment, stderrLogPath, requestTimeout)
     {
     }
 

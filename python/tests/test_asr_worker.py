@@ -117,6 +117,64 @@ def test_run_protocol_executes_transcriptions_with_bounded_concurrency():
     assert {response["sequence"] for response in responses} == {1, 2}
 
 
+def test_protocol_rejects_transcribe_over_capacity_without_unbounded_queue():
+    worker = BlockingWorker()
+    requests = "\n".join(
+        json.dumps({"id": f"seg-{index}", "type": "transcribe", "sequence": index})
+        for index in (1, 2)
+    )
+    output = io.StringIO()
+    thread = threading.Thread(target=run_protocol, args=(io.StringIO(requests), output, worker, 1))
+    thread.start()
+    try:
+        _wait_for_output(output, '"errorKind":"backpressure"')
+    finally:
+        worker.release.set()
+        thread.join(timeout=5)
+    assert not thread.is_alive()
+
+    responses = {item["id"]: item for item in (json.loads(line) for line in output.getvalue().splitlines())}
+    assert responses["seg-2"]["errorKind"] == "backpressure"
+    assert responses["seg-2"]["retryable"] is True
+    assert responses["seg-1"]["ok"] is True
+
+
+def test_error_response_redacts_secrets_from_message():
+    response = error_response(
+        {"id": "seg-1", "sequence": 1},
+        RuntimeError("authorization failed for key secret-key-1234"),
+        ["secret-key-1234"],
+    )
+
+    assert "secret-key-1234" not in response["errorMessage"]
+    assert "[REDACTED]" in response["errorMessage"]
+
+
+def test_get_client_disables_sdk_retries(monkeypatch):
+    captured = {}
+
+    class TrackingOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("asr_worker.OpenAI", TrackingOpenAI)
+    worker = AsrWorker(config(api_key="key-12345"))
+
+    worker._get_client()
+
+    assert captured["max_retries"] == 0
+    assert captured["timeout"] == 30
+
+
+def _wait_for_output(output: io.StringIO, marker: str, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if marker in output.getvalue():
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"marker {marker!r} not found in output: {output.getvalue()!r}")
+
+
 def config(api_key: str) -> WorkerConfig:
     return WorkerConfig(
         api_key=api_key,
@@ -145,6 +203,24 @@ class FakeHttpError(Exception):
     def __init__(self, message: str, status_code: int):
         super().__init__(message)
         self.status_code = status_code
+
+
+class BlockingWorker:
+    def __init__(self):
+        self.release = threading.Event()
+
+    def transcribe(self, request):
+        self.release.wait(timeout=5)
+        return {
+            "id": request["id"],
+            "type": "transcribe_result",
+            "ok": True,
+            "sequence": request["sequence"],
+            "text": "ok",
+        }
+
+    def health_check(self):
+        return None
 
 
 class TrackingWorker:

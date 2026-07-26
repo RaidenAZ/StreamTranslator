@@ -296,7 +296,10 @@ public sealed class SubtitleRuntime : IAsyncDisposable
                 try
                 {
                     await Task.Delay(500, _stopCts?.Token ?? CancellationToken.None).ConfigureAwait(false);
-                    _capture.Start();
+
+                    // Rebuild stateful pipeline components BEFORE restarting capture
+                    // so the very first new frames are processed by a clean segmenter
+                    // and controller instead of ones with stale time-axis state.
                     _vad?.Reset();
                     if (_endpointController is not null)
                     {
@@ -307,6 +310,8 @@ public sealed class SubtitleRuntime : IAsyncDisposable
                     _utteranceGroupTracker.CloseCurrentGroup();
                     _revisionCoordinator.CloseCurrentGroup();
                     _mergeNextSegment = false;
+
+                    _capture.Start();
                     StatusChanged?.Invoke(this, "音频捕获已恢复");
                     return;
                 }

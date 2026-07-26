@@ -75,6 +75,43 @@ public sealed class PythonWorkerClientTests
     }
 
     [TestMethod]
+    public async Task Client_TimesOutWhenWorkerNeverReplies()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("The portable application targets Windows.");
+        }
+
+        var root = Path.Combine(Path.GetTempPath(), $"stream-translator-worker-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var scriptPath = Path.Combine(root, "fake-worker.ps1");
+        await File.WriteAllTextAsync(scriptPath, FakeWorkerScript);
+
+        try
+        {
+            await using var client = new PythonWorkerClient(
+                "powershell",
+                $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"",
+                new Dictionary<string, string>(),
+                stderrLogPath: null,
+                requestTimeout: TimeSpan.FromMilliseconds(500));
+            await client.StartAsync();
+
+            await Assert.ThrowsExceptionAsync<TimeoutException>(
+                () => client.TranscribeAsync(Request("ignore")));
+
+            // The transport cap fails only that request; the client stays usable.
+            var response = await client.TranscribeAsync(Request("ok-after-timeout"));
+            Assert.IsTrue(response.Ok);
+            await client.ShutdownAsync();
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task Client_SurvivesMalformedStdoutLines()
     {
         if (!OperatingSystem.IsWindows())

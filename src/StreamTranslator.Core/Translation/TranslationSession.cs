@@ -19,10 +19,12 @@ public sealed class TranslationSession : IAsyncDisposable
     private readonly object _historyTasksLock = new();
     private readonly SemaphoreSlim _queueSignal = new(0);
     private readonly SemaphoreSlim _workerRecoveryLock = new(1, 1);
+    private static readonly TimeSpan PruneInterval = TimeSpan.FromSeconds(30);
     private readonly LinkedList<TranslationWorkItem> _pending = [];
-    private readonly HashSet<string> _taskKeys = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, int> _latestRevisions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTimeOffset> _taskKeys = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (int Revision, DateTimeOffset UpdatedAt)> _latestRevisions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TranslationContextState> _context = new(StringComparer.Ordinal);
+    private DateTimeOffset _lastPruneAt;
     private readonly List<Task> _pumpTasks = [];
     private readonly List<Task> _historyTasks = [];
     private CancellationTokenSource? _sessionCts;
@@ -150,13 +152,15 @@ public sealed class TranslationSession : IAsyncDisposable
                 return;
             }
 
-            if (_latestRevisions.TryGetValue(work.UtteranceGroupId, out var latestRevision) &&
-                work.SourceRevision < latestRevision)
+            PruneExpiredStateLocked(now);
+
+            if (_latestRevisions.TryGetValue(work.UtteranceGroupId, out var latest) &&
+                work.SourceRevision < latest.Revision)
             {
                 return;
             }
 
-            _latestRevisions[work.UtteranceGroupId] = work.SourceRevision;
+            _latestRevisions[work.UtteranceGroupId] = (work.SourceRevision, now);
             _context[work.UtteranceGroupId] = new TranslationContextState(
                 work.Sequence,
                 new TranslationContextItem(
@@ -185,7 +189,7 @@ public sealed class TranslationSession : IAsyncDisposable
         var queued = false;
         lock (_stateLock)
         {
-            if (!_accepting || _translationDisabled || _taskKeys.Contains(work.Key))
+            if (!_accepting || _translationDisabled || _taskKeys.ContainsKey(work.Key))
             {
                 return;
             }
@@ -199,7 +203,7 @@ public sealed class TranslationSession : IAsyncDisposable
             }
 
             _pending.AddLast(work);
-            _taskKeys.Add(work.Key);
+            _taskKeys[work.Key] = now;
             Metrics.SetQueueLength(_pending.Count);
             queued = true;
         }
@@ -761,8 +765,8 @@ public sealed class TranslationSession : IAsyncDisposable
 
     private bool IsCurrentRevisionLocked(TranslationWorkItem work)
     {
-        return _latestRevisions.TryGetValue(work.UtteranceGroupId, out var revision) &&
-               revision == work.SourceRevision;
+        return _latestRevisions.TryGetValue(work.UtteranceGroupId, out var latest) &&
+               latest.Revision == work.SourceRevision;
     }
 
     private void PurgeInvalidPendingLocked(DateTimeOffset now, ICollection<TranslationWorkItem> dropped)
@@ -775,6 +779,7 @@ public sealed class TranslationSession : IAsyncDisposable
             if (!IsCurrentRevisionLocked(item) || now - item.EnqueuedAt > _policy.TaskLifetime)
             {
                 _pending.Remove(node);
+                _taskKeys.Remove(item.Key);
                 dropped.Add(item);
             }
             node = next;
@@ -796,6 +801,7 @@ public sealed class TranslationSession : IAsyncDisposable
             {
                 var item = node.Value;
                 _pending.Remove(node);
+                _taskKeys.Remove(item.Key);
                 dropped.Add(item);
             }
             node = next;
@@ -806,7 +812,48 @@ public sealed class TranslationSession : IAsyncDisposable
     private void RemovePendingLocked(TranslationWorkItem item)
     {
         _pending.Remove(item);
+        // A dropped (never processed) task must not keep blocking resubmission
+        // of the same revision through the completed-task dedup set.
+        _taskKeys.Remove(item.Key);
         Metrics.SetQueueLength(_pending.Count);
+    }
+
+    private void PruneExpiredStateLocked(DateTimeOffset now)
+    {
+        if (now - _lastPruneAt < PruneInterval)
+        {
+            return;
+        }
+
+        _lastPruneAt = now;
+
+        // Utterance groups live at most 12 seconds; entries older than these
+        // windows can never affect dedup, stale detection or context again.
+        var retiredCutoff = now - _policy.RetiredStateLifetime;
+        foreach (var entry in _taskKeys)
+        {
+            if (entry.Value < retiredCutoff)
+            {
+                _taskKeys.Remove(entry.Key);
+            }
+        }
+
+        foreach (var entry in _latestRevisions)
+        {
+            if (entry.Value.UpdatedAt < retiredCutoff)
+            {
+                _latestRevisions.Remove(entry.Key);
+            }
+        }
+
+        var contextCutoff = now - _policy.ContextLifetime * 2;
+        foreach (var entry in _context)
+        {
+            if (entry.Value.Item.GeneratedAt < contextCutoff)
+            {
+                _context.Remove(entry.Key);
+            }
+        }
     }
 
     private void DropAllPendingLocked(string status)
@@ -1018,6 +1065,13 @@ public sealed record TranslationSessionPolicy
     public TimeSpan ContextLifetime { get; init; } = TimeSpan.FromSeconds(30);
     public TimeSpan InitialCircuitCooldown { get; init; } = TimeSpan.FromSeconds(10);
     public TimeSpan MaximumCircuitCooldown { get; init; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// How long completed-task dedup keys and latest-revision entries survive.
+    /// Bounds session state during multi-hour captures; far larger than the
+    /// 12-second utterance-group window, so dedup semantics are unaffected.
+    /// </summary>
+    public TimeSpan RetiredStateLifetime { get; init; } = TimeSpan.FromMinutes(5);
 }
 
 public sealed class TranslationMetrics

@@ -17,6 +17,7 @@ public sealed class LoopbackCaptureService : IDisposable
     private readonly object _emitLock = new();
     private readonly Stopwatch _clock = new();
     private WasapiLoopbackCapture? _capture;
+    private NAudio.CoreAudioApi.MMDevice? _device;
     private PcmFrameBuffer? _frameBuffer;
     private StreamingAudioNormalizer? _normalizer;
     private SilenceGapFiller? _silenceGapFiller;
@@ -58,9 +59,11 @@ public sealed class LoopbackCaptureService : IDisposable
             catch
             {
                 capture.Dispose();
+                device.Dispose();
                 throw;
             }
 
+            _device = device;
             _capture = capture;
             _normalizer = new StreamingAudioNormalizer(capture.WaveFormat.SampleRate, capture.WaveFormat.Channels);
             _frameBuffer = new PcmFrameBuffer(AudioNormalizer.TargetSampleRate, _frameDurationMs);
@@ -156,6 +159,7 @@ public sealed class LoopbackCaptureService : IDisposable
     private void DisposeCapture()
     {
         WasapiLoopbackCapture? capture;
+        NAudio.CoreAudioApi.MMDevice? device;
         Timer? silenceTimer;
         StreamingAudioNormalizer? normalizer;
         lock (_sync)
@@ -175,15 +179,18 @@ public sealed class LoopbackCaptureService : IDisposable
                 _capture = null;
             }
 
+            device = _device;
+            _device = null;
             _frameBuffer = null;
         }
 
         // WasapiCapture.Dispose joins the capture thread, which may itself be
         // waiting on _sync in OnDataAvailable; disposing outside the lock breaks
-        // that deadlock cycle.
+        // that deadlock cycle. Device must be released after capture.
         silenceTimer?.Dispose();
         normalizer?.Dispose();
         capture?.Dispose();
+        device?.Dispose();
     }
 
     private void EnqueueFrames(IReadOnlyList<PcmAudioFrame> frames)

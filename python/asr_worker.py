@@ -17,6 +17,15 @@ DEFAULT_BASE_URL = "https://api.xiaomimimo.com/v1"
 DEFAULT_MODEL = "mimo-v2.5-asr"
 
 
+class WorkerError(Exception):
+    """Protocol-level failure that already knows its errorKind and retryability."""
+
+    def __init__(self, message: str, kind: str = "configuration", retryable: bool = False) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.retryable = retryable
+
+
 @dataclass(frozen=True)
 class WorkerConfig:
     api_key: str
@@ -98,6 +107,9 @@ class AsrWorker:
             "latencyMs": latency_ms,
         }
 
+    def sensitive_values(self) -> list[str]:
+        return [value for value in [self._config.api_key] if len(value) >= 4]
+
     def _get_client(self) -> OpenAI:
         if self._client is not None:
             return self._client
@@ -108,6 +120,9 @@ class AsrWorker:
                     api_key=self._config.api_key,
                     base_url=self._config.base_url,
                     timeout=self._config.timeout_seconds,
+                    # The host owns the single-retry policy; SDK retries would
+                    # stack on top of it and stall the realtime pipeline.
+                    max_retries=0,
                 )
 
         return self._client
@@ -141,7 +156,18 @@ def ok_response(request_id: str, message_type: str) -> dict[str, Any]:
     }
 
 
-def error_response(request: dict[str, Any], exc: BaseException) -> dict[str, Any]:
+def redact(text: str, secrets: list[str]) -> str:
+    # Longest first so a secret that contains another secret is fully masked.
+    for secret in sorted(set(secrets), key=len, reverse=True):
+        text = text.replace(secret, "[REDACTED]")
+    return text
+
+
+def error_response(
+    request: dict[str, Any],
+    exc: BaseException,
+    secrets: list[str] | None = None,
+) -> dict[str, Any]:
     status_code = getattr(exc, "status_code", None)
     error_kind, retryable = classify_error(exc, status_code)
     return {
@@ -150,7 +176,7 @@ def error_response(request: dict[str, Any], exc: BaseException) -> dict[str, Any
         "ok": False,
         "sequence": request.get("sequence"),
         "errorCode": exc.__class__.__name__,
-        "errorMessage": str(exc),
+        "errorMessage": redact(str(exc), secrets or []),
         "errorKind": error_kind,
         "statusCode": status_code,
         "retryable": retryable,
@@ -158,6 +184,9 @@ def error_response(request: dict[str, Any], exc: BaseException) -> dict[str, Any
 
 
 def classify_error(exc: BaseException, status_code: int | None) -> tuple[str, bool]:
+    if isinstance(exc, WorkerError):
+        return exc.kind, exc.retryable
+
     class_name = exc.__class__.__name__.lower()
     if status_code in (401, 403) or "authentication" in class_name or "permissiondenied" in class_name:
         return "authentication", False
@@ -179,6 +208,11 @@ def write_json(payload: dict[str, Any], stream: TextIO | None = None) -> None:
     print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), file=target, flush=True)
 
 
+def _sensitive_values(worker: Any) -> list[str]:
+    getter = getattr(worker, "sensitive_values", None)
+    return getter() if callable(getter) else []
+
+
 def run_protocol(
     input_stream: TextIO,
     output_stream: TextIO,
@@ -186,17 +220,27 @@ def run_protocol(
     max_concurrency: int,
 ) -> None:
     write_lock = threading.Lock()
+    # Second line of defense behind the host-side semaphore: reject instead of
+    # queueing without bound when the host misbehaves or the API stalls.
+    slots = threading.BoundedSemaphore(max(1, max_concurrency))
 
     def write_payload(payload: dict[str, Any]) -> None:
         with write_lock:
             write_json(payload, output_stream)
 
+    def log_exception(exc: BaseException) -> None:
+        if isinstance(exc, WorkerError):
+            return
+        print(redact(traceback.format_exc(), _sensitive_values(worker)), file=sys.stderr, flush=True)
+
     def finish_transcription(future: Future[dict[str, Any]], request: dict[str, Any]) -> None:
         try:
             write_payload(future.result())
         except Exception as exc:  # noqa: BLE001 - each request must receive a terminal response.
-            traceback.print_exc(file=sys.stderr)
-            write_payload(error_response(request, exc))
+            log_exception(exc)
+            write_payload(error_response(request, exc, _sensitive_values(worker)))
+        finally:
+            slots.release()
 
     executor = ThreadPoolExecutor(max_workers=max(1, max_concurrency), thread_name_prefix="mimo-asr")
     try:
@@ -219,13 +263,23 @@ def run_protocol(
                     executor.shutdown(wait=False, cancel_futures=True)
                     return
                 elif message_type == "transcribe":
-                    future = executor.submit(worker.transcribe, request)
+                    if not slots.acquire(blocking=False):
+                        raise WorkerError(
+                            "ASR worker is at capacity",
+                            kind="backpressure",
+                            retryable=True,
+                        )
+                    try:
+                        future = executor.submit(worker.transcribe, request)
+                    except BaseException:
+                        slots.release()
+                        raise
                     future.add_done_callback(lambda completed, item=request: finish_transcription(completed, item))
                 else:
                     raise ValueError(f"unknown request type: {message_type}")
             except Exception as exc:  # noqa: BLE001 - malformed requests must not terminate the worker.
-                traceback.print_exc(file=sys.stderr)
-                write_payload(error_response(request, exc))
+                log_exception(exc)
+                write_payload(error_response(request, exc, _sensitive_values(worker)))
     finally:
         executor.shutdown(wait=True, cancel_futures=False)
 

@@ -281,6 +281,7 @@ public partial class MainWindow : FluentWindow
         _isRunning = true;
         TranslationSettingsPanel.IsEnabled = false;
         HardMaxSegmentBox.IsEnabled = false;
+        ClearHistoryButton.IsEnabled = false;
         StartStopText.Text = "停止字幕";
         StartStopIcon.Symbol = SymbolRegular.Stop24;
         StartStopButton.IsEnabled = true;
@@ -332,6 +333,7 @@ public partial class MainWindow : FluentWindow
         StartStopButton.IsEnabled = true;
         TranslationSettingsPanel.IsEnabled = true;
         HardMaxSegmentBox.IsEnabled = true;
+        ClearHistoryButton.IsEnabled = true;
         AdaptiveVadStatusText.Text = "等待运行";
         UpdateVadEndpointModeUi();
         AppendAppLog("字幕 runtime 已停止");
@@ -415,7 +417,16 @@ public partial class MainWindow : FluentWindow
         var historyPath = Path.Combine(_dataDirectory, "subtitles", $"{DateTime.Now:yyyy-MM-dd}.jsonl");
         if (File.Exists(historyPath))
         {
-            File.WriteAllText(historyPath, string.Empty);
+            try
+            {
+                File.WriteAllText(historyPath, string.Empty);
+            }
+            catch (IOException ex)
+            {
+                SubtitleHistoryCopyStatusText.Text = "清空失败，文件被占用";
+                AppendAppLog($"清空历史失败: {ex.Message}");
+                return;
+            }
         }
 
         ResetSubtitlePlaceholder();
@@ -1763,6 +1774,23 @@ public partial class MainWindow : FluentWindow
         Directory.CreateDirectory(Path.Combine(_dataDirectory, "subtitles"));
         Directory.CreateDirectory(Path.Combine(_dataDirectory, "logs"));
         Directory.CreateDirectory(Path.Combine(_dataDirectory, "debug-audio"));
+
+        // D018: if the data directory is not writable (e.g. installed to
+        // Program Files), fail explicitly rather than silently discarding
+        // settings, history and logs for the entire session.
+        var probe = Path.Combine(_dataDirectory, ".write-probe");
+        try
+        {
+            File.WriteAllText(probe, "ok");
+            File.Delete(probe);
+        }
+        catch (Exception ex)
+        {
+            StartStopButton.IsEnabled = false;
+            LastErrorText.Text = $"数据目录不可写：{_dataDirectory}";
+            throw new InvalidOperationException(
+                $"数据目录不可写，请把程序解压到可写位置（{_dataDirectory}）。", ex);
+        }
     }
 
     private static void OpenDirectory(string directory)

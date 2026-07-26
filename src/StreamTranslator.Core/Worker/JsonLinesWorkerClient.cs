@@ -24,17 +24,22 @@ public abstract class JsonLinesWorkerClient<TResponse> : IAsyncDisposable
     private Task? _stderrTask;
     private CancellationTokenSource? _stopCts;
     private int _malformedLineCount;
+    private readonly TimeSpan _requestTimeout;
 
     protected JsonLinesWorkerClient(
         string executablePath,
         string arguments,
         IReadOnlyDictionary<string, string>? environment,
-        string? stderrLogPath)
+        string? stderrLogPath,
+        TimeSpan? requestTimeout = null)
     {
         _executablePath = executablePath;
         _arguments = arguments;
         _environment = environment;
         _stderrLogPath = stderrLogPath;
+        // Last-resort cap for a process that is alive but never replies; callers
+        // apply their own (much shorter) per-request timeouts on top.
+        _requestTimeout = requestTimeout ?? TimeSpan.FromSeconds(120);
     }
 
     /// <summary>Human-readable process name used in error messages, e.g. "ASR worker".</summary>
@@ -111,14 +116,17 @@ public abstract class JsonLinesWorkerClient<TResponse> : IAsyncDisposable
             throw new InvalidOperationException($"Duplicate {WorkerName} request id: {requestId}");
         }
 
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(_requestTimeout);
+
         try
         {
-            await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await _writeLock.WaitAsync(timeout.Token).ConfigureAwait(false);
             try
             {
-                await process.StandardInput.WriteLineAsync(WorkerJson.Serialize(request).AsMemory(), cancellationToken)
+                await process.StandardInput.WriteLineAsync(WorkerJson.Serialize(request).AsMemory(), timeout.Token)
                     .ConfigureAwait(false);
-                await process.StandardInput.FlushAsync(cancellationToken).ConfigureAwait(false);
+                await process.StandardInput.FlushAsync(timeout.Token).ConfigureAwait(false);
             }
             finally
             {
@@ -131,15 +139,22 @@ public abstract class JsonLinesWorkerClient<TResponse> : IAsyncDisposable
             throw;
         }
 
-        await using var registration = cancellationToken.Register(() =>
+        await using var registration = timeout.Token.Register(() =>
         {
             if (_pending.TryRemove(requestId, out var pending))
             {
-                pending.TrySetCanceled(cancellationToken);
+                pending.TrySetCanceled(timeout.Token);
             }
         });
 
-        return await completion.Task.ConfigureAwait(false);
+        try
+        {
+            return await completion.Task.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException($"{WorkerName} request timed out.");
+        }
     }
 
     private async Task ReadStdoutAsync(CancellationToken cancellationToken)

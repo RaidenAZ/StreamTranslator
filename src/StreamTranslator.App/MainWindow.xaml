@@ -333,7 +333,8 @@
                                            Click="OnCopyAllClick"
                                            Icon="{ui:SymbolIcon ClipboardTextLtr24}"
                                            Content="复制当天全部" />
-                                <ui:Button AutomationProperties.AutomationId="ClearHistoryButton"
+                                <ui:Button x:Name="ClearHistoryButton"
+                                           AutomationProperties.AutomationId="ClearHistoryButton"
                                            Click="OnClearHistoryClick"
                                            Icon="{ui:SymbolIcon Delete24}"
                                            Content="清空当天历史"

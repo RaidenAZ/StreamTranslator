@@ -9,8 +9,12 @@ public sealed partial class TranslationWorkerClient
 {
     private string _apiKey = "";
 
-    public TranslationWorkerClient(string executablePath, string arguments, string? stderrLogPath = null)
-        : base(executablePath, arguments, environment: null, stderrLogPath)
+    public TranslationWorkerClient(
+        string executablePath,
+        string arguments,
+        string? stderrLogPath = null,
+        TimeSpan? requestTimeout = null)
+        : base(executablePath, arguments, environment: null, stderrLogPath, requestTimeout)
     {
     }
 

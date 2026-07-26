@@ -385,6 +385,56 @@ public sealed class TranslationSessionTests
     }
 
     [TestMethod]
+    public async Task BackpressureDroppedRevision_CanBeResubmitted()
+    {
+        var worker = new ControlledTranslationWorker();
+        var policy = new TranslationSessionPolicy { QueueCapacity = 1 };
+        await using var session = CreateSession(worker, policy: policy);
+        await session.StartAsync();
+
+        session.Submit(Source(1, 1, "One") with { UtteranceGroupId = "session:1" });
+        var inFlight = await worker.NextRequestAsync();
+        session.Submit(Source(2, 1, "Two") with { UtteranceGroupId = "session:2" });
+        session.Submit(Source(3, 1, "Three") with { UtteranceGroupId = "session:3" });
+        Assert.AreEqual(1, session.Metrics.BackpressureDrops);
+
+        // Before the fix the dropped revision's task key survived and this
+        // resubmission was silently ignored forever.
+        session.Submit(Source(2, 1, "Two") with { UtteranceGroupId = "session:2" });
+
+        inFlight.Complete(Success(inFlight.Request, "one"));
+        var second = await worker.NextRequestAsync();
+        second.Complete(Success(second.Request, "two"));
+        Assert.AreEqual("session:2", second.Request.UtteranceGroupId);
+    }
+
+    [TestMethod]
+    public async Task CompletedTaskKeys_ArePrunedAfterRetiredStateLifetime()
+    {
+        var worker = new ControlledTranslationWorker();
+        var timeProvider = new ManualTimeProvider(DateTimeOffset.Parse("2026-07-26T12:00:00+08:00"));
+        await using var session = CreateSession(worker, timeProvider: timeProvider);
+        await session.StartAsync();
+
+        session.Submit(Source(1, 1, "Hello", timeProvider.GetUtcNow()));
+        var first = await worker.NextRequestAsync();
+        first.Complete(Success(first.Request, "你好"));
+        await WaitUntilAsync(() => session.Metrics.Successes == 1);
+
+        // Within the retention window the completed key still deduplicates.
+        session.Submit(Source(1, 1, "Hello", timeProvider.GetUtcNow()));
+        await Task.Delay(50);
+        Assert.AreEqual(1, worker.TranslateCalls);
+
+        // After the window the key is pruned and the same revision is accepted again.
+        timeProvider.Advance(TimeSpan.FromMinutes(6));
+        session.Submit(Source(1, 1, "Hello", timeProvider.GetUtcNow()));
+        var second = await worker.NextRequestAsync();
+        second.Complete(Success(second.Request, "你好"));
+        Assert.AreEqual(2, worker.TranslateCalls);
+    }
+
+    [TestMethod]
     public async Task QueueCapacity_DropsOldestPendingWorkWithoutBlockingNewestSource()
     {
         var worker = new ControlledTranslationWorker();
