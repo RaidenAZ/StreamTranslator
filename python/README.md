@@ -2,6 +2,14 @@
 
 Both workers are launched and stopped by the C# app. They read UTF-8 JSON Lines from stdin and write protocol messages only to stdout.
 
+## Dependencies
+
+All requirement files pin exact versions so worker builds are reproducible:
+
+- `requirements.txt` — runtime dependencies only (what gets frozen into the worker exes).
+- `requirements-dev.txt` — runtime + `pytest`, for running `python -m pytest tests`.
+- `requirements-build.txt` — runtime + `pyinstaller`, used by `scripts/publish.ps1` inside a dedicated venv (`artifacts/build-venv`); the host Python environment is not touched.
+
 ## ASR Worker
 
 Required environment variables:

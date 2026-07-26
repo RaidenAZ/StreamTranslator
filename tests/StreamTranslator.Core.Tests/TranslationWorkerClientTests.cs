@@ -52,6 +52,44 @@ public sealed class TranslationWorkerClientTests
     }
 
     [TestMethod]
+    public async Task Client_SurvivesMalformedStdoutLines()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("The portable application targets Windows.");
+        }
+
+        var root = Path.Combine(Path.GetTempPath(), $"stream-translator-translation-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var scriptPath = Path.Combine(root, "fake-translation-worker.ps1");
+        await File.WriteAllTextAsync(scriptPath, FakeWorkerScript);
+
+        try
+        {
+            await using var client = new TranslationWorkerClient(
+                "powershell",
+                $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"",
+                stderrLogPath: null);
+
+            await client.StartAsync(Profile());
+            var noisy = await client.TranslateAsync(TranslationWorkerRequest.Translate(
+                "tr-noise", 1, "session:1", 1, "en", "zh-Hans", "Hello", [], DateTimeOffset.Now));
+            Assert.AreEqual("translated", noisy.TranslatedText);
+
+            // The reader loop must stay alive after skipping the dirty line.
+            var second = await client.TranslateAsync(TranslationWorkerRequest.Translate(
+                "tr-2", 2, "session:1", 1, "en", "zh-Hans", "World", [], DateTimeOffset.Now));
+            Assert.AreEqual("translated", second.TranslatedText);
+            Assert.AreEqual(1, client.MalformedLineCount);
+            await client.ShutdownAsync();
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     [TestCategory("Integration")]
     public async Task Client_UsesRealPythonWorkerAndOpenAiSdkAgainstFakeChatCompletionsServer()
     {
@@ -234,6 +272,9 @@ public sealed class TranslationWorkerClientTests
                 [Console]::Error.WriteLine("key=$($request.profile.apiKey) Authorization: Bearer $($request.profile.apiKey)")
                 [Console]::Out.WriteLine((@{ id = $request.id; type = 'configured'; ok = $true; profileId = $request.profile.profileId; finalEndpoint = 'http://127.0.0.1:8000/v1/chat/completions' } | ConvertTo-Json -Compress))
                 continue
+            }
+            if ($request.type -eq 'translate' -and $request.id -eq 'tr-noise') {
+                [Console]::Out.WriteLine('INFO: some SDK printed noise to stdout')
             }
             if ($request.type -eq 'translate') {
                 [Console]::Out.WriteLine((@{ id = $request.id; type = 'translate_result'; ok = $true; sequence = $request.sequence; utteranceGroupId = $request.utteranceGroupId; sourceRevision = $request.sourceRevision; targetLanguage = $request.targetLanguage; translatedText = 'translated'; latencyMs = 8; warningCodes = @() } | ConvertTo-Json -Compress))

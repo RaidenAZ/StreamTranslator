@@ -44,7 +44,9 @@ public partial class MainWindow : FluentWindow
     private SubtitleRuntime? _runtime;
     private HwndSource? _hwndSource;
     private bool _isRunning;
+    private bool _isTransitioning;
     private bool _isClosing;
+    private bool _readyToClose;
     private bool _sessionTranslationEnabled;
     private Snackbar? _copyFailureSnackbar;
     private readonly TranslationIssueTracker _translationIssueTracker = new();
@@ -72,6 +74,7 @@ public partial class MainWindow : FluentWindow
             ResetSubtitlePlaceholder();
             await LoadTodaySubtitleHistoryAsync();
             TryShowFloatingWindow();
+            App.StartupCompleted = true;
         }
         catch (Exception ex)
         {
@@ -82,8 +85,16 @@ public partial class MainWindow : FluentWindow
 
     private async void OnClosing(object? sender, CancelEventArgs e)
     {
+        if (_readyToClose)
+        {
+            return;
+        }
+
         if (_isClosing)
         {
+            // Shutdown is still draining; a second Alt+F4 must not close the
+            // window early and orphan the worker processes.
+            e.Cancel = true;
             return;
         }
 
@@ -91,11 +102,38 @@ public partial class MainWindow : FluentWindow
         _isClosing = true;
         IsEnabled = false;
 
-        await SaveSettingsAsync();
+        // Let an in-flight start/stop finish so we do not tear down a runtime
+        // that is still wiring itself up. The transition is bounded by the worker
+        // health-check timeouts; the extra cap is a safety net.
+        var waited = 0;
+        while (_isTransitioning && waited < 15000)
+        {
+            await Task.Delay(100);
+            waited += 100;
+        }
+
+        try
+        {
+            await SaveSettingsAsync();
+        }
+        catch (Exception ex)
+        {
+            AppendAppLog($"关闭时保存配置失败: {ex.Message}");
+        }
+
         UnregisterHotkeys();
-        await StopRuntimeAsync();
+
+        try
+        {
+            await StopRuntimeAsync();
+        }
+        catch (Exception ex)
+        {
+            AppendAppLog($"关闭时停止 runtime 失败: {ex.Message}");
+        }
 
         _floatingWindow?.Close();
+        _readyToClose = true;
         Close();
     }
 
@@ -119,13 +157,29 @@ public partial class MainWindow : FluentWindow
 
     private async void OnStartStopClick(object sender, RoutedEventArgs e)
     {
-        if (!_isRunning)
+        // The global hotkey bypasses StartStopButton.IsEnabled, so reentry during
+        // a multi-second start/stop would overwrite _runtime and leak the old
+        // capture and worker processes. Block it at the single user entry point.
+        if (_isTransitioning || _isClosing)
         {
-            await StartRuntimeAsync();
+            return;
         }
-        else
+
+        _isTransitioning = true;
+        try
         {
-            await StopRuntimeAsync();
+            if (!_isRunning)
+            {
+                await StartRuntimeAsync();
+            }
+            else
+            {
+                await StopRuntimeAsync();
+            }
+        }
+        finally
+        {
+            _isTransitioning = false;
         }
     }
 
@@ -513,7 +567,9 @@ public partial class MainWindow : FluentWindow
 
     private void OnRuntimeStatusChanged(object? sender, string status)
     {
-        Dispatcher.Invoke(() =>
+        // BeginInvoke keeps UI exceptions from propagating back into the
+        // runtime's background tasks (and from blocking the audio pipeline).
+        Dispatcher.BeginInvoke(() =>
         {
             if (status.Contains("ASR API", StringComparison.OrdinalIgnoreCase))
             {
@@ -538,7 +594,7 @@ public partial class MainWindow : FluentWindow
 
     private void OnSubtitleReady(object? sender, SubtitleItem item)
     {
-        Dispatcher.Invoke(() =>
+        Dispatcher.BeginInvoke(() =>
         {
             var text = item.SourceText;
             if (!string.IsNullOrWhiteSpace(text))

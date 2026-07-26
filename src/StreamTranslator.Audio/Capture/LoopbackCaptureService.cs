@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using NAudio.Dmo;
 using NAudio.Wave;
@@ -12,6 +13,8 @@ public sealed class LoopbackCaptureService : IDisposable
     private readonly bool _followDefaultDevice;
     private readonly int _frameDurationMs;
     private readonly object _sync = new();
+    private readonly ConcurrentQueue<PcmAudioFrame> _emitQueue = new();
+    private readonly object _emitLock = new();
     private readonly Stopwatch _clock = new();
     private WasapiLoopbackCapture? _capture;
     private PcmFrameBuffer? _frameBuffer;
@@ -45,10 +48,21 @@ public sealed class LoopbackCaptureService : IDisposable
             }
 
             var device = _deviceService.GetDevice(_deviceId, _followDefaultDevice);
-            _capture = new WasapiLoopbackCapture(device);
-            var format = _capture.WaveFormat;
-            EnsureSupportedFormat(format);
-            _normalizer = new StreamingAudioNormalizer(format.SampleRate, format.Channels);
+            var capture = new WasapiLoopbackCapture(device);
+            try
+            {
+                // Validate before publishing to _capture so a failed Start leaves
+                // the service reusable instead of permanently "already started".
+                EnsureSupportedFormat(capture.WaveFormat);
+            }
+            catch
+            {
+                capture.Dispose();
+                throw;
+            }
+
+            _capture = capture;
+            _normalizer = new StreamingAudioNormalizer(capture.WaveFormat.SampleRate, capture.WaveFormat.Channels);
             _frameBuffer = new PcmFrameBuffer(AudioNormalizer.TargetSampleRate, _frameDurationMs);
             _silenceGapFiller = new SilenceGapFiller(
                 AudioNormalizer.TargetSampleRate,
@@ -89,8 +103,12 @@ public sealed class LoopbackCaptureService : IDisposable
 
             _silenceGapFiller?.MarkDataReceived(_clock.ElapsedMilliseconds);
             var normalized = normalizer.ProcessFloat32Bytes(e.Buffer.AsSpan(0, e.BytesRecorded));
-            EmitFrames(frameBuffer.Push(normalized));
+            EnqueueFrames(frameBuffer.Push(normalized));
         }
+
+        // Subscribers run VAD and segmentation; keeping them outside _sync prevents
+        // them from starving the silence timer and from deadlocking against Stop().
+        DrainEmitQueue();
     }
 
     private void OnSilenceTimer(object? state)
@@ -107,9 +125,11 @@ public sealed class LoopbackCaptureService : IDisposable
                 var sampleCount = _silenceGapFiller.GetMissingSampleCount(_clock.ElapsedMilliseconds);
                 if (sampleCount > 0)
                 {
-                    EmitFrames(_frameBuffer.Push(new short[sampleCount]));
+                    EnqueueFrames(_frameBuffer.Push(new short[sampleCount]));
                 }
             }
+
+            DrainEmitQueue();
         }
         catch (Exception ex)
         {
@@ -135,32 +155,65 @@ public sealed class LoopbackCaptureService : IDisposable
 
     private void DisposeCapture()
     {
+        WasapiLoopbackCapture? capture;
+        Timer? silenceTimer;
+        StreamingAudioNormalizer? normalizer;
         lock (_sync)
         {
-            _silenceTimer?.Dispose();
+            silenceTimer = _silenceTimer;
             _silenceTimer = null;
             _clock.Stop();
-            _normalizer?.Dispose();
+            normalizer = _normalizer;
             _normalizer = null;
             _silenceGapFiller = null;
 
-            if (_capture is not null)
+            capture = _capture;
+            if (capture is not null)
             {
-                _capture.DataAvailable -= OnDataAvailable;
-                _capture.RecordingStopped -= OnRecordingStopped;
-                _capture.Dispose();
+                capture.DataAvailable -= OnDataAvailable;
+                capture.RecordingStopped -= OnRecordingStopped;
                 _capture = null;
             }
 
             _frameBuffer = null;
         }
+
+        // WasapiCapture.Dispose joins the capture thread, which may itself be
+        // waiting on _sync in OnDataAvailable; disposing outside the lock breaks
+        // that deadlock cycle.
+        silenceTimer?.Dispose();
+        normalizer?.Dispose();
+        capture?.Dispose();
     }
 
-    private void EmitFrames(IEnumerable<PcmAudioFrame> frames)
+    private void EnqueueFrames(IReadOnlyList<PcmAudioFrame> frames)
     {
+        // Callers hold _sync, so queue order matches frame timestamp order.
         foreach (var frame in frames)
         {
-            FrameCaptured?.Invoke(this, frame);
+            _emitQueue.Enqueue(frame);
+        }
+    }
+
+    private void DrainEmitQueue()
+    {
+        // Downstream (stateful VAD, segmenter) must stay single-threaded and
+        // ordered: frames are enqueued under _sync and drained by one thread at
+        // a time. A thread that loses TryEnter leaves its frames to the current
+        // drainer; the outer loop re-checks after release so nothing is stranded.
+        while (!_emitQueue.IsEmpty && Monitor.TryEnter(_emitLock))
+        {
+            try
+            {
+                while (_emitQueue.TryDequeue(out var frame))
+                {
+                    FrameCaptured?.Invoke(this, frame);
+                }
+            }
+            finally
+            {
+                Monitor.Exit(_emitLock);
+            }
         }
     }
 

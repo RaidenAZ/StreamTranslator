@@ -46,6 +46,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     private string? _diagnosticSessionPath;
     private CancellationTokenSource? _stopCts;
     private Task? _captureRecoveryTask;
+    private Task? _stopTask;
     private Channel<string>? _adaptiveMetricsChannel;
     private Task? _adaptiveMetricsWriterTask;
     private bool _stopping;
@@ -106,7 +107,15 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         StatusChanged?.Invoke(this, "音频捕获已启动");
     }
 
-    public async Task StopAsync()
+    public Task StopAsync()
+    {
+        // Hotkey reentry or DisposeAsync after StopAsync must not run the
+        // teardown twice; every caller awaits the same one-shot task. All
+        // callers are on the UI thread, so the non-atomic ??= is safe.
+        return _stopTask ??= StopCoreAsync();
+    }
+
+    private async Task StopCoreAsync()
     {
         _stopping = true;
         _stopCts?.Cancel();
@@ -384,6 +393,11 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         catch (OperationCanceledException)
         {
         }
+        catch (Exception)
+        {
+            // A faulted segment task must not abort the stop sequence; the
+            // failure was already surfaced through RuntimeError when it happened.
+        }
     }
 
     private async Task ProcessSegmentAsync(
@@ -457,7 +471,17 @@ public sealed class SubtitleRuntime : IAsyncDisposable
                 ? $"ASR API 正常 ({response.LatencyMs?.ToString() ?? "-"} ms)"
                 : $"ASR API 错误: {response.ErrorKind ?? response.ErrorCode ?? "Unknown"}");
 
-        await PublishTerminalResponseAsync(sequence, segment, groupAssignment, response).ConfigureAwait(false);
+        try
+        {
+            await PublishTerminalResponseAsync(sequence, segment, groupAssignment, response).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // A publish/history failure must not leave this segment task faulted:
+            // StopAsync awaits these tasks and an escaped exception would take the
+            // whole app down through the async-void stop path.
+            RuntimeError?.Invoke(this, new InvalidOperationException($"字幕发布失败: {ex.Message}", ex));
+        }
 
         if (fatalError is not null || WorkerFailurePolicy.Decide(response, attempt: 1) == WorkerFailureAction.StopRuntime)
         {
