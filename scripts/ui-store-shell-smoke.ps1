@@ -592,13 +592,28 @@ try {
     if ($null -eq $clearHistoryButton) { throw "Clear history button was not found." }
 
     Invoke-Element $clearHistoryButton "Clear history button"
-    Start-Sleep -Milliseconds 500
-    $confirmWindow = [UiSmokeNative]::GetWindows($process.Id) |
-        Where-Object { $_.Visible -and $_.Title -and $_.Title -ne "StreamTranslator" } |
-        Select-Object -First 1
-    if ($null -eq $confirmWindow) {
+    # 清空确认已从系统 MessageBox 迁移到窗口内的 Fluent ContentDialog，
+    # 因此不再出现独立的 Win32 顶层窗口，改为通过 UIA 检测对话框。
+    $confirmDialogDeadline = (Get-Date).AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 100
+        $confirmDialog = Find-ByAutomationId "ClearHistoryConfirmDialog"
+    } while ($null -eq $confirmDialog -and (Get-Date) -lt $confirmDialogDeadline)
+    if ($null -eq $confirmDialog) {
         throw "Clear history confirmation dialog did not appear."
     }
+
+    $strayConfirmWindow = [UiSmokeNative]::GetWindows($process.Id) |
+        Where-Object { $_.Visible -and $_.Title -and $_.Title -ne "StreamTranslator" } |
+        Select-Object -First 1
+    if ($null -ne $strayConfirmWindow) {
+        throw "Clear history confirmation should render inline, not as a separate window."
+    }
+
+    $cancelClearCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, "取消")
+    $cancelClearButton = $mainElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cancelClearCondition)
+    Invoke-Element $cancelClearButton "Cancel clear history dialog button"
+    Start-Sleep -Milliseconds 300
 
     "PASS ui-store-shell-smoke"
 }

@@ -50,6 +50,60 @@
                 <Setter Property="Margin" Value="0,0,0,16" />
             </Style>
 
+            <Style x:Key="TitleBarTitleText" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="12" />
+                <Setter Property="FontWeight" Value="Normal" />
+                <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+                <Setter Property="VerticalAlignment" Value="Center" />
+            </Style>
+
+            <!-- BasedOn 必须保留：显式 Style 会顶掉 wpf-ui 的隐式样式（含控件模板） -->
+            <Style x:Key="NavItemStyle"
+                   TargetType="{x:Type ui:NavigationViewItem}"
+                   BasedOn="{StaticResource {x:Type ui:NavigationViewItem}}">
+                <Setter Property="FontSize" Value="12" />
+            </Style>
+
+            <!-- 分段选择控件（如断句策略）内的选项按钮 -->
+            <Style x:Key="SegmentedOptionStyle" TargetType="{x:Type RadioButton}">
+                <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+                <Setter Property="FontSize" Value="13" />
+                <Setter Property="HorizontalContentAlignment" Value="Center" />
+                <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="{x:Type RadioButton}">
+                            <Border x:Name="ModeBorder"
+                                    Margin="2"
+                                    Padding="14,7"
+                                    CornerRadius="4"
+                                    Background="Transparent"
+                                    BorderThickness="1"
+                                    BorderBrush="Transparent">
+                                <TextBlock Text="{TemplateBinding Content}"
+                                           Foreground="{TemplateBinding Foreground}"
+                                           HorizontalAlignment="Center" />
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="ModeBorder" Property="Background" Value="{DynamicResource SubtleFillColorSecondaryBrush}" />
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="ModeBorder" Property="Background" Value="{DynamicResource SubtleFillColorTertiaryBrush}" />
+                                </Trigger>
+                                <Trigger Property="IsKeyboardFocused" Value="True">
+                                    <Setter TargetName="ModeBorder" Property="BorderBrush" Value="{DynamicResource FocusStrokeColorOuterBrush}" />
+                                </Trigger>
+                                <Trigger Property="IsChecked" Value="True">
+                                    <Setter TargetName="ModeBorder" Property="Background" Value="{DynamicResource AccentFillColorDefaultBrush}" />
+                                    <Setter Property="Foreground" Value="{DynamicResource TextOnAccentFillColorPrimaryBrush}" />
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
         </ResourceDictionary>
     </Application.Resources>
 </Application>

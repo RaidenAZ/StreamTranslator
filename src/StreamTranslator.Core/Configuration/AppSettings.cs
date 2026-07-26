@@ -13,6 +13,20 @@ public sealed record AppSettings
     public SubtitleWindowSettings SubtitleWindow { get; init; } = new();
     public HotkeySettings Hotkeys { get; init; } = new();
     public DiagnosticsSettings Diagnostics { get; init; } = new();
+    public AppearanceSettings Appearance { get; init; } = new();
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<AppThemeMode>))]
+public enum AppThemeMode
+{
+    System,
+    Light,
+    Dark
+}
+
+public sealed record AppearanceSettings
+{
+    public AppThemeMode Theme { get; init; } = AppThemeMode.System;
 }
 
 public sealed record AudioSettings
@@ -59,6 +73,10 @@ public sealed record SubtitleWindowSettings
     public int MaxSubtitleItems { get; init; } = 2;
     public double Opacity { get; init; } = 0.72;
     public bool ClickThroughWhenLocked { get; init; } = true;
+    // 悬浮窗上次的位置与宽度；null 表示尚未记录，首次显示居中。
+    public double? Left { get; init; }
+    public double? Top { get; init; }
+    public double? WindowWidth { get; init; }
 }
 
 public sealed record TranslationSettings

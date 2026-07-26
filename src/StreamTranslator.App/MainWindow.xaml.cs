@@ -21,6 +21,7 @@ using Wpf.Ui.Appearance;
 using Wpf.Ui.Controls;
 using System.Windows.Interop;
 using System.Windows.Media.Animation;
+using System.Windows.Threading;
 using PasswordBox = System.Windows.Controls.PasswordBox;
 using TextBlock = System.Windows.Controls.TextBlock;
 using TextBox = System.Windows.Controls.TextBox;
@@ -48,14 +49,20 @@ public partial class MainWindow : FluentWindow
     private bool _isClosing;
     private bool _readyToClose;
     private bool _sessionTranslationEnabled;
+    // InitializeComponent 与 ApplySettingsToUi 阶段控件事件会连锁触发，
+    // 抑制期内不调度自动保存，避免用默认值覆盖磁盘上的设置。
+    private bool _suppressSettingChanges = true;
     private Snackbar? _copyFailureSnackbar;
+    private DispatcherTimer? _settingsSaveTimer;
+    private DispatcherTimer? _copyStatusTimer;
+    private readonly SemaphoreSlim _settingsSaveLock = new(1, 1);
+    private FloatingWindowBounds? _floatingWindowBounds;
     private readonly TranslationIssueTracker _translationIssueTracker = new();
     private TranslationRuntimeStatus _translationRuntimeStatus = new("已关闭", "已关闭", 0, 0);
 
     public MainWindow()
     {
         InitializeComponent();
-        SystemThemeWatcher.Watch(this);
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -66,11 +73,14 @@ public partial class MainWindow : FluentWindow
             _settingsStore = new SettingsStore(Path.Combine(_dataDirectory, "settings.json"));
             _settings = await _settingsStore.LoadAsync();
             ApplySettingsToUi(_settings);
+            ApplyThemeMode(_settings.Appearance.Theme);
             LoadAudioDevices(_settings.Audio.DeviceId);
             RegisterHotkeys();
             ShowPage(HomePage);
             SetActiveNavigationItem("HomePage");
+            AboutVersionText.Text = $"StreamTranslator V{AppVersion()}";
             DataDirectoryText.Text = $"数据目录: {_dataDirectory}";
+            UpdateApiKeyGuidance();
             ResetSubtitlePlaceholder();
             await LoadTodaySubtitleHistoryAsync();
             TryShowFloatingWindow();
@@ -80,6 +90,10 @@ public partial class MainWindow : FluentWindow
         {
             AppendAppLog($"启动初始化失败: {ex.Message}");
             LastErrorText.Text = ex.Message;
+        }
+        finally
+        {
+            _suppressSettingChanges = false;
         }
     }
 
@@ -100,7 +114,9 @@ public partial class MainWindow : FluentWindow
 
         e.Cancel = true;
         _isClosing = true;
-        IsEnabled = false;
+        // 覆盖层同时阻断输入并说明正在收尾，避免"窗口卡死"的观感。
+        ClosingOverlay.Visibility = Visibility.Visible;
+        _settingsSaveTimer?.Stop();
 
         // Let an in-flight start/stop finish so we do not tear down a runtime
         // that is still wiring itself up. The transition is bounded by the worker
@@ -166,6 +182,7 @@ public partial class MainWindow : FluentWindow
         }
 
         _isTransitioning = true;
+        SetStartStopBusy(starting: !_isRunning);
         try
         {
             if (!_isRunning)
@@ -180,7 +197,25 @@ public partial class MainWindow : FluentWindow
         finally
         {
             _isTransitioning = false;
+            ClearStartStopBusy();
         }
+    }
+
+    private void SetStartStopBusy(bool starting)
+    {
+        StartStopProgressRing.Visibility = Visibility.Visible;
+        StartStopIcon.Visibility = Visibility.Collapsed;
+        StartStopText.Text = starting ? "启动中…" : "停止中…";
+        StartStopButton.IsEnabled = false;
+    }
+
+    private void ClearStartStopBusy()
+    {
+        StartStopProgressRing.Visibility = Visibility.Collapsed;
+        StartStopIcon.Visibility = Visibility.Visible;
+        StartStopText.Text = _isRunning ? "停止字幕" : "开始字幕";
+        StartStopIcon.Symbol = _isRunning ? SymbolRegular.Stop24 : SymbolRegular.Play24;
+        StartStopButton.IsEnabled = true;
     }
 
     private async Task StartRuntimeAsync()
@@ -192,10 +227,23 @@ public partial class MainWindow : FluentWindow
             var validationErrors = AppSettingsValidator.ValidateForStart(_settings);
             if (validationErrors.Count > 0)
             {
-                throw new InvalidOperationException(string.Join(Environment.NewLine, validationErrors));
+                UpdateAsrValidationHint();
+                var goToSettings = await ShowConfirmDialogAsync(
+                    "无法开始字幕",
+                    string.Join(Environment.NewLine, validationErrors),
+                    "前往设置",
+                    "取消",
+                    "StartValidationDialog");
+                if (goToSettings)
+                {
+                    ShowPage(SettingsPage);
+                    SetActiveNavigationItem("SettingsPage");
+                }
+
+                return;
             }
 
-            runtimeSettings = ResolveRuntimeTranslationSettings();
+            runtimeSettings = await ResolveRuntimeTranslationSettingsAsync();
             if (runtimeSettings is null)
             {
                 return;
@@ -207,14 +255,13 @@ public partial class MainWindow : FluentWindow
         {
             await StopRuntimeAsync();
             AppendAppLog($"翻译 worker 启动失败: {ex.InnerException?.Message ?? ex.Message}");
-            var result = System.Windows.MessageBox.Show(
-                this,
-                $"翻译 worker 启动失败：{ex.InnerException?.Message ?? ex.Message}{Environment.NewLine}{Environment.NewLine}是否仅启动原文字幕？选择“否”返回设置。",
+            var sourceOnly = await ShowConfirmDialogAsync(
                 "翻译暂不可用",
-                System.Windows.MessageBoxButton.YesNo,
-                MessageBoxImage.Warning,
-                System.Windows.MessageBoxResult.Yes);
-            if (result != System.Windows.MessageBoxResult.Yes)
+                $"翻译 worker 启动失败：{ex.InnerException?.Message ?? ex.Message}{Environment.NewLine}{Environment.NewLine}是否仅启动原文字幕？",
+                "仅原文启动",
+                "返回设置",
+                "TranslationUnavailableDialog");
+            if (!sourceOnly)
             {
                 ShowPage(SettingsPage);
                 SetActiveNavigationItem("SettingsPage");
@@ -399,16 +446,16 @@ public partial class MainWindow : FluentWindow
             "最近字幕");
     }
 
-    private void OnClearHistoryClick(object sender, RoutedEventArgs e)
+    private async void OnClearHistoryClick(object sender, RoutedEventArgs e)
     {
-        var result = System.Windows.MessageBox.Show(
-            this,
-            "清空后会删除当天字幕历史，无法从界面恢复。确定继续吗？",
+        var confirmed = await ShowConfirmDialogAsync(
             "确认清空历史",
-            System.Windows.MessageBoxButton.YesNo,
-            MessageBoxImage.Warning,
-            System.Windows.MessageBoxResult.No);
-        if (result != System.Windows.MessageBoxResult.Yes)
+            "清空后会删除当天字幕历史，无法从界面恢复。确定继续吗？",
+            "清空",
+            "取消",
+            "ClearHistoryConfirmDialog",
+            ControlAppearance.Danger);
+        if (!confirmed)
         {
             return;
         }
@@ -423,13 +470,39 @@ public partial class MainWindow : FluentWindow
             }
             catch (IOException ex)
             {
-                SubtitleHistoryCopyStatusText.Text = "清空失败，文件被占用";
+                ShowCopyStatus("清空失败，文件被占用", TimeSpan.FromSeconds(5));
                 AppendAppLog($"清空历史失败: {ex.Message}");
                 return;
             }
         }
 
         ResetSubtitlePlaceholder();
+    }
+
+    /// <summary>统一的确认对话框，替代系统 MessageBox 以保持 Fluent 视觉一致。</summary>
+    private async Task<bool> ShowConfirmDialogAsync(
+        string title,
+        string message,
+        string primaryText,
+        string closeText,
+        string automationId,
+        ControlAppearance primaryAppearance = ControlAppearance.Primary)
+    {
+        var dialog = new ContentDialog(RootContentDialogHost)
+        {
+            Title = title,
+            Content = new TextBlock
+            {
+                Text = message,
+                TextWrapping = TextWrapping.Wrap,
+                MaxWidth = 420
+            },
+            PrimaryButtonText = primaryText,
+            CloseButtonText = closeText,
+            PrimaryButtonAppearance = primaryAppearance
+        };
+        AutomationProperties.SetAutomationId(dialog, automationId);
+        return await dialog.ShowAsync() == ContentDialogResult.Primary;
     }
 
     private static string FormatSubtitleForCopy(SubtitleItem item)
@@ -465,7 +538,7 @@ public partial class MainWindow : FluentWindow
     {
         var diagnostics = DiagnosticsReportBuilder.Build(new DiagnosticsSnapshot
         {
-            Version = "V1.2",
+            Version = $"V{AppVersion()}",
             OperatingSystem = Environment.OSVersion.ToString(),
             DataDirectory = _dataDirectory,
             AudioStatus = AudioStatusText.Text,
@@ -499,15 +572,33 @@ public partial class MainWindow : FluentWindow
             static value => System.Windows.Forms.Clipboard.SetDataObject(value, true, 1, 10));
         if (result.Succeeded)
         {
-            SubtitleHistoryCopyStatusText.Text = "已复制";
+            ShowCopyStatus("已复制", TimeSpan.FromSeconds(3));
             return;
         }
 
-        SubtitleHistoryCopyStatusText.Text = "剪贴板暂时不可用，请稍后重试";
+        ShowCopyStatus("剪贴板暂时不可用，请稍后重试", TimeSpan.FromSeconds(5));
         ShowCopyFailureToast();
         var error = result.Error;
         AppendAppLog(
             $"{operation}复制失败: {error?.GetType().Name ?? "UnknownException"}: {error?.Message ?? "未知错误"}");
+    }
+
+    private void ShowCopyStatus(string text, TimeSpan clearAfter)
+    {
+        SubtitleHistoryCopyStatusText.Text = text;
+        if (_copyStatusTimer is null)
+        {
+            _copyStatusTimer = new DispatcherTimer();
+            _copyStatusTimer.Tick += (_, _) =>
+            {
+                _copyStatusTimer!.Stop();
+                SubtitleHistoryCopyStatusText.Text = "";
+            };
+        }
+
+        _copyStatusTimer.Stop();
+        _copyStatusTimer.Interval = clearAfter;
+        _copyStatusTimer.Start();
     }
 
     private void ShowCopyFailureToast()
@@ -576,30 +667,29 @@ public partial class MainWindow : FluentWindow
             .Concat(MainNavigation.FooterMenuItems.OfType<NavigationViewItem>());
     }
 
-    private void OnRuntimeStatusChanged(object? sender, string status)
+    private void OnRuntimeStatusChanged(object? sender, RuntimeStatusUpdate update)
     {
         // BeginInvoke keeps UI exceptions from propagating back into the
         // runtime's background tasks (and from blocking the audio pipeline).
         Dispatcher.BeginInvoke(() =>
         {
-            if (status.Contains("ASR API", StringComparison.OrdinalIgnoreCase))
+            switch (update.Category)
             {
-                ApiStatusText.Text = status;
-            }
-            else if (status.Contains("worker", StringComparison.OrdinalIgnoreCase))
-            {
-                WorkerStatusText.Text = status;
-            }
-            else if (status.Contains("VAD", StringComparison.OrdinalIgnoreCase))
-            {
-                VadStatusText.Text = status;
-            }
-            else if (status.Contains("捕获", StringComparison.OrdinalIgnoreCase))
-            {
-                AudioStatusText.Text = status;
+                case RuntimeStatusCategory.AsrApi:
+                    ApiStatusText.Text = update.Message;
+                    break;
+                case RuntimeStatusCategory.AsrWorker:
+                    WorkerStatusText.Text = update.Message;
+                    break;
+                case RuntimeStatusCategory.SpeechDetection:
+                    VadStatusText.Text = update.Message;
+                    break;
+                case RuntimeStatusCategory.AudioCapture:
+                    AudioStatusText.Text = update.Message;
+                    break;
             }
 
-            AppendAppLog(status);
+            AppendAppLog(update.Message);
         });
     }
 
@@ -774,14 +864,23 @@ public partial class MainWindow : FluentWindow
         {
             _floatingWindow = new FloatingSubtitleWindow();
             _floatingWindow.VisibleGroupsChanged += OnFloatingVisibleGroupsChanged;
+            _floatingWindow.BoundsChanged += OnFloatingWindowBoundsChanged;
+            _floatingWindow.LockedChanged += OnFloatingWindowLockedChanged;
+            _floatingWindow.ApplyWindowBounds(
+                _settings.SubtitleWindow.Left,
+                _settings.SubtitleWindow.Top,
+                _settings.SubtitleWindow.WindowWidth);
             _floatingWindow.Closed += (closedWindow, _) =>
             {
                 if (closedWindow is FloatingSubtitleWindow floatingWindow)
                 {
                     floatingWindow.VisibleGroupsChanged -= OnFloatingVisibleGroupsChanged;
+                    floatingWindow.BoundsChanged -= OnFloatingWindowBoundsChanged;
+                    floatingWindow.LockedChanged -= OnFloatingWindowLockedChanged;
                 }
                 _floatingWindow = null;
                 UpdateFloatingWindowButtonState();
+                UpdateFloatingLockButtonState(false);
             };
         }
 
@@ -807,6 +906,23 @@ public partial class MainWindow : FluentWindow
     private void OnFloatingVisibleGroupsChanged(IReadOnlyCollection<string> visibleGroupIds)
     {
         _runtime?.UpdateTranslationVisibleGroups(visibleGroupIds);
+    }
+
+    private void OnFloatingWindowBoundsChanged(FloatingWindowBounds bounds)
+    {
+        _floatingWindowBounds = bounds;
+        ScheduleSettingsSave();
+    }
+
+    private void OnFloatingWindowLockedChanged(bool locked)
+    {
+        UpdateFloatingLockButtonState(locked);
+    }
+
+    private void UpdateFloatingLockButtonState(bool locked)
+    {
+        FloatingLockButton.Content = locked ? "解锁悬浮窗" : "锁定悬浮窗";
+        FloatingLockButton.Icon = new SymbolIcon(locked ? SymbolRegular.LockOpen24 : SymbolRegular.LockClosed24);
     }
 
     private void TryShowFloatingWindow()
@@ -866,11 +982,18 @@ public partial class MainWindow : FluentWindow
     private void OnAudioDeviceSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         UpdateCurrentAudioDeviceText();
+        ScheduleSettingsSave();
+    }
+
+    private void OnRefreshAudioDevicesClick(object sender, RoutedEventArgs e)
+    {
+        LoadAudioDevices(SelectedAudioDeviceId());
     }
 
     private void OnVadEndpointModeChecked(object sender, RoutedEventArgs e)
     {
         UpdateVadEndpointModeUi();
+        ScheduleSettingsSave();
     }
 
     private void OnFixedEndSilenceValueChanged(object sender, NumberBoxValueChangedEventArgs e)
@@ -879,6 +1002,176 @@ public partial class MainWindow : FluentWindow
         {
             UpdateVadEndpointModeUi();
         }
+
+        ScheduleSettingsSave();
+    }
+
+    private void OnAnySettingChanged(object sender, RoutedEventArgs e)
+    {
+        ScheduleSettingsSave();
+    }
+
+    private void OnNumberSettingChanged(object sender, NumberBoxValueChangedEventArgs e)
+    {
+        ScheduleSettingsSave();
+    }
+
+    /// <summary>设置变更后防抖持久化，避免崩溃或断电时丢失未保存的改动。</summary>
+    private void ScheduleSettingsSave()
+    {
+        if (_suppressSettingChanges || _settingsStore is null || _isClosing)
+        {
+            return;
+        }
+
+        if (_settingsSaveTimer is null)
+        {
+            _settingsSaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
+            _settingsSaveTimer.Tick += async (_, _) =>
+            {
+                _settingsSaveTimer!.Stop();
+                try
+                {
+                    await SaveSettingsAsync();
+                }
+                catch (Exception ex)
+                {
+                    AppendAppLog($"自动保存设置失败: {ex.Message}");
+                }
+            };
+        }
+
+        _settingsSaveTimer.Stop();
+        _settingsSaveTimer.Start();
+    }
+
+    private void OnFloatingNumberSettingChanged(object sender, NumberBoxValueChangedEventArgs e)
+    {
+        ApplyFloatingSettingsLive();
+        ScheduleSettingsSave();
+    }
+
+    private void OnFloatingOpacityChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (FloatingOpacityValueText is not null)
+        {
+            FloatingOpacityValueText.Text = $"{Math.Round(FloatingOpacitySlider.Value * 100)}%";
+        }
+
+        ApplyFloatingSettingsLive();
+        ScheduleSettingsSave();
+    }
+
+    private void ApplyFloatingSettingsLive()
+    {
+        if (_suppressSettingChanges)
+        {
+            return;
+        }
+
+        _floatingWindow?.ApplySettings(
+            NumberValue(FloatingFontSizeBox, 18),
+            (int)NumberValue(FloatingLinesBox, 2),
+            FloatingOpacitySlider.Value);
+    }
+
+    private void OnThemeModeChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressSettingChanges)
+        {
+            return;
+        }
+
+        ApplyThemeMode(SelectedThemeMode());
+        ScheduleSettingsSave();
+    }
+
+    private void ApplyThemeMode(AppThemeMode mode)
+    {
+        switch (mode)
+        {
+            case AppThemeMode.Light:
+                SystemThemeWatcher.UnWatch(this);
+                ApplicationThemeManager.Apply(ApplicationTheme.Light, Wpf.Ui.Controls.WindowBackdropType.Mica, false);
+                break;
+            case AppThemeMode.Dark:
+                SystemThemeWatcher.UnWatch(this);
+                ApplicationThemeManager.Apply(ApplicationTheme.Dark, Wpf.Ui.Controls.WindowBackdropType.Mica, false);
+                break;
+            default:
+                ApplicationThemeManager.ApplySystemTheme(false);
+                SystemThemeWatcher.Watch(this);
+                break;
+        }
+    }
+
+    private AppThemeMode SelectedThemeMode()
+    {
+        return (ThemeModeComboBox.SelectedItem as ComboBoxItem)?.Tag switch
+        {
+            "Light" => AppThemeMode.Light,
+            "Dark" => AppThemeMode.Dark,
+            _ => AppThemeMode.System
+        };
+    }
+
+    private void SelectThemeMode(AppThemeMode mode)
+    {
+        ThemeModeComboBox.SelectedIndex = mode switch
+        {
+            AppThemeMode.Light => 1,
+            AppThemeMode.Dark => 2,
+            _ => 0
+        };
+    }
+
+    private void OnGoToSettingsClick(object sender, RoutedEventArgs e)
+    {
+        ShowPage(SettingsPage);
+        SetActiveNavigationItem("SettingsPage");
+    }
+
+    private void OnAsrCredentialLostFocus(object sender, RoutedEventArgs e)
+    {
+        UpdateAsrValidationHint();
+        UpdateApiKeyGuidance();
+        ScheduleSettingsSave();
+    }
+
+    private void UpdateAsrValidationHint()
+    {
+        var messages = new List<string>();
+        if (string.IsNullOrWhiteSpace(ApiKeyBox.Password))
+        {
+            messages.Add("API Key 不能为空。");
+        }
+
+        if (!Uri.TryCreate(BaseUrlBox.Text, UriKind.Absolute, out var baseUri) ||
+            baseUri.Scheme is not ("http" or "https"))
+        {
+            messages.Add("Base URL 必须是有效的 HTTP(S) 地址。");
+        }
+
+        if (string.IsNullOrWhiteSpace(ModelBox.Text))
+        {
+            messages.Add("Model 不能为空。");
+        }
+
+        AsrValidationText.Text = string.Join(" ", messages);
+        AsrValidationText.Visibility = messages.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void UpdateApiKeyGuidance()
+    {
+        ApiKeyGuidanceBar.Visibility = string.IsNullOrWhiteSpace(ApiKeyBox.Password)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+    }
+
+    private static string AppVersion()
+    {
+        var version = typeof(MainWindow).Assembly.GetName().Version;
+        return version is null ? "?" : $"{version.Major}.{version.Minor}.{version.Build}";
     }
 
     private void UpdateCurrentAudioDeviceText()
@@ -916,8 +1209,10 @@ public partial class MainWindow : FluentWindow
         FloatingFontSizeBox.Value = settings.SubtitleWindow.FontSize;
         FloatingLinesBox.Value = settings.SubtitleWindow.MaxSubtitleItems;
         FloatingOpacitySlider.Value = settings.SubtitleWindow.Opacity;
+        FloatingOpacityValueText.Text = $"{Math.Round(settings.SubtitleWindow.Opacity * 100)}%";
         HotkeysEnabledSwitch.IsChecked = settings.Hotkeys.Enabled;
         LanguageBox.Text = "自动检测 (auto)";
+        SelectThemeMode(settings.Appearance.Theme);
         TranslationEnabledSwitch.IsChecked = settings.Translation.Enabled;
         SelectTranslationTargetLanguage(settings.Translation.TargetLanguage);
         RefreshTranslationProfileList(settings.Translation.ActiveProfileId);
@@ -930,8 +1225,12 @@ public partial class MainWindow : FluentWindow
             return;
         }
 
-        _settings = _settings with
+        // 防抖自动保存与显式保存可能重叠；串行化写入避免 .tmp 文件互相踩踏。
+        await _settingsSaveLock.WaitAsync();
+        try
         {
+            _settings = _settings with
+            {
             SchemaVersion = 4,
             Audio = _settings.Audio with
             {
@@ -964,7 +1263,10 @@ public partial class MainWindow : FluentWindow
             {
                 FontSize = NumberValue(FloatingFontSizeBox, 18),
                 MaxSubtitleItems = (int)NumberValue(FloatingLinesBox, 2),
-                Opacity = FloatingOpacitySlider.Value
+                Opacity = FloatingOpacitySlider.Value,
+                Left = _floatingWindowBounds?.Left ?? _settings.SubtitleWindow.Left,
+                Top = _floatingWindowBounds?.Top ?? _settings.SubtitleWindow.Top,
+                WindowWidth = _floatingWindowBounds?.Width ?? _settings.SubtitleWindow.WindowWidth
             },
             Diagnostics = _settings.Diagnostics with
             {
@@ -975,13 +1277,22 @@ public partial class MainWindow : FluentWindow
             Hotkeys = _settings.Hotkeys with
             {
                 Enabled = HotkeysEnabledSwitch.IsChecked == true
+            },
+            Appearance = _settings.Appearance with
+            {
+                Theme = SelectedThemeMode()
             }
-        };
+            };
 
-        await _settingsStore.SaveAsync(_settings);
+            await _settingsStore.SaveAsync(_settings);
+        }
+        finally
+        {
+            _settingsSaveLock.Release();
+        }
     }
 
-    private AppSettings? ResolveRuntimeTranslationSettings()
+    private async Task<AppSettings?> ResolveRuntimeTranslationSettingsAsync()
     {
         if (!_settings.Translation.Enabled)
         {
@@ -999,14 +1310,13 @@ public partial class MainWindow : FluentWindow
         var reason = errors.Count > 0
             ? string.Join(Environment.NewLine, errors)
             : "当前翻译模型配置尚未通过连接测试。";
-        var result = System.Windows.MessageBox.Show(
-            this,
-            $"{reason}{Environment.NewLine}{Environment.NewLine}是否仅启动原文字幕？",
+        var sourceOnly = await ShowConfirmDialogAsync(
             "翻译暂不可用",
-            System.Windows.MessageBoxButton.YesNo,
-            MessageBoxImage.Warning,
-            System.Windows.MessageBoxResult.Yes);
-        if (result == System.Windows.MessageBoxResult.Yes)
+            $"{reason}{Environment.NewLine}{Environment.NewLine}是否仅启动原文字幕？",
+            "仅原文启动",
+            "返回设置",
+            "TranslationUnavailableDialog");
+        if (sourceOnly)
         {
             return _settings with
             {
@@ -1025,6 +1335,8 @@ public partial class MainWindow : FluentWindow
         {
             UpdateTranslationProfileSelectionUi();
         }
+
+        ScheduleSettingsSave();
     }
 
     private void OnTranslationProfileSelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1113,14 +1425,14 @@ public partial class MainWindow : FluentWindow
         {
             return;
         }
-        var result = System.Windows.MessageBox.Show(
-            this,
-            $"确定删除模型配置“{selected.Name}”吗？",
+        var confirmed = await ShowConfirmDialogAsync(
             "删除翻译配置",
-            System.Windows.MessageBoxButton.YesNo,
-            MessageBoxImage.Warning,
-            System.Windows.MessageBoxResult.No);
-        if (result != System.Windows.MessageBoxResult.Yes)
+            $"确定删除模型配置“{selected.Name}”吗？",
+            "删除",
+            "取消",
+            "DeleteTranslationProfileDialog",
+            ControlAppearance.Danger);
+        if (!confirmed)
         {
             return;
         }
@@ -1152,6 +1464,7 @@ public partial class MainWindow : FluentWindow
         }
 
         TestTranslationProfileButton.IsEnabled = false;
+        TranslationTestProgressRing.Visibility = Visibility.Visible;
         TranslationTestResultText.Text = "正在发送测试翻译...";
         var sourceText = GetSelectedTranslationTargetLanguage() == "en"
             ? "直播将在9:30开始。"
@@ -1204,6 +1517,7 @@ public partial class MainWindow : FluentWindow
         }
         finally
         {
+            TranslationTestProgressRing.Visibility = Visibility.Collapsed;
             TestTranslationProfileButton.IsEnabled = SelectedTranslationProfile() is not null;
         }
     }

@@ -65,7 +65,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         _asrSemaphore = new SemaphoreSlim(Math.Max(1, settings.Asr.MaxConcurrency), Math.Max(1, settings.Asr.MaxConcurrency));
     }
 
-    public event EventHandler<string>? StatusChanged;
+    public event EventHandler<RuntimeStatusUpdate>? StatusChanged;
     public event EventHandler<SubtitleItem>? SubtitleReady;
     public event EventHandler<Exception>? RuntimeError;
     public event EventHandler<double>? AudioLevelChanged;
@@ -93,7 +93,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
 
         _worker = CreateWorkerClient();
         await _worker.StartAsync(cancellationToken).ConfigureAwait(false);
-        StatusChanged?.Invoke(this, "ASR worker 已启动");
+        StatusChanged?.Invoke(this, new RuntimeStatusUpdate(RuntimeStatusCategory.AsrWorker, "ASR worker 已启动"));
 
         await StartTranslationSessionAsync(cancellationToken).ConfigureAwait(false);
 
@@ -104,7 +104,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         _capture.FrameCaptured += OnFrameCaptured;
         _capture.CaptureStopped += OnCaptureStopped;
         _capture.Start();
-        StatusChanged?.Invoke(this, "音频捕获已启动");
+        StatusChanged?.Invoke(this, new RuntimeStatusUpdate(RuntimeStatusCategory.AudioCapture, "音频捕获已启动"));
     }
 
     public Task StopAsync()
@@ -161,7 +161,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             _worker = null;
         }
 
-        StatusChanged?.Invoke(this, "已停止");
+        StatusChanged?.Invoke(this, new RuntimeStatusUpdate(RuntimeStatusCategory.General, "已停止"));
         _stopCts?.Dispose();
         _stopCts = null;
     }
@@ -292,7 +292,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
 
             if (_settings.Audio.FollowDefaultDevice && _capture is not null)
             {
-                StatusChanged?.Invoke(this, "音频捕获中断，正在切换默认设备");
+                StatusChanged?.Invoke(this, new RuntimeStatusUpdate(RuntimeStatusCategory.AudioCapture, "音频捕获中断，正在切换默认设备"));
                 try
                 {
                     await Task.Delay(500, _stopCts?.Token ?? CancellationToken.None).ConfigureAwait(false);
@@ -312,7 +312,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
                     _mergeNextSegment = false;
 
                     _capture.Start();
-                    StatusChanged?.Invoke(this, "音频捕获已恢复");
+                    StatusChanged?.Invoke(this, new RuntimeStatusUpdate(RuntimeStatusCategory.AudioCapture, "音频捕获已恢复"));
                     return;
                 }
                 catch (OperationCanceledException) when (_stopping)
@@ -472,9 +472,11 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         UpdateDiagnosticAsr(diagnosticRecord, response);
         StatusChanged?.Invoke(
             this,
-            response.Ok
-                ? $"ASR API 正常 ({response.LatencyMs?.ToString() ?? "-"} ms)"
-                : $"ASR API 错误: {response.ErrorKind ?? response.ErrorCode ?? "Unknown"}");
+            new RuntimeStatusUpdate(
+                RuntimeStatusCategory.AsrApi,
+                response.Ok
+                    ? $"ASR API 正常 ({response.LatencyMs?.ToString() ?? "-"} ms)"
+                    : $"ASR API 错误: {response.ErrorKind ?? response.ErrorCode ?? "Unknown"}"));
 
         try
         {
@@ -584,7 +586,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         var modelPath = Path.Combine(_baseDirectory, "models", "silero_vad.onnx");
         if (File.Exists(modelPath))
         {
-            StatusChanged?.Invoke(this, "Silero ONNX VAD 已加载");
+            StatusChanged?.Invoke(this, new RuntimeStatusUpdate(RuntimeStatusCategory.SpeechDetection, "Silero ONNX VAD 已加载"));
             return new SileroOnnxVadEngine(modelPath);
         }
 
@@ -749,7 +751,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             }
             catch (Exception ex) when (attempt == 0)
             {
-                StatusChanged?.Invoke(this, $"ASR worker 异常，正在重启: {ex.Message}");
+                StatusChanged?.Invoke(this, new RuntimeStatusUpdate(RuntimeStatusCategory.AsrWorker, $"ASR worker 异常，正在重启: {ex.Message}"));
                 await EnsureWorkerRestartedAsync(worker, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex)
@@ -809,7 +811,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             }
 
             _worker = replacement;
-            StatusChanged?.Invoke(this, "ASR worker 已重启");
+            StatusChanged?.Invoke(this, new RuntimeStatusUpdate(RuntimeStatusCategory.AsrWorker, "ASR worker 已重启"));
         }
         finally
         {
