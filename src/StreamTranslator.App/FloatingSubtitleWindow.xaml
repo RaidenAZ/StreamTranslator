@@ -15,35 +15,76 @@
         ShowInTaskbar="False"
         MouseLeftButtonDown="OnMouseLeftButtonDown">
     <Border x:Name="Chrome"
+            Margin="10"
             CornerRadius="8"
-            Background="#CC111827"
-            BorderBrush="#80FFFFFF"
+            BorderBrush="#26FFFFFF"
             BorderThickness="1"
             Padding="18,12">
-        <ItemsControl x:Name="SubtitleGroups"
-                      ItemsSource="{Binding Entries, RelativeSource={RelativeSource AncestorType=Window}}"
-                      HorizontalContentAlignment="Stretch">
-            <ItemsControl.ItemTemplate>
-                <DataTemplate>
-                    <StackPanel Margin="0,4,0,6">
-                        <TextBlock Text="{Binding SourceText}"
-                                   Foreground="White"
-                                   FontSize="{DynamicResource FloatingSourceFontSize}"
-                                   FontWeight="SemiBold"
-                                   TextWrapping="Wrap"
-                                   TextAlignment="Center"
-                                   LineStackingStrategy="BlockLineHeight" />
-                        <TextBlock Text="{Binding TranslatedText}"
-                                   Visibility="{Binding TranslationVisibility}"
-                                   Foreground="#D9FFFFFF"
-                                   FontSize="{DynamicResource FloatingTranslationFontSize}"
-                                   TextWrapping="Wrap"
-                                   TextAlignment="Center"
-                                   Margin="0,3,0,0"
-                                   LineStackingStrategy="BlockLineHeight" />
-                    </StackPanel>
-                </DataTemplate>
-            </ItemsControl.ItemTemplate>
-        </ItemsControl>
+        <Border.Background>
+            <SolidColorBrush x:Name="ChromeBackgroundBrush" Color="#141C26" Opacity="0.8" />
+        </Border.Background>
+        <Border.Effect>
+            <DropShadowEffect Color="#000000"
+                              BlurRadius="18"
+                              ShadowDepth="3"
+                              Direction="270"
+                              Opacity="0.45" />
+        </Border.Effect>
+        <Grid>
+            <ItemsControl x:Name="SubtitleGroups"
+                          ItemsSource="{Binding Entries, RelativeSource={RelativeSource AncestorType=Window}}"
+                          HorizontalContentAlignment="Stretch">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Margin="0,4">
+                            <TextBlock Text="{Binding SourceText}"
+                                       Foreground="White"
+                                       FontSize="{DynamicResource FloatingSourceFontSize}"
+                                       FontWeight="SemiBold"
+                                       TextWrapping="Wrap"
+                                       TextAlignment="Center"
+                                       LineStackingStrategy="BlockLineHeight">
+                                <TextBlock.Effect>
+                                    <DropShadowEffect Color="#000000"
+                                                      BlurRadius="4"
+                                                      ShadowDepth="1"
+                                                      Opacity="0.8" />
+                                </TextBlock.Effect>
+                            </TextBlock>
+                            <TextBlock Text="{Binding DisplayTranslatedText}"
+                                       Visibility="{Binding TranslationVisibility}"
+                                       Foreground="#D9FFFFFF"
+                                       FontSize="{DynamicResource FloatingTranslationFontSize}"
+                                       TextWrapping="Wrap"
+                                       TextAlignment="Center"
+                                       Margin="0,3,0,0"
+                                       LineStackingStrategy="BlockLineHeight">
+                                <TextBlock.Effect>
+                                    <DropShadowEffect Color="#000000"
+                                                      BlurRadius="4"
+                                                      ShadowDepth="1"
+                                                      Opacity="0.8" />
+                                </TextBlock.Effect>
+                            </TextBlock>
+                        </StackPanel>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <Border x:Name="LockHint"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Top"
+                    Margin="0,-4,0,0"
+                    Padding="10,4"
+                    CornerRadius="4"
+                    Background="#B2000000"
+                    Visibility="Collapsed"
+                    IsHitTestVisible="False">
+                <TextBlock x:Name="LockHintText"
+                           Text=""
+                           Foreground="White"
+                           FontSize="12" />
+            </Border>
+        </Grid>
     </Border>
 </Window>

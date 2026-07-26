@@ -46,6 +46,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     private string? _diagnosticSessionPath;
     private CancellationTokenSource? _stopCts;
     private Task? _captureRecoveryTask;
+    private Task? _stopTask;
     private Channel<string>? _adaptiveMetricsChannel;
     private Task? _adaptiveMetricsWriterTask;
     private bool _stopping;
@@ -64,7 +65,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         _asrSemaphore = new SemaphoreSlim(Math.Max(1, settings.Asr.MaxConcurrency), Math.Max(1, settings.Asr.MaxConcurrency));
     }
 
-    public event EventHandler<string>? StatusChanged;
+    public event EventHandler<RuntimeStatusUpdate>? StatusChanged;
     public event EventHandler<SubtitleItem>? SubtitleReady;
     public event EventHandler<Exception>? RuntimeError;
     public event EventHandler<double>? AudioLevelChanged;
@@ -92,7 +93,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
 
         _worker = CreateWorkerClient();
         await _worker.StartAsync(cancellationToken).ConfigureAwait(false);
-        StatusChanged?.Invoke(this, "ASR worker 已启动");
+        StatusChanged?.Invoke(this, new RuntimeStatusUpdate(RuntimeStatusCategory.AsrWorker, "ASR worker 已启动"));
 
         await StartTranslationSessionAsync(cancellationToken).ConfigureAwait(false);
 
@@ -103,10 +104,18 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         _capture.FrameCaptured += OnFrameCaptured;
         _capture.CaptureStopped += OnCaptureStopped;
         _capture.Start();
-        StatusChanged?.Invoke(this, "音频捕获已启动");
+        StatusChanged?.Invoke(this, new RuntimeStatusUpdate(RuntimeStatusCategory.AudioCapture, "音频捕获已启动"));
     }
 
-    public async Task StopAsync()
+    public Task StopAsync()
+    {
+        // Hotkey reentry or DisposeAsync after StopAsync must not run the
+        // teardown twice; every caller awaits the same one-shot task. All
+        // callers are on the UI thread, so the non-atomic ??= is safe.
+        return _stopTask ??= StopCoreAsync();
+    }
+
+    private async Task StopCoreAsync()
     {
         _stopping = true;
         _stopCts?.Cancel();
@@ -152,7 +161,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             _worker = null;
         }
 
-        StatusChanged?.Invoke(this, "已停止");
+        StatusChanged?.Invoke(this, new RuntimeStatusUpdate(RuntimeStatusCategory.General, "已停止"));
         _stopCts?.Dispose();
         _stopCts = null;
     }
@@ -283,11 +292,14 @@ public sealed class SubtitleRuntime : IAsyncDisposable
 
             if (_settings.Audio.FollowDefaultDevice && _capture is not null)
             {
-                StatusChanged?.Invoke(this, "音频捕获中断，正在切换默认设备");
+                StatusChanged?.Invoke(this, new RuntimeStatusUpdate(RuntimeStatusCategory.AudioCapture, "音频捕获中断，正在切换默认设备"));
                 try
                 {
                     await Task.Delay(500, _stopCts?.Token ?? CancellationToken.None).ConfigureAwait(false);
-                    _capture.Start();
+
+                    // Rebuild stateful pipeline components BEFORE restarting capture
+                    // so the very first new frames are processed by a clean segmenter
+                    // and controller instead of ones with stale time-axis state.
                     _vad?.Reset();
                     if (_endpointController is not null)
                     {
@@ -298,7 +310,9 @@ public sealed class SubtitleRuntime : IAsyncDisposable
                     _utteranceGroupTracker.CloseCurrentGroup();
                     _revisionCoordinator.CloseCurrentGroup();
                     _mergeNextSegment = false;
-                    StatusChanged?.Invoke(this, "音频捕获已恢复");
+
+                    _capture.Start();
+                    StatusChanged?.Invoke(this, new RuntimeStatusUpdate(RuntimeStatusCategory.AudioCapture, "音频捕获已恢复"));
                     return;
                 }
                 catch (OperationCanceledException) when (_stopping)
@@ -384,6 +398,11 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         catch (OperationCanceledException)
         {
         }
+        catch (Exception)
+        {
+            // A faulted segment task must not abort the stop sequence; the
+            // failure was already surfaced through RuntimeError when it happened.
+        }
     }
 
     private async Task ProcessSegmentAsync(
@@ -453,11 +472,23 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         UpdateDiagnosticAsr(diagnosticRecord, response);
         StatusChanged?.Invoke(
             this,
-            response.Ok
-                ? $"ASR API 正常 ({response.LatencyMs?.ToString() ?? "-"} ms)"
-                : $"ASR API 错误: {response.ErrorKind ?? response.ErrorCode ?? "Unknown"}");
+            new RuntimeStatusUpdate(
+                RuntimeStatusCategory.AsrApi,
+                response.Ok
+                    ? $"ASR API 正常 ({response.LatencyMs?.ToString() ?? "-"} ms)"
+                    : $"ASR API 错误: {response.ErrorKind ?? response.ErrorCode ?? "Unknown"}"));
 
-        await PublishTerminalResponseAsync(sequence, segment, groupAssignment, response).ConfigureAwait(false);
+        try
+        {
+            await PublishTerminalResponseAsync(sequence, segment, groupAssignment, response).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // A publish/history failure must not leave this segment task faulted:
+            // StopAsync awaits these tasks and an escaped exception would take the
+            // whole app down through the async-void stop path.
+            RuntimeError?.Invoke(this, new InvalidOperationException($"字幕发布失败: {ex.Message}", ex));
+        }
 
         if (fatalError is not null || WorkerFailurePolicy.Decide(response, attempt: 1) == WorkerFailureAction.StopRuntime)
         {
@@ -555,7 +586,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         var modelPath = Path.Combine(_baseDirectory, "models", "silero_vad.onnx");
         if (File.Exists(modelPath))
         {
-            StatusChanged?.Invoke(this, "Silero ONNX VAD 已加载");
+            StatusChanged?.Invoke(this, new RuntimeStatusUpdate(RuntimeStatusCategory.SpeechDetection, "Silero ONNX VAD 已加载"));
             return new SileroOnnxVadEngine(modelPath);
         }
 
@@ -720,7 +751,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             }
             catch (Exception ex) when (attempt == 0)
             {
-                StatusChanged?.Invoke(this, $"ASR worker 异常，正在重启: {ex.Message}");
+                StatusChanged?.Invoke(this, new RuntimeStatusUpdate(RuntimeStatusCategory.AsrWorker, $"ASR worker 异常，正在重启: {ex.Message}"));
                 await EnsureWorkerRestartedAsync(worker, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex)
@@ -780,7 +811,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             }
 
             _worker = replacement;
-            StatusChanged?.Invoke(this, "ASR worker 已重启");
+            StatusChanged?.Invoke(this, new RuntimeStatusUpdate(RuntimeStatusCategory.AsrWorker, "ASR worker 已重启"));
         }
         finally
         {

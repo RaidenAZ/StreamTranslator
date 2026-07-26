@@ -6,6 +6,13 @@ namespace StreamTranslator.App;
 
 public partial class App : Application
 {
+    /// <summary>
+    /// Set by MainWindow once initialization finished. Before that point an
+    /// unhandled dispatcher exception is a startup failure and the app exits;
+    /// after it, a single UI handler fault must not kill a live caption session.
+    /// </summary>
+    internal static bool StartupCompleted { get; set; }
+
     public App()
     {
         DispatcherUnhandledException += OnDispatcherUnhandledException;
@@ -30,6 +37,14 @@ public partial class App : Application
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
         WriteFatalLog("DispatcherUnhandledException", e.Exception);
+
+        if (StartupCompleted)
+        {
+            ShowRuntimeError(e.Exception);
+            e.Handled = true;
+            return;
+        }
+
         ShowFatalError(e.Exception);
         e.Handled = true;
         Shutdown(1);
@@ -48,6 +63,22 @@ public partial class App : Application
         catch
         {
             // Fatal logging must not trigger another startup failure.
+        }
+    }
+
+    private static void ShowRuntimeError(Exception exception)
+    {
+        try
+        {
+            MessageBox.Show(
+                $"发生未处理错误，详情已写入 data\\logs\\fatal.log，程序将继续运行。{Environment.NewLine}{exception.Message}",
+                "StreamTranslator",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+        catch
+        {
+            // The fatal log already captured the details.
         }
     }
 

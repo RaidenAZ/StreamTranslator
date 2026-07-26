@@ -26,6 +26,24 @@ public sealed class SettingsStore
             return defaults;
         }
 
+        try
+        {
+            return await LoadExistingAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (JsonException)
+        {
+            // A corrupt settings file (e.g. truncated by a crash mid-write) must
+            // not block startup forever; keep the evidence and start fresh.
+            var backupPath = $"{_settingsPath}.corrupt-{DateTimeOffset.Now:yyyyMMdd-HHmmss}";
+            File.Move(_settingsPath, backupPath, overwrite: true);
+            var defaults = new AppSettings();
+            await SaveAsync(defaults, cancellationToken).ConfigureAwait(false);
+            return defaults;
+        }
+    }
+
+    private async Task<AppSettings> LoadExistingAsync(CancellationToken cancellationToken)
+    {
         var json = await File.ReadAllTextAsync(_settingsPath, cancellationToken).ConfigureAwait(false);
         using var document = JsonDocument.Parse(json);
         var existingVersion = 1;
@@ -108,7 +126,14 @@ public sealed class SettingsStore
             Directory.CreateDirectory(directory);
         }
 
-        await using var stream = File.Create(_settingsPath);
-        await JsonSerializer.SerializeAsync(stream, settings, JsonOptions, cancellationToken).ConfigureAwait(false);
+        // Write-then-rename so a crash mid-write can never truncate the live
+        // settings file (File.Move with overwrite is atomic on NTFS).
+        var tempPath = $"{_settingsPath}.tmp";
+        await using (var stream = File.Create(tempPath))
+        {
+            await JsonSerializer.SerializeAsync(stream, settings, JsonOptions, cancellationToken).ConfigureAwait(false);
+        }
+
+        File.Move(tempPath, _settingsPath, overwrite: true);
     }
 }

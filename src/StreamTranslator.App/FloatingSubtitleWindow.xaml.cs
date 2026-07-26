@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using StreamTranslator.Core.Subtitles;
 using StreamTranslator.Core.Translation;
@@ -17,6 +18,7 @@ public partial class FloatingSubtitleWindow : Window
     private const int WsExTransparent = 0x00000020;
     private bool _locked;
     private bool _trimScheduled;
+    private bool _applyingBounds;
     private int _maxSubtitleItems = 2;
 
     public FloatingSubtitleWindow()
@@ -25,10 +27,66 @@ public partial class FloatingSubtitleWindow : Window
         Resources["FloatingSourceFontSize"] = 18d;
         Resources["FloatingTranslationFontSize"] = 16.2d;
         Entries.Add(new FloatingSubtitleEntry("waiting", 1, "等待字幕...", "", false));
+        LocationChanged += OnWindowBoundsChanged;
+        SizeChanged += OnWindowBoundsChanged;
     }
 
     public ObservableCollection<FloatingSubtitleEntry> Entries { get; } = [];
     public event Action<IReadOnlyCollection<string>>? VisibleGroupsChanged;
+    public event Action<FloatingWindowBounds>? BoundsChanged;
+    public event Action<bool>? LockedChanged;
+
+    public bool IsLocked => _locked;
+
+    public FloatingWindowBounds CurrentBounds => new(Left, Top, ActualWidth > 0 ? ActualWidth : Width);
+
+    /// <summary>
+    /// 还原上次记录的位置与宽度。仅在窗口显示前调用有效；
+    /// 若记录的位置已完全落在可见屏幕之外（如显示器变更），则忽略并保持居中。
+    /// </summary>
+    public void ApplyWindowBounds(double? left, double? top, double? width)
+    {
+        _applyingBounds = true;
+        try
+        {
+            if (width is { } savedWidth && !double.IsNaN(savedWidth))
+            {
+                Width = Math.Max(MinWidth, savedWidth);
+            }
+
+            if (left is { } savedLeft && top is { } savedTop &&
+                !double.IsNaN(savedLeft) && !double.IsNaN(savedTop))
+            {
+                var restored = new Rect(savedLeft, savedTop, Math.Max(MinWidth, Width), Math.Max(MinHeight, 76));
+                var virtualScreen = new Rect(
+                    SystemParameters.VirtualScreenLeft,
+                    SystemParameters.VirtualScreenTop,
+                    SystemParameters.VirtualScreenWidth,
+                    SystemParameters.VirtualScreenHeight);
+                restored.Intersect(virtualScreen);
+                if (restored.Width >= 40 && restored.Height >= 40)
+                {
+                    WindowStartupLocation = WindowStartupLocation.Manual;
+                    Left = savedLeft;
+                    Top = savedTop;
+                }
+            }
+        }
+        finally
+        {
+            _applyingBounds = false;
+        }
+    }
+
+    private void OnWindowBoundsChanged(object? sender, EventArgs e)
+    {
+        if (!IsLoaded || _applyingBounds)
+        {
+            return;
+        }
+
+        BoundsChanged?.Invoke(CurrentBounds);
+    }
 
     public void SetCaption(string text)
     {
@@ -92,7 +150,8 @@ public partial class FloatingSubtitleWindow : Window
         Resources["FloatingSourceFontSize"] = normalizedFontSize;
         Resources["FloatingTranslationFontSize"] = Math.Round(normalizedFontSize * 0.9, 1);
         _maxSubtitleItems = Math.Clamp(maxSubtitleItems, 1, 3);
-        Chrome.Opacity = Math.Clamp(opacity, 0.35, 0.95);
+        // Opacity applies to the backdrop brush only, so subtitle text stays fully opaque and readable.
+        ChromeBackgroundBrush.Opacity = Math.Clamp(opacity, 0.35, 0.95);
         MaxHeight = Math.Max(120, SystemParameters.WorkArea.Height * 0.4);
         TrimToMaximum();
         ScheduleRenderedHeightTrim();
@@ -159,6 +218,26 @@ public partial class FloatingSubtitleWindow : Window
     {
         _locked = locked;
         SetClickThrough(locked);
+        ShowLockHint(locked);
+        LockedChanged?.Invoke(locked);
+    }
+
+    private void ShowLockHint(bool locked)
+    {
+        LockHintText.Text = locked
+            ? "已锁定 · 鼠标点击将穿透（Ctrl+Alt+L 解锁）"
+            : "已解锁，可拖动调整位置";
+        LockHint.Visibility = Visibility.Visible;
+        var fadeOut = new DoubleAnimation
+        {
+            From = 1,
+            To = 0,
+            BeginTime = TimeSpan.FromMilliseconds(1600),
+            Duration = TimeSpan.FromMilliseconds(400),
+            FillBehavior = FillBehavior.HoldEnd
+        };
+        fadeOut.Completed += (_, _) => LockHint.Visibility = Visibility.Collapsed;
+        LockHint.BeginAnimation(OpacityProperty, fadeOut);
     }
 
     private void OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -214,6 +293,11 @@ public sealed class FloatingSubtitleEntry : INotifyPropertyChanged
     public int SourceRevision { get; private set; }
     public string SourceText => _sourceText;
     public string TranslatedText => _translatedText;
+
+    /// <summary>翻译进行中显示占位省略号，避免译文到达时布局跳动且不显示空行。</summary>
+    public string DisplayTranslatedText =>
+        _translationPending && string.IsNullOrWhiteSpace(_translatedText) ? "…" : _translatedText;
+
     public Visibility TranslationVisibility =>
         _translationPending || !string.IsNullOrWhiteSpace(_translatedText)
             ? Visibility.Visible
@@ -227,6 +311,7 @@ public sealed class FloatingSubtitleEntry : INotifyPropertyChanged
         _translationPending = translationPending;
         OnPropertyChanged(nameof(SourceText));
         OnPropertyChanged(nameof(TranslatedText));
+        OnPropertyChanged(nameof(DisplayTranslatedText));
         OnPropertyChanged(nameof(TranslationVisibility));
     }
 
@@ -235,12 +320,14 @@ public sealed class FloatingSubtitleEntry : INotifyPropertyChanged
         _translatedText = text;
         _translationPending = false;
         OnPropertyChanged(nameof(TranslatedText));
+        OnPropertyChanged(nameof(DisplayTranslatedText));
         OnPropertyChanged(nameof(TranslationVisibility));
     }
 
     public void ClearTranslationPending()
     {
         _translationPending = false;
+        OnPropertyChanged(nameof(DisplayTranslatedText));
         OnPropertyChanged(nameof(TranslationVisibility));
     }
 
@@ -249,3 +336,5 @@ public sealed class FloatingSubtitleEntry : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }
 }
+
+public readonly record struct FloatingWindowBounds(double Left, double Top, double Width);

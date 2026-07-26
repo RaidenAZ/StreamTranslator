@@ -28,15 +28,12 @@
                      ShowMinimize="True"
                      ShowMaximize="True"
                      ShowClose="True"
-                     ForceShutdown="False"
-                     Background="{StaticResource ChromeBrush}">
+                     ForceShutdown="False">
             <ui:TitleBar.Header>
                 <TextBlock Text="StreamTranslator"
                            AutomationProperties.AutomationId="TitleBarAppTitle"
-                           FontSize="13"
-                           FontWeight="Normal"
-                           Margin="16,0,0,0"
-                           VerticalAlignment="Center" />
+                           Style="{StaticResource TitleBarTitleText}"
+                           Margin="16,0,0,0" />
             </ui:TitleBar.Header>
         </ui:TitleBar>
 
@@ -55,7 +52,7 @@
                                        Tag="HomePage"
                                        AutomationProperties.AutomationId="NavHomePage"
                                        AutomationProperties.ItemStatus="Active"
-                                       FontSize="12"
+                                       Style="{StaticResource NavItemStyle}"
                                        Click="OnNavClick"
                                        IsActive="True">
                     <ui:NavigationViewItem.Icon>
@@ -66,7 +63,7 @@
                                        Tag="SubtitleHistoryPage"
                                        AutomationProperties.AutomationId="NavSubtitleHistoryPage"
                                        AutomationProperties.ItemStatus="Inactive"
-                                       FontSize="12"
+                                       Style="{StaticResource NavItemStyle}"
                                        Click="OnNavClick">
                     <ui:NavigationViewItem.Icon>
                         <ui:SymbolIcon Symbol="ClosedCaption24" />
@@ -76,7 +73,7 @@
                                        Tag="SettingsPage"
                                        AutomationProperties.AutomationId="NavSettingsPage"
                                        AutomationProperties.ItemStatus="Inactive"
-                                       FontSize="12"
+                                       Style="{StaticResource NavItemStyle}"
                                        Click="OnNavClick">
                     <ui:NavigationViewItem.Icon>
                         <ui:SymbolIcon Symbol="Settings24" />
@@ -88,7 +85,7 @@
                                        Tag="AboutPage"
                                        AutomationProperties.AutomationId="NavAboutPage"
                                        AutomationProperties.ItemStatus="Inactive"
-                                       FontSize="12"
+                                       Style="{StaticResource NavItemStyle}"
                                        Click="OnNavClick">
                     <ui:NavigationViewItem.Icon>
                         <ui:SymbolIcon Symbol="Info24" />
@@ -97,58 +94,93 @@
             </ui:NavigationView.FooterMenuItems>
 
             <ui:NavigationView.ContentOverlay>
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <Grid Margin="28,22,28,28">
-                        <Grid x:Name="HomePage">
-                            <StackPanel>
-                                <DockPanel Margin="0,0,0,18">
-                                    <StackPanel Orientation="Horizontal">
-                                        <ui:SymbolIcon Symbol="Home24"
-                                                       FontSize="24"
-                                                       Margin="0,0,10,0"
-                                                       VerticalAlignment="Center" />
-                                        <TextBlock Text="实时字幕"
-                                                   FontSize="24"
-                                                   FontWeight="Medium"
-                                                   VerticalAlignment="Center" />
-                                    </StackPanel>
-                                    <Border DockPanel.Dock="Right"
+                <Grid>
+                    <Grid x:Name="HomePage">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel Margin="32,24,32,32">
+                                <DockPanel Margin="0,0,0,16">
+                                    <TextBlock Text="实时字幕"
+                                               Style="{StaticResource PageTitleText}"
+                                               VerticalAlignment="Center" />
+                                    <Border x:Name="HomeStateBadge"
+                                            DockPanel.Dock="Right"
                                             HorizontalAlignment="Right"
-                                            Background="#E8F1FF"
-                                            BorderBrush="#B9D1FF"
+                                            VerticalAlignment="Center"
+                                            Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                                            BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                                             BorderThickness="1"
-                                            CornerRadius="6"
-                                            Padding="10,5">
+                                            CornerRadius="12"
+                                            Padding="12,5">
                                         <TextBlock x:Name="HomeStateBadgeText"
                                                    Text="就绪"
-                                                   Foreground="{StaticResource AccentBrush}"
-                                                   FontSize="13"
+                                                   Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}"
+                                                   FontSize="12"
                                                    FontWeight="SemiBold" />
                                     </Border>
                                 </DockPanel>
 
+                                <!-- 不用 ui:InfoBar：其模板在 IsOpen=False 初始布局时的
+                                     BorderBrush Storyboard 会抛 InvalidOperationException。 -->
+                                <Border x:Name="ApiKeyGuidanceBar"
+                                        AutomationProperties.AutomationId="ApiKeyGuidanceBar"
+                                        Background="{DynamicResource SystemFillColorAttentionBackgroundBrush}"
+                                        BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="8"
+                                        Padding="16,12"
+                                        Margin="0,0,0,16"
+                                        Visibility="Collapsed">
+                                    <DockPanel>
+                                        <ui:SymbolIcon Symbol="Info24"
+                                                       DockPanel.Dock="Left"
+                                                       Margin="0,2,12,0"
+                                                       VerticalAlignment="Top"
+                                                       Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}" />
+                                        <ui:Button DockPanel.Dock="Right"
+                                                   Content="前往设置"
+                                                   AutomationProperties.AutomationId="ApiKeyGuidanceSettingsButton"
+                                                   Icon="{ui:SymbolIcon Settings24}"
+                                                   Click="OnGoToSettingsClick"
+                                                   Margin="16,0,0,0"
+                                                   VerticalAlignment="Center" />
+                                        <StackPanel VerticalAlignment="Center">
+                                            <TextBlock Text="尚未配置识别服务"
+                                                       FontSize="14"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                            <TextBlock Text="开始字幕前，请先在“设置 → 识别服务”中填写 API Key。"
+                                                       Style="{StaticResource CaptionText}"
+                                                       TextWrapping="Wrap"
+                                                       Margin="0,2,0,0" />
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
+
                                 <Border x:Name="HomeControlBar"
-                                        Style="{StaticResource PanelBorder}"
-                                        Padding="30">
+                                        Style="{StaticResource PanelBorder}">
                                     <StackPanel>
-                                        <DockPanel Margin="0,0,0,22">
+                                        <DockPanel Margin="0,0,0,20">
                                             <TextBlock Text="字幕概览"
                                                        AutomationProperties.AutomationId="HomeOverviewPanel"
-                                                       FontSize="16"
-                                                       FontWeight="Medium"
-                                                       Foreground="{StaticResource PrimaryTextBrush}" />
+                                                       Style="{StaticResource SectionTitleText}"
+                                                       Margin="0"
+                                                       VerticalAlignment="Center" />
                                             <StackPanel DockPanel.Dock="Right"
                                                         Orientation="Horizontal"
                                                         HorizontalAlignment="Right">
                                                 <ui:Button x:Name="StartStopButton"
                                                            AutomationProperties.AutomationId="StartStopButton"
+                                                           Appearance="Primary"
                                                            Click="OnStartStopClick"
-                                                           Height="38"
                                                            MinWidth="116"
-                                                           Padding="14,0"
-                                                           FontSize="14"
                                                            Margin="0,0,8,0">
                                                     <StackPanel Orientation="Horizontal">
+                                                        <ui:ProgressRing x:Name="StartStopProgressRing"
+                                                                         IsIndeterminate="True"
+                                                                         Width="16"
+                                                                         Height="16"
+                                                                         Margin="0,0,8,0"
+                                                                         Visibility="Collapsed" />
                                                         <ui:SymbolIcon x:Name="StartStopIcon" Symbol="Play24" Margin="0,0,8,0" />
                                                         <TextBlock x:Name="StartStopText" Text="开始字幕" />
                                                     </StackPanel>
@@ -157,9 +189,7 @@
                                                            AutomationProperties.AutomationId="HomeFloatingWindowButton"
                                                            AutomationProperties.Name="显示悬浮窗"
                                                            Click="OnShowFloatingWindowClick"
-                                                           Height="38"
-                                                           MinWidth="112"
-                                                           Padding="12,0">
+                                                           MinWidth="112">
                                                     <StackPanel Orientation="Horizontal">
                                                         <ui:SymbolIcon x:Name="FloatingWindowIcon" Symbol="Window24" Margin="0,0,8,0" />
                                                         <TextBlock Text="悬浮窗" />
@@ -182,9 +212,7 @@
                                                 <TextBlock x:Name="HomeRuntimeSummaryText"
                                                            AutomationProperties.AutomationId="HomeControlBar"
                                                            Text="未启动，等待开始"
-                                                           FontSize="15"
-                                                           FontWeight="Medium"
-                                                           Foreground="{StaticResource PrimaryTextBrush}" />
+                                                           Style="{StaticResource FieldValueText}" />
                                             </StackPanel>
                                             <StackPanel Grid.Column="2">
                                                 <TextBlock Text="输出设备" Style="{StaticResource FieldLabelText}" />
@@ -192,21 +220,21 @@
                                                            AutomationProperties.AutomationId="HomeAudioDeviceText"
                                                            Text="默认设备"
                                                            FontSize="14"
-                                                           Foreground="{StaticResource PrimaryTextBrush}"
+                                                           Foreground="{DynamicResource TextFillColorPrimaryBrush}"
                                                            TextTrimming="CharacterEllipsis" />
                                             </StackPanel>
                                             <StackPanel Grid.Column="4">
                                                 <DockPanel Margin="0,0,0,8">
-                                                    <TextBlock Text="输入电平" Style="{StaticResource FieldLabelText}" />
+                                                    <TextBlock Text="输入电平" Style="{StaticResource FieldLabelText}" Margin="0" />
                                                     <TextBlock x:Name="HomeAudioLevelText"
                                                                DockPanel.Dock="Right"
                                                                Text="0%"
-                                                               FontSize="13"
-                                                               Foreground="{StaticResource SecondaryTextBrush}"
+                                                               Style="{StaticResource CaptionText}"
                                                                HorizontalAlignment="Right" />
                                                 </DockPanel>
                                                 <ProgressBar x:Name="AudioLevelBar"
                                                              AutomationProperties.AutomationId="HomeAudioLevelBar"
+                                                             AutomationProperties.Name="输入电平"
                                                              Minimum="0"
                                                              Maximum="100"
                                                              Height="8" />
@@ -214,15 +242,15 @@
                                         </Grid>
 
                                         <Border Height="1"
-                                                Background="{StaticResource StrokeBrush}"
+                                                Background="{DynamicResource DividerStrokeColorDefaultBrush}"
                                                 Margin="0,0,0,20" />
 
                                         <TextBlock Text="运行链路"
-                                                   FontSize="13"
-                                                   FontWeight="Medium"
-                                                   Foreground="{StaticResource SecondaryTextBrush}"
+                                                   FontSize="12"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                                    Margin="0,0,0,12" />
-                                        <Grid Margin="0,0,0,22">
+                                        <Grid Margin="0,0,0,4">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="*" />
@@ -231,7 +259,7 @@
                                             </Grid.ColumnDefinitions>
                                             <Grid.RowDefinitions>
                                                 <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="18" />
+                                                <RowDefinition Height="20" />
                                                 <RowDefinition Height="Auto" />
                                             </Grid.RowDefinitions>
 
@@ -240,56 +268,49 @@
                                                 <TextBlock x:Name="AudioStatusText"
                                                            AutomationProperties.AutomationId="OverviewAudioInputStatus"
                                                            Text="未启动"
-                                                           FontSize="15"
-                                                           FontWeight="Medium" />
+                                                           Style="{StaticResource FieldValueText}" />
                                             </StackPanel>
                                             <StackPanel Grid.Row="0" Grid.Column="1">
                                                 <TextBlock Text="语音检测" Style="{StaticResource FieldLabelText}" />
                                                 <TextBlock x:Name="VadStatusText"
                                                            AutomationProperties.AutomationId="OverviewSpeechDetectionStatus"
                                                            Text="等待模型"
-                                                           FontSize="15"
-                                                           FontWeight="Medium" />
+                                                           Style="{StaticResource FieldValueText}" />
                                             </StackPanel>
                                             <StackPanel Grid.Row="0" Grid.Column="2">
                                                 <TextBlock Text="识别进程" Style="{StaticResource FieldLabelText}" />
                                                 <TextBlock x:Name="WorkerStatusText"
                                                            AutomationProperties.AutomationId="OverviewRecognitionWorkerStatus"
                                                            Text="未启动"
-                                                           FontSize="15"
-                                                           FontWeight="Medium" />
+                                                           Style="{StaticResource FieldValueText}" />
                                             </StackPanel>
                                             <StackPanel Grid.Row="0" Grid.Column="3">
                                                 <TextBlock Text="识别接口" Style="{StaticResource FieldLabelText}" />
                                                 <TextBlock x:Name="ApiStatusText"
                                                            AutomationProperties.AutomationId="OverviewRecognitionApiStatus"
                                                            Text="未测试"
-                                                           FontSize="15"
-                                                           FontWeight="Medium" />
+                                                           Style="{StaticResource FieldValueText}" />
                                             </StackPanel>
                                             <StackPanel Grid.Row="2" Grid.Column="0">
                                                 <TextBlock Text="翻译进程" Style="{StaticResource FieldLabelText}" />
                                                 <TextBlock x:Name="TranslationWorkerStatusText"
                                                            AutomationProperties.AutomationId="OverviewTranslationWorkerStatus"
                                                            Text="已关闭"
-                                                           FontSize="15"
-                                                           FontWeight="Medium" />
+                                                           Style="{StaticResource FieldValueText}" />
                                             </StackPanel>
                                             <StackPanel Grid.Row="2" Grid.Column="1">
                                                 <TextBlock Text="翻译接口" Style="{StaticResource FieldLabelText}" />
                                                 <TextBlock x:Name="TranslationApiStatusText"
                                                            AutomationProperties.AutomationId="OverviewTranslationApiStatus"
                                                            Text="已关闭"
-                                                           FontSize="15"
-                                                           FontWeight="Medium" />
+                                                           Style="{StaticResource FieldValueText}" />
                                             </StackPanel>
                                             <StackPanel Grid.Row="2" Grid.Column="2">
                                                 <TextBlock Text="字幕输出" Style="{StaticResource FieldLabelText}" />
                                                 <TextBlock x:Name="SubtitleOutputStatusText"
                                                            AutomationProperties.AutomationId="OverviewSubtitleOutputStatus"
                                                            Text="等待字幕"
-                                                           FontSize="15"
-                                                           FontWeight="Medium" />
+                                                           Style="{StaticResource FieldValueText}" />
                                             </StackPanel>
                                         </Grid>
 
@@ -297,160 +318,154 @@
                                 </Border>
 
                                 <Border x:Name="HomeIssuesCard"
-                                        Style="{StaticResource PanelBorder}"
-                                        Padding="30,22">
+                                        Style="{StaticResource PanelBorder}">
                                     <StackPanel>
                                         <TextBlock Text="问题"
                                                    AutomationProperties.AutomationId="HomeIssuesPanel"
-                                                   FontSize="13"
-                                                   FontWeight="Medium"
-                                                   Foreground="{StaticResource SecondaryTextBrush}"
-                                                   Margin="0,0,0,10" />
+                                                   Style="{StaticResource SectionTitleText}" />
                                         <TextBlock x:Name="LastErrorText"
                                                    Text="无"
                                                    TextWrapping="Wrap"
                                                    FontSize="14"
-                                                   Foreground="{StaticResource PrimaryTextBrush}" />
+                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
                                         <TextBlock x:Name="TranslationIssueText"
                                                    AutomationProperties.AutomationId="HomeTranslationIssueText"
                                                    Visibility="Collapsed"
                                                    TextWrapping="Wrap"
                                                    FontSize="14"
-                                                   Foreground="#B54708"
+                                                   Foreground="{DynamicResource SystemFillColorCautionBrush}"
                                                    Margin="0,12,0,0" />
                                     </StackPanel>
                                 </Border>
                             </StackPanel>
-                        </Grid>
+                        </ScrollViewer>
+                    </Grid>
 
-                        <Grid x:Name="SubtitleHistoryPage" Visibility="Collapsed">
-                            <StackPanel>
-                                <DockPanel Margin="0,0,0,18">
-                                    <StackPanel Orientation="Horizontal">
-                                        <TextBlock Text="字幕历史" FontSize="24" FontWeight="Medium" />
-                                        <TextBlock x:Name="SubtitleHistoryCopyStatusText"
-                                                   AutomationProperties.AutomationId="SubtitleHistoryCopyStatus"
-                                                   Text=""
-                                                   Margin="12,6,0,0"
-                                                   Foreground="{StaticResource SecondaryTextBrush}"
-                                                   FontSize="13" />
-                                    </StackPanel>
-                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
-                                        <ui:Button AutomationProperties.AutomationId="CopySelectedSubtitleButton"
-                                                   Click="OnCopySelectedClick"
-                                                   Margin="0,0,8,0">
-                                            <StackPanel Orientation="Horizontal">
-                                                <ui:SymbolIcon Symbol="Copy24" Margin="0,0,8,0" />
-                                                <TextBlock Text="复制选中" />
-                                            </StackPanel>
-                                        </ui:Button>
-                                        <ui:Button AutomationProperties.AutomationId="CopyRecentSubtitlesButton"
-                                                   Click="OnCopyRecentClick"
-                                                   Margin="0,0,8,0">
-                                            <StackPanel Orientation="Horizontal">
-                                                <ui:SymbolIcon Symbol="History24" Margin="0,0,8,0" />
-                                                <TextBlock Text="复制最近 10 条" />
-                                            </StackPanel>
-                                        </ui:Button>
-                                        <ui:Button AutomationProperties.AutomationId="CopyAllSubtitlesButton"
-                                                   Click="OnCopyAllClick"
-                                                   Margin="0,0,8,0">
-                                            <StackPanel Orientation="Horizontal">
-                                                <ui:SymbolIcon Symbol="ClipboardTextLtr24" Margin="0,0,8,0" />
-                                                <TextBlock Text="复制当天全部" />
-                                            </StackPanel>
-                                        </ui:Button>
-                                        <ui:Button AutomationProperties.AutomationId="ClearHistoryButton"
-                                                   Click="OnClearHistoryClick">
-                                            <StackPanel Orientation="Horizontal">
-                                                <ui:SymbolIcon Symbol="Dismiss24" Margin="0,0,8,0" />
-                                                <TextBlock Text="清空当天历史" />
-                                            </StackPanel>
-                                        </ui:Button>
-                                    </StackPanel>
-                                </DockPanel>
-
-                                <Border Style="{StaticResource PanelBorder}">
-                                    <DockPanel>
-                                        <TextBlock DockPanel.Dock="Top"
-                                                   Text="今天"
-                                                   Style="{StaticResource SectionTitleText}" />
-                                        <Grid>
-                                            <TextBlock x:Name="SubtitlePlaceholderText"
-                                                       Text="开始字幕后，这里会保存今天的字幕记录。"
-                                                       Margin="12,10"
-                                                       Foreground="{StaticResource SecondaryTextBrush}"
-                                                       FontSize="14"
-                                                       IsHitTestVisible="False" />
-                                            <ListBox x:Name="SubtitleList"
-                                                     AutomationProperties.AutomationId="SubtitleHistoryList"
-                                                     MinHeight="500"
-                                                     BorderThickness="0"
-                                                     Background="Transparent"
-                                                     HorizontalContentAlignment="Stretch"
-                                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                                                     ScrollViewer.VerticalScrollBarVisibility="Auto">
-                                                <ListBox.ItemContainerStyle>
-                                                    <Style TargetType="{x:Type ListBoxItem}">
-                                                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                                                        <Setter Property="Padding" Value="12,8" />
-                                                    </Style>
-                                                </ListBox.ItemContainerStyle>
-                                                <ListBox.ItemTemplate>
-                                                    <DataTemplate>
-                                                        <Grid HorizontalAlignment="Stretch">
-                                                            <Grid.ColumnDefinitions>
-                                                                <ColumnDefinition Width="64" />
-                                                                <ColumnDefinition Width="12" />
-                                                                <ColumnDefinition Width="*" />
-                                                            </Grid.ColumnDefinitions>
-                                                            <TextBlock Grid.Column="0"
-                                                                       Text="{Binding GeneratedTimeText}"
-                                                                       FontFamily="Consolas"
-                                                                       FontSize="12"
-                                                                       Foreground="{StaticResource SecondaryTextBrush}"
-                                                                       Margin="0,2,0,0"
-                                                                       VerticalAlignment="Top" />
-                                                            <StackPanel Grid.Column="2" HorizontalAlignment="Stretch">
-                                                                <TextBlock Text="{Binding SourceText}"
-                                                                           TextWrapping="Wrap"
-                                                                           FontSize="15"
-                                                                           LineHeight="22"
-                                                                           Foreground="{StaticResource PrimaryTextBrush}" />
-                                                                <TextBlock Text="{Binding TranslatedText}"
-                                                                           TextWrapping="Wrap"
-                                                                           FontSize="14"
-                                                                           LineHeight="21"
-                                                                           Foreground="{StaticResource SecondaryTextBrush}"
-                                                                           Margin="0,3,0,0">
-                                                                    <TextBlock.Style>
-                                                                        <Style TargetType="TextBlock">
-                                                                            <Setter Property="Visibility" Value="Visible" />
-                                                                            <Style.Triggers>
-                                                                                <DataTrigger Binding="{Binding TranslatedText}" Value="{x:Null}">
-                                                                                    <Setter Property="Visibility" Value="Collapsed" />
-                                                                                </DataTrigger>
-                                                                                <DataTrigger Binding="{Binding TranslatedText}" Value="">
-                                                                                    <Setter Property="Visibility" Value="Collapsed" />
-                                                                                </DataTrigger>
-                                                                            </Style.Triggers>
-                                                                        </Style>
-                                                                    </TextBlock.Style>
-                                                                </TextBlock>
-                                                            </StackPanel>
-                                                        </Grid>
-                                                    </DataTemplate>
-                                                </ListBox.ItemTemplate>
-                                            </ListBox>
-                                        </Grid>
-                                    </DockPanel>
-                                </Border>
+                    <Grid x:Name="SubtitleHistoryPage" Visibility="Collapsed" Margin="32,24,32,32">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <DockPanel Grid.Row="0" Margin="0,0,0,16">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="字幕历史" Style="{StaticResource PageTitleText}" />
+                                <TextBlock x:Name="SubtitleHistoryCopyStatusText"
+                                           AutomationProperties.AutomationId="SubtitleHistoryCopyStatus"
+                                           Text=""
+                                           Margin="12,0,0,6"
+                                           VerticalAlignment="Bottom"
+                                           Style="{StaticResource CaptionText}" />
                             </StackPanel>
-                        </Grid>
+                            <StackPanel DockPanel.Dock="Right"
+                                        Orientation="Horizontal"
+                                        HorizontalAlignment="Right"
+                                        VerticalAlignment="Center">
+                                <ui:Button AutomationProperties.AutomationId="CopySelectedSubtitleButton"
+                                           Click="OnCopySelectedClick"
+                                           Icon="{ui:SymbolIcon Copy24}"
+                                           Content="复制选中"
+                                           Margin="0,0,8,0" />
+                                <ui:Button AutomationProperties.AutomationId="CopyRecentSubtitlesButton"
+                                           Click="OnCopyRecentClick"
+                                           Icon="{ui:SymbolIcon History24}"
+                                           Content="复制最近 10 条"
+                                           Margin="0,0,8,0" />
+                                <ui:Button AutomationProperties.AutomationId="CopyAllSubtitlesButton"
+                                           Click="OnCopyAllClick"
+                                           Icon="{ui:SymbolIcon ClipboardTextLtr24}"
+                                           Content="复制当天全部" />
+                                <ui:Button x:Name="ClearHistoryButton"
+                                           AutomationProperties.AutomationId="ClearHistoryButton"
+                                           Click="OnClearHistoryClick"
+                                           Icon="{ui:SymbolIcon Delete24}"
+                                           Content="清空当天历史"
+                                           Margin="16,0,0,0" />
+                            </StackPanel>
+                        </DockPanel>
 
-                        <Grid x:Name="SettingsPage" Visibility="Collapsed">
-                            <StackPanel>
-                                <TextBlock Text="设置" FontSize="24" FontWeight="Medium" Margin="0,0,0,18" />
+                        <Border Grid.Row="1"
+                                Style="{StaticResource PanelBorder}"
+                                Margin="0"
+                                Padding="24,20">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Top"
+                                           Text="今天"
+                                           Style="{StaticResource SectionTitleText}" />
+                                <Grid>
+                                    <TextBlock x:Name="SubtitlePlaceholderText"
+                                               Text="开始字幕后，这里会保存今天的字幕记录。"
+                                               Margin="12,10"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                               FontSize="14"
+                                               IsHitTestVisible="False" />
+                                    <ListBox x:Name="SubtitleList"
+                                             AutomationProperties.AutomationId="SubtitleHistoryList"
+                                             BorderThickness="0"
+                                             Background="Transparent"
+                                             HorizontalContentAlignment="Stretch"
+                                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                             ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                        <ListBox.ItemContainerStyle>
+                                            <Style TargetType="{x:Type ListBoxItem}">
+                                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                                <Setter Property="Padding" Value="12,8" />
+                                            </Style>
+                                        </ListBox.ItemContainerStyle>
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid HorizontalAlignment="Stretch">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="64" />
+                                                        <ColumnDefinition Width="12" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0"
+                                                               Text="{Binding GeneratedTimeText}"
+                                                               FontFamily="Cascadia Mono, Consolas"
+                                                               FontSize="12"
+                                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                               Margin="0,3,0,0"
+                                                               VerticalAlignment="Top" />
+                                                    <StackPanel Grid.Column="2" HorizontalAlignment="Stretch">
+                                                        <TextBlock Text="{Binding SourceText}"
+                                                                   TextWrapping="Wrap"
+                                                                   FontSize="14"
+                                                                   LineHeight="21"
+                                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                                        <TextBlock Text="{Binding TranslatedText}"
+                                                                   TextWrapping="Wrap"
+                                                                   FontSize="14"
+                                                                   LineHeight="21"
+                                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                                   Margin="0,3,0,0">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Visibility" Value="Visible" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding TranslatedText}" Value="{x:Null}">
+                                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                                        </DataTrigger>
+                                                                        <DataTrigger Binding="{Binding TranslatedText}" Value="">
+                                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                    </StackPanel>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </Grid>
+                            </DockPanel>
+                        </Border>
+                    </Grid>
+
+                    <Grid x:Name="SettingsPage" Visibility="Collapsed">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel Margin="32,24,32,32">
+                                <TextBlock Text="设置" Style="{StaticResource PageTitleText}" Margin="0,0,0,16" />
 
                                 <Border Style="{StaticResource PanelBorder}">
                                     <StackPanel>
@@ -470,55 +485,37 @@
                                                 <RowDefinition Height="Auto" />
                                             </Grid.RowDefinitions>
 
-                                            <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,0,12">
-                                                <TextBlock Text="输出设备" Style="{StaticResource FieldLabelText}" />
+                                            <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,0,16">
+                                                <DockPanel Margin="0,0,0,6">
+                                                    <TextBlock Text="输出设备" Style="{StaticResource FieldLabelText}" Margin="0" VerticalAlignment="Center" />
+                                                    <ui:Button DockPanel.Dock="Right"
+                                                               AutomationProperties.AutomationId="RefreshAudioDevicesButton"
+                                                               ToolTip="刷新设备列表"
+                                                               Padding="4,2"
+                                                               HorizontalAlignment="Right"
+                                                               Appearance="Transparent"
+                                                               BorderThickness="0"
+                                                               Click="OnRefreshAudioDevicesClick">
+                                                        <ui:SymbolIcon Symbol="ArrowClockwise24" FontSize="14" />
+                                                    </ui:Button>
+                                                </DockPanel>
                                                 <ComboBox x:Name="AudioDeviceComboBox"
                                                           AutomationProperties.AutomationId="AudioDeviceComboBox"
-                                                          Height="36"
                                                           SelectionChanged="OnAudioDeviceSelectionChanged" />
                                             </StackPanel>
-                                            <StackPanel Grid.Row="0" Grid.Column="2" Margin="0,0,0,12">
+                                            <StackPanel Grid.Row="0" Grid.Column="2" Margin="0,0,0,16">
                                                 <TextBlock Text="默认设备" Style="{StaticResource FieldLabelText}" />
                                                 <ui:ToggleSwitch x:Name="FollowDefaultDeviceSwitch"
                                                                  AutomationProperties.AutomationId="FollowDefaultDeviceSwitch"
                                                                  Content="跟随系统默认设备"
-                                                                 IsChecked="True" />
+                                                                 IsChecked="True"
+                                                                 Checked="OnAnySettingChanged"
+                                                                 Unchecked="OnAnySettingChanged" />
                                             </StackPanel>
                                             <StackPanel Grid.Row="1"
                                                         Grid.Column="0"
                                                         Grid.ColumnSpan="3"
-                                                        Margin="0,0,0,12">
-                                                <StackPanel.Resources>
-                                                    <Style x:Key="VadModeOptionStyle" TargetType="{x:Type RadioButton}">
-                                                        <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}" />
-                                                        <Setter Property="FontSize" Value="13" />
-                                                        <Setter Property="HorizontalContentAlignment" Value="Center" />
-                                                        <Setter Property="Template">
-                                                            <Setter.Value>
-                                                                <ControlTemplate TargetType="{x:Type RadioButton}">
-                                                                    <Border x:Name="ModeBorder"
-                                                                            Margin="2"
-                                                                            Padding="14,8"
-                                                                            CornerRadius="4"
-                                                                            Background="Transparent">
-                                                                        <TextBlock Text="{TemplateBinding Content}"
-                                                                                   Foreground="{TemplateBinding Foreground}"
-                                                                                   HorizontalAlignment="Center" />
-                                                                    </Border>
-                                                                    <ControlTemplate.Triggers>
-                                                                        <Trigger Property="IsMouseOver" Value="True">
-                                                                            <Setter TargetName="ModeBorder" Property="Background" Value="#12000000" />
-                                                                        </Trigger>
-                                                                        <Trigger Property="IsChecked" Value="True">
-                                                                            <Setter TargetName="ModeBorder" Property="Background" Value="{StaticResource AccentBrush}" />
-                                                                            <Setter Property="Foreground" Value="White" />
-                                                                        </Trigger>
-                                                                    </ControlTemplate.Triggers>
-                                                                </ControlTemplate>
-                                                            </Setter.Value>
-                                                        </Setter>
-                                                    </Style>
-                                                </StackPanel.Resources>
+                                                        Margin="0,0,0,16">
                                                 <Grid Margin="0,0,0,6">
                                                     <Grid.ColumnDefinitions>
                                                         <ColumnDefinition Width="*" />
@@ -532,11 +529,10 @@
                                                                AutomationProperties.AutomationId="CurrentVadEndpointText"
                                                                Grid.Column="2"
                                                                Text="当前断句等待：400ms（均衡，自适应）"
-                                                               FontSize="12"
-                                                               Foreground="{StaticResource SecondaryTextBrush}"
+                                                               Style="{StaticResource CaptionText}"
                                                                HorizontalAlignment="Left" />
                                                 </Grid>
-                                                <Border BorderBrush="{StaticResource StrokeBrush}"
+                                                <Border BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
                                                         BorderThickness="1"
                                                         CornerRadius="6"
                                                         HorizontalAlignment="Left">
@@ -554,7 +550,7 @@
                                                                      Tag="LowLatency"
                                                                      AutomationProperties.AutomationId="VadModeLowLatency"
                                                                      Checked="OnVadEndpointModeChecked"
-                                                                     Style="{StaticResource VadModeOptionStyle}" />
+                                                                     Style="{StaticResource SegmentedOptionStyle}" />
                                                         <RadioButton x:Name="BalancedVadModeButton"
                                                                      Grid.Column="1"
                                                                      GroupName="VadEndpointMode"
@@ -563,7 +559,7 @@
                                                                      IsChecked="True"
                                                                      AutomationProperties.AutomationId="VadModeBalanced"
                                                                      Checked="OnVadEndpointModeChecked"
-                                                                     Style="{StaticResource VadModeOptionStyle}" />
+                                                                     Style="{StaticResource SegmentedOptionStyle}" />
                                                         <RadioButton x:Name="SentenceCompleteVadModeButton"
                                                                      Grid.Column="2"
                                                                      GroupName="VadEndpointMode"
@@ -571,7 +567,7 @@
                                                                      Tag="SentenceComplete"
                                                                      AutomationProperties.AutomationId="VadModeSentenceComplete"
                                                                      Checked="OnVadEndpointModeChecked"
-                                                                     Style="{StaticResource VadModeOptionStyle}" />
+                                                                     Style="{StaticResource SegmentedOptionStyle}" />
                                                         <RadioButton x:Name="FixedVadModeButton"
                                                                      Grid.Column="3"
                                                                      GroupName="VadEndpointMode"
@@ -579,12 +575,12 @@
                                                                      Tag="Fixed"
                                                                      AutomationProperties.AutomationId="VadModeFixed"
                                                                      Checked="OnVadEndpointModeChecked"
-                                                                     Style="{StaticResource VadModeOptionStyle}" />
+                                                                     Style="{StaticResource SegmentedOptionStyle}" />
                                                     </Grid>
                                                 </Border>
                                             </StackPanel>
-                                            <StackPanel Grid.Row="2" Grid.Column="0" Margin="0,0,0,12">
-                                                <TextBlock Text="固定断句等待" Style="{StaticResource FieldLabelText}" />
+                                            <StackPanel Grid.Row="2" Grid.Column="0" Margin="0,0,0,16">
+                                                <TextBlock Text="固定断句等待 (ms)" Style="{StaticResource FieldLabelText}" />
                                                 <ui:NumberBox x:Name="EndSilenceBox"
                                                               AutomationProperties.AutomationId="FixedEndSilenceBox"
                                                               Value="400"
@@ -597,7 +593,7 @@
                                                               ValueChanged="OnFixedEndSilenceValueChanged"
                                                               HorizontalAlignment="Left" />
                                             </StackPanel>
-                                            <StackPanel Grid.Row="2" Grid.Column="2" Margin="0,0,0,12">
+                                            <StackPanel Grid.Row="2" Grid.Column="2" Margin="0,0,0,16">
                                                 <TextBlock Text="最短片段 (ms)" Style="{StaticResource FieldLabelText}" />
                                                 <ui:NumberBox x:Name="MinSegmentBox"
                                                               Value="900"
@@ -606,6 +602,7 @@
                                                               SmallChange="100"
                                                               LargeChange="300"
                                                               Width="180"
+                                                              ValueChanged="OnNumberSettingChanged"
                                                               HorizontalAlignment="Left" />
                                             </StackPanel>
                                             <StackPanel Grid.Row="3" Grid.Column="0">
@@ -618,6 +615,7 @@
                                                               SmallChange="1000"
                                                               LargeChange="2000"
                                                               Width="180"
+                                                              ValueChanged="OnNumberSettingChanged"
                                                               HorizontalAlignment="Left" />
                                             </StackPanel>
                                             <StackPanel Grid.Row="3" Grid.Column="2">
@@ -625,8 +623,7 @@
                                                 <TextBlock x:Name="AdaptiveVadStatusText"
                                                            AutomationProperties.AutomationId="AdaptiveVadStatusText"
                                                            Text="等待运行"
-                                                           FontSize="12"
-                                                           Foreground="{StaticResource SecondaryTextBrush}"
+                                                           Style="{StaticResource CaptionText}"
                                                            TextWrapping="Wrap" />
                                             </StackPanel>
                                         </Grid>
@@ -650,29 +647,32 @@
                                                 <RowDefinition Height="Auto" />
                                             </Grid.RowDefinitions>
 
-                                            <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,0,12">
+                                            <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,0,16">
                                                 <TextBlock Text="API Key" Style="{StaticResource FieldLabelText}" />
-                                                <PasswordBox x:Name="ApiKeyBox" Height="36" />
+                                                <ui:PasswordBox x:Name="ApiKeyBox"
+                                                                PlaceholderText="输入识别服务 API Key"
+                                                                LostFocus="OnAsrCredentialLostFocus" />
                                             </StackPanel>
-                                            <StackPanel Grid.Row="0" Grid.Column="2" Margin="0,0,0,12">
+                                            <StackPanel Grid.Row="0" Grid.Column="2" Margin="0,0,0,16">
                                                 <TextBlock Text="Base URL" Style="{StaticResource FieldLabelText}" />
-                                                <TextBox x:Name="BaseUrlBox" Height="36" />
+                                                <ui:TextBox x:Name="BaseUrlBox"
+                                                            PlaceholderText="https://..."
+                                                            LostFocus="OnAsrCredentialLostFocus" />
                                             </StackPanel>
-                                            <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,0,0,12">
+                                            <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,0,0,16">
                                                 <TextBlock Text="Model" Style="{StaticResource FieldLabelText}" />
-                                                <TextBox x:Name="ModelBox" Text="mimo-v2.5-asr" Height="36" />
+                                                <ui:TextBox x:Name="ModelBox" Text="mimo-v2.5-asr" LostFocus="OnAsrCredentialLostFocus" />
                                             </StackPanel>
-                                            <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,0,0,12">
+                                            <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,0,0,16">
                                                 <TextBlock Text="识别语言" Style="{StaticResource FieldLabelText}" />
-                                                <TextBox x:Name="LanguageBox"
-                                                         AutomationProperties.AutomationId="AsrLanguageBox"
-                                                         Text="自动检测 (auto)"
-                                                         Height="36"
-                                                         IsReadOnly="True"
-                                                         IsTabStop="False" />
+                                                <ui:TextBox x:Name="LanguageBox"
+                                                            AutomationProperties.AutomationId="AsrLanguageBox"
+                                                            Text="自动检测 (auto)"
+                                                            IsReadOnly="True"
+                                                            IsTabStop="False" />
                                             </StackPanel>
                                             <StackPanel Grid.Row="2" Grid.Column="0">
-                                                <TextBlock Text="请求超时 ms" Style="{StaticResource FieldLabelText}" />
+                                                <TextBlock Text="请求超时 (ms)" Style="{StaticResource FieldLabelText}" />
                                                 <ui:NumberBox x:Name="TimeoutBox"
                                                               Value="30000"
                                                               Minimum="5000"
@@ -680,6 +680,7 @@
                                                               SmallChange="1000"
                                                               LargeChange="5000"
                                                               Width="180"
+                                                              ValueChanged="OnNumberSettingChanged"
                                                               HorizontalAlignment="Left" />
                                             </StackPanel>
                                             <StackPanel Grid.Row="2" Grid.Column="2">
@@ -691,9 +692,17 @@
                                                               SmallChange="1"
                                                               LargeChange="1"
                                                               Width="180"
+                                                              ValueChanged="OnNumberSettingChanged"
                                                               HorizontalAlignment="Left" />
                                             </StackPanel>
                                         </Grid>
+                                        <TextBlock x:Name="AsrValidationText"
+                                                   AutomationProperties.AutomationId="AsrValidationText"
+                                                   Visibility="Collapsed"
+                                                   Style="{StaticResource CaptionText}"
+                                                   Foreground="{DynamicResource SystemFillColorCautionBrush}"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,12,0,0" />
                                     </StackPanel>
                                 </Border>
 
@@ -704,7 +713,7 @@
                                                    AutomationProperties.AutomationId="SettingsTranslationGroup"
                                                    Style="{StaticResource SectionTitleText}" />
 
-                                        <Grid Margin="0,0,0,14">
+                                        <Grid Margin="0,0,0,16">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="24" />
@@ -714,7 +723,6 @@
                                                 <TextBlock Text="目标语言" Style="{StaticResource FieldLabelText}" />
                                                 <ComboBox x:Name="TranslationTargetLanguageBox"
                                                           AutomationProperties.AutomationId="TranslationTargetLanguageBox"
-                                                          Height="36"
                                                           Width="280"
                                                           HorizontalAlignment="Left"
                                                           SelectionChanged="OnTranslationSettingChanged">
@@ -739,12 +747,11 @@
                                         <TextBlock Text="模型配置"
                                                    FontSize="13"
                                                    FontWeight="Medium"
-                                                   Foreground="{StaticResource PrimaryTextBrush}" />
+                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
                                         <TextBlock x:Name="TranslationSelectionSummaryText"
                                                    AutomationProperties.AutomationId="TranslationSelectionSummaryText"
                                                    Text="尚未添加配置"
-                                                   FontSize="12"
-                                                   Foreground="{StaticResource SecondaryTextBrush}"
+                                                   Style="{StaticResource CaptionText}"
                                                    MaxWidth="360"
                                                    HorizontalAlignment="Left"
                                                    TextTrimming="CharacterEllipsis"
@@ -755,8 +762,8 @@
                                                  AutomationProperties.AutomationId="TranslationProfileList"
                                                  MinHeight="52"
                                                  MaxHeight="176"
-                                                 Margin="0,0,0,10"
-                                                 BorderBrush="{StaticResource StrokeBrush}"
+                                                 Margin="0,0,0,12"
+                                                 BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
                                                  BorderThickness="1"
                                                  Background="Transparent"
                                                  HorizontalContentAlignment="Stretch"
@@ -776,18 +783,20 @@
                                                             <ColumnDefinition Width="*" />
                                                             <ColumnDefinition Width="Auto" />
                                                         </Grid.ColumnDefinitions>
-                                                        <ui:SymbolIcon Symbol="Translate24" VerticalAlignment="Center" />
+                                                        <ui:SymbolIcon Symbol="Translate24"
+                                                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                                       VerticalAlignment="Center" />
                                                         <StackPanel Grid.Column="1">
                                                             <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="Medium" />
                                                             <TextBlock Text="{Binding Endpoint}"
                                                                        FontSize="11"
-                                                                       Foreground="{StaticResource SecondaryTextBrush}"
+                                                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                                                        TextWrapping="Wrap" />
                                                         </StackPanel>
                                                         <TextBlock Grid.Column="2"
                                                                    Text="{Binding ValidationStatus}"
                                                                    FontSize="12"
-                                                                   Foreground="{StaticResource SecondaryTextBrush}"
+                                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                                                    VerticalAlignment="Center"
                                                                    Margin="12,0,0,0" />
                                                     </Grid>
@@ -800,55 +809,55 @@
                                                 <ui:Button Click="OnAddTranslationProfileClick"
                                                            AutomationProperties.AutomationId="AddTranslationProfileButton"
                                                            ToolTip="添加模型配置"
-                                                           Width="36" Height="34" Margin="0,0,6,0">
+                                                           Width="36" Height="36" Padding="0" Margin="0,0,8,0">
                                                     <ui:SymbolIcon Symbol="Add24" />
                                                 </ui:Button>
                                                 <ui:Button x:Name="EditTranslationProfileButton"
                                                            AutomationProperties.AutomationId="EditTranslationProfileButton"
                                                            Click="OnEditTranslationProfileClick"
                                                            ToolTip="编辑选中配置"
-                                                           Width="36" Height="34" Margin="0,0,6,0">
+                                                           Width="36" Height="36" Padding="0" Margin="0,0,8,0">
                                                     <ui:SymbolIcon Symbol="Edit24" />
                                                 </ui:Button>
                                                 <ui:Button x:Name="CopyTranslationProfileButton"
                                                            AutomationProperties.AutomationId="CopyTranslationProfileButton"
                                                            Click="OnCopyTranslationProfileClick"
                                                            ToolTip="复制选中配置"
-                                                           Width="36" Height="34" Margin="0,0,6,0">
+                                                           Width="36" Height="36" Padding="0" Margin="0,0,8,0">
                                                     <ui:SymbolIcon Symbol="Copy24" />
                                                 </ui:Button>
                                                 <ui:Button x:Name="DeleteTranslationProfileButton"
                                                            AutomationProperties.AutomationId="DeleteTranslationProfileButton"
                                                            Click="OnDeleteTranslationProfileClick"
                                                            ToolTip="删除选中配置"
-                                                           Width="36" Height="34">
+                                                           Width="36" Height="36" Padding="0">
                                                     <ui:SymbolIcon Symbol="Delete24" />
                                                 </ui:Button>
+                                                <ui:Button x:Name="TestTranslationProfileButton"
+                                                           AutomationProperties.AutomationId="TestTranslationProfileButton"
+                                                           Click="OnTestTranslationProfileClick"
+                                                           Icon="{ui:SymbolIcon PlugConnected24}"
+                                                           Margin="16,0,0,0"
+                                                           Content="测试连接" />
+                                                <ui:ProgressRing x:Name="TranslationTestProgressRing"
+                                                                 IsIndeterminate="True"
+                                                                 Width="16"
+                                                                 Height="16"
+                                                                 Margin="12,0,0,0"
+                                                                 VerticalAlignment="Center"
+                                                                 Visibility="Collapsed" />
                                             </StackPanel>
-                                            <ui:Button x:Name="TestTranslationProfileButton"
-                                                       AutomationProperties.AutomationId="TestTranslationProfileButton"
-                                                       DockPanel.Dock="Right"
-                                                       Click="OnTestTranslationProfileClick"
-                                                       Height="34"
-                                                       Padding="12,0">
-                                                <StackPanel Orientation="Horizontal">
-                                                    <ui:SymbolIcon Symbol="PlugConnected24" Margin="0,0,7,0" />
-                                                    <TextBlock Text="测试连接" />
-                                                </StackPanel>
-                                            </ui:Button>
                                         </DockPanel>
                                         <TextBlock x:Name="TranslationRemoteNoticeText"
                                                    Text="当前字幕及近期上下文将发送到此 API 地址。"
                                                    Visibility="Collapsed"
-                                                   FontSize="12"
-                                                   Foreground="{StaticResource SecondaryTextBrush}"
-                                                   Margin="0,10,0,0"
+                                                   Style="{StaticResource CaptionText}"
+                                                   Margin="0,12,0,0"
                                                    TextWrapping="Wrap" />
                                         <TextBlock x:Name="TranslationTestResultText"
                                                    Text=""
-                                                   FontSize="12"
-                                                   Foreground="{StaticResource SecondaryTextBrush}"
-                                                   Margin="0,6,0,0"
+                                                   Style="{StaticResource CaptionText}"
+                                                   Margin="0,8,0,0"
                                                    TextWrapping="Wrap" />
                                     </StackPanel>
                                 </Border>
@@ -869,7 +878,7 @@
                                                 <RowDefinition Height="Auto" />
                                             </Grid.RowDefinitions>
 
-                                            <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,0,12">
+                                            <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,0,16">
                                                 <TextBlock Text="字号" Style="{StaticResource FieldLabelText}" />
                                                 <ui:NumberBox x:Name="FloatingFontSizeBox"
                                                               Value="18"
@@ -878,9 +887,10 @@
                                                               SmallChange="1"
                                                               LargeChange="4"
                                                               Width="180"
+                                                              ValueChanged="OnFloatingNumberSettingChanged"
                                                               HorizontalAlignment="Left" />
                                             </StackPanel>
-                                            <StackPanel Grid.Row="0" Grid.Column="2" Margin="0,0,0,12">
+                                            <StackPanel Grid.Row="0" Grid.Column="2" Margin="0,0,0,16">
                                                 <TextBlock Text="显示字幕数" Style="{StaticResource FieldLabelText}" />
                                                 <ui:NumberBox x:Name="FloatingLinesBox"
                                                               Value="2"
@@ -889,32 +899,56 @@
                                                               SmallChange="1"
                                                               LargeChange="1"
                                                               Width="180"
+                                                              ValueChanged="OnFloatingNumberSettingChanged"
                                                               HorizontalAlignment="Left" />
                                             </StackPanel>
                                             <StackPanel Grid.Row="1" Grid.Column="0">
-                                                <TextBlock Text="透明度" Style="{StaticResource FieldLabelText}" />
+                                                <DockPanel Width="260" HorizontalAlignment="Left" Margin="0,0,0,6">
+                                                    <TextBlock Text="透明度" Style="{StaticResource FieldLabelText}" Margin="0" />
+                                                    <TextBlock x:Name="FloatingOpacityValueText"
+                                                               DockPanel.Dock="Right"
+                                                               Text="72%"
+                                                               Style="{StaticResource CaptionText}"
+                                                               HorizontalAlignment="Right" />
+                                                </DockPanel>
                                                 <Slider x:Name="FloatingOpacitySlider"
                                                         Minimum="0.35"
                                                         Maximum="0.95"
                                                         Value="0.72"
                                                         Width="260"
+                                                        ValueChanged="OnFloatingOpacityChanged"
                                                         HorizontalAlignment="Left" />
                                             </StackPanel>
                                             <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Bottom">
-                                                <ui:Button Click="OnShowFloatingWindowClick" Margin="0,0,8,0">
-                                                    <StackPanel Orientation="Horizontal">
-                                                        <ui:SymbolIcon Symbol="Window24" Margin="0,0,8,0" />
-                                                        <TextBlock Text="显示/隐藏" />
-                                                    </StackPanel>
-                                                </ui:Button>
-                                                <ui:Button Click="OnToggleFloatingLockClick">
-                                                    <StackPanel Orientation="Horizontal">
-                                                        <ui:SymbolIcon Symbol="LockClosed24" Margin="0,0,8,0" />
-                                                        <TextBlock Text="锁定/解锁" />
-                                                    </StackPanel>
-                                                </ui:Button>
+                                                <ui:Button Click="OnShowFloatingWindowClick"
+                                                           Icon="{ui:SymbolIcon Window24}"
+                                                           Content="显示/隐藏"
+                                                           Margin="0,0,8,0" />
+                                                <ui:Button x:Name="FloatingLockButton"
+                                                           AutomationProperties.AutomationId="FloatingLockButton"
+                                                           Click="OnToggleFloatingLockClick"
+                                                           Icon="{ui:SymbolIcon LockClosed24}"
+                                                           Content="锁定悬浮窗" />
                                             </StackPanel>
                                         </Grid>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource PanelBorder}">
+                                    <StackPanel>
+                                        <TextBlock Text="外观"
+                                                   AutomationProperties.AutomationId="SettingsAppearanceGroup"
+                                                   Style="{StaticResource SectionTitleText}" />
+                                        <TextBlock Text="主题" Style="{StaticResource FieldLabelText}" />
+                                        <ComboBox x:Name="ThemeModeComboBox"
+                                                  AutomationProperties.AutomationId="ThemeModeComboBox"
+                                                  Width="220"
+                                                  HorizontalAlignment="Left"
+                                                  SelectionChanged="OnThemeModeChanged">
+                                            <ComboBoxItem Content="跟随系统" Tag="System" />
+                                            <ComboBoxItem Content="亮色" Tag="Light" />
+                                            <ComboBoxItem Content="暗色" Tag="Dark" />
+                                        </ComboBox>
                                     </StackPanel>
                                 </Border>
 
@@ -931,62 +965,63 @@
                                                        Style="{StaticResource SectionTitleText}" />
                                             <ui:ToggleSwitch x:Name="HotkeysEnabledSwitch"
                                                              Content="启用全局快捷键"
-                                                             IsChecked="True" />
+                                                             IsChecked="True"
+                                                             Checked="OnAnySettingChanged"
+                                                             Unchecked="OnAnySettingChanged" />
                                             <TextBlock Text="Ctrl+Alt+S 开始/停止，Ctrl+Alt+H 隐藏/显示，Ctrl+Alt+L 锁定/解锁"
-                                                       Foreground="{StaticResource SecondaryTextBrush}"
+                                                       Style="{StaticResource CaptionText}"
                                                        TextWrapping="Wrap"
-                                                       Margin="0,6,0,0" />
+                                                       Margin="0,8,0,0" />
                                         </StackPanel>
                                         <StackPanel Grid.Column="2">
                                             <TextBlock Text="诊断" Style="{StaticResource SectionTitleText}" />
                                             <ui:ToggleSwitch x:Name="DiagnosticsSwitch"
-                                                             Content="诊断模式" />
+                                                             Content="诊断模式"
+                                                             Checked="OnAnySettingChanged"
+                                                             Unchecked="OnAnySettingChanged" />
                                             <TextBlock Text="开启后保存分段音频和 VAD 时间线"
-                                                       Foreground="{StaticResource SecondaryTextBrush}"
+                                                       Style="{StaticResource CaptionText}"
                                                        TextWrapping="Wrap"
-                                                       Margin="0,6,0,0" />
+                                                       Margin="0,8,0,0" />
                                         </StackPanel>
                                     </Grid>
                                 </Border>
                             </StackPanel>
-                        </Grid>
+                        </ScrollViewer>
+                    </Grid>
 
-                        <Grid x:Name="AboutPage" Visibility="Collapsed">
-                            <StackPanel>
-                                <TextBlock Text="关于" FontSize="24" FontWeight="Medium" Margin="0,0,0,18" />
+                    <Grid x:Name="AboutPage" Visibility="Collapsed">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel Margin="32,24,32,32">
+                                <TextBlock Text="关于" Style="{StaticResource PageTitleText}" Margin="0,0,0,16" />
                                 <Border Style="{StaticResource PanelBorder}">
                                     <StackPanel>
-                                        <TextBlock Text="StreamTranslator V1.2" Style="{StaticResource SectionTitleText}" />
+                                        <TextBlock x:Name="AboutVersionText"
+                                                   Text="StreamTranslator"
+                                                   Style="{StaticResource SectionTitleText}" />
                                         <TextBlock x:Name="DataDirectoryText"
-                                                   Foreground="{StaticResource SecondaryTextBrush}"
+                                                   Style="{StaticResource CaptionText}"
                                                    TextWrapping="Wrap"
-                                                   Margin="0,0,0,14" />
+                                                   Margin="0,0,0,16" />
                                         <StackPanel Orientation="Horizontal">
-                                            <ui:Button Click="OnOpenDataDirectoryClick" Margin="0,0,8,0">
-                                                <StackPanel Orientation="Horizontal">
-                                                    <ui:SymbolIcon Symbol="Folder24" Margin="0,0,8,0" />
-                                                    <TextBlock Text="打开数据目录" />
-                                                </StackPanel>
-                                            </ui:Button>
-                                            <ui:Button Click="OnOpenLogsDirectoryClick" Margin="0,0,8,0">
-                                                <StackPanel Orientation="Horizontal">
-                                                    <ui:SymbolIcon Symbol="Folder24" Margin="0,0,8,0" />
-                                                    <TextBlock Text="打开日志目录" />
-                                                </StackPanel>
-                                            </ui:Button>
-                                            <ui:Button Click="OnCopyDiagnosticsClick">
-                                                <StackPanel Orientation="Horizontal">
-                                                    <ui:SymbolIcon Symbol="Copy24" Margin="0,0,8,0" />
-                                                    <TextBlock Text="复制诊断信息" />
-                                                </StackPanel>
-                                            </ui:Button>
+                                            <ui:Button Click="OnOpenDataDirectoryClick"
+                                                       Icon="{ui:SymbolIcon Folder24}"
+                                                       Content="打开数据目录"
+                                                       Margin="0,0,8,0" />
+                                            <ui:Button Click="OnOpenLogsDirectoryClick"
+                                                       Icon="{ui:SymbolIcon Folder24}"
+                                                       Content="打开日志目录"
+                                                       Margin="0,0,8,0" />
+                                            <ui:Button Click="OnCopyDiagnosticsClick"
+                                                       Icon="{ui:SymbolIcon Copy24}"
+                                                       Content="复制诊断信息" />
                                         </StackPanel>
                                     </StackPanel>
                                 </Border>
                             </StackPanel>
-                        </Grid>
+                        </ScrollViewer>
                     </Grid>
-                </ScrollViewer>
+                </Grid>
             </ui:NavigationView.ContentOverlay>
         </ui:NavigationView>
         <ui:ContentDialogHost x:Name="RootContentDialogHost" Grid.RowSpan="2" />
@@ -997,5 +1032,30 @@
                               HorizontalAlignment="Center"
                               VerticalAlignment="Bottom"
                               Margin="24,0,24,28" />
+        <Border x:Name="ClosingOverlay"
+                AutomationProperties.AutomationId="ClosingOverlay"
+                Grid.RowSpan="2"
+                Panel.ZIndex="40"
+                Background="#66000000"
+                Visibility="Collapsed">
+            <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="32,24"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center">
+                <StackPanel Orientation="Horizontal">
+                    <ui:ProgressRing IsIndeterminate="True"
+                                     Width="24"
+                                     Height="24"
+                                     Margin="0,0,12,0" />
+                    <TextBlock Text="正在停止字幕并保存设置…"
+                               FontSize="14"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                </StackPanel>
+            </Border>
+        </Border>
     </Grid>
 </ui:FluentWindow>

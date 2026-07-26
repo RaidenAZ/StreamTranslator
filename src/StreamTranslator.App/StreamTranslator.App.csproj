@@ -9,11 +9,19 @@
     <PackageReference Include="WPF-UI" Version="4.3.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 移除 WinForms 隐式 global using，避免与 WPF 类型二义；剪贴板调用使用完整限定名 -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
   <PropertyGroup>
     <AssemblyName>StreamTranslator</AssemblyName>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <!-- 仅用于 System.Windows.Forms.Clipboard.SetDataObject 的可控重试重载 -->
+    <UseWindowsForms>true</UseWindowsForms>
     <PlatformTarget>x64</PlatformTarget>
     <Version>1.2.0</Version>
   </PropertyGroup>

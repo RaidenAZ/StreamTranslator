@@ -10,34 +10,98 @@
                 <ui:ControlsDictionary />
             </ResourceDictionary.MergedDictionaries>
 
-            <SolidColorBrush x:Key="SurfaceBrush" Color="#A8F7F8FA" />
-            <SolidColorBrush x:Key="ChromeBrush" Color="#90EDF6F8" />
-            <SolidColorBrush x:Key="PanelBrush" Color="#F4FFFFFF" />
-            <SolidColorBrush x:Key="StrokeBrush" Color="#DADDE3" />
-            <SolidColorBrush x:Key="PrimaryTextBrush" Color="#1F2328" />
-            <SolidColorBrush x:Key="SecondaryTextBrush" Color="#626A75" />
-            <SolidColorBrush x:Key="AccentBrush" Color="#2563EB" />
+            <!-- Fluent type ramp: Title 28 SemiBold / BodyStrong 14 SemiBold / Body 14 / Caption 12 -->
+            <Style x:Key="PageTitleText" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="28" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+            </Style>
 
             <Style x:Key="SectionTitleText" TargetType="TextBlock">
-                <Setter Property="FontSize" Value="16" />
-                <Setter Property="FontWeight" Value="Medium" />
-                <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}" />
+                <Setter Property="FontSize" Value="14" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
                 <Setter Property="Margin" Value="0,0,0,12" />
             </Style>
 
             <Style x:Key="FieldLabelText" TargetType="TextBlock">
                 <Setter Property="FontSize" Value="12" />
-                <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}" />
-                <Setter Property="Margin" Value="0,0,0,4" />
+                <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
+                <Setter Property="Margin" Value="0,0,0,6" />
+            </Style>
+
+            <Style x:Key="FieldValueText" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="14" />
+                <Setter Property="FontWeight" Value="Medium" />
+                <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+            </Style>
+
+            <Style x:Key="CaptionText" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="12" />
+                <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
             </Style>
 
             <Style x:Key="PanelBorder" TargetType="Border">
-                <Setter Property="Background" Value="{StaticResource PanelBrush}" />
-                <Setter Property="BorderBrush" Value="{StaticResource StrokeBrush}" />
+                <Setter Property="Background" Value="{DynamicResource CardBackgroundFillColorDefaultBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource CardStrokeColorDefaultBrush}" />
                 <Setter Property="BorderThickness" Value="1" />
                 <Setter Property="CornerRadius" Value="8" />
-                <Setter Property="Padding" Value="16" />
-                <Setter Property="Margin" Value="0,0,0,12" />
+                <Setter Property="Padding" Value="24" />
+                <Setter Property="Margin" Value="0,0,0,16" />
+            </Style>
+
+            <Style x:Key="TitleBarTitleText" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="12" />
+                <Setter Property="FontWeight" Value="Normal" />
+                <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+                <Setter Property="VerticalAlignment" Value="Center" />
+            </Style>
+
+            <!-- BasedOn 必须保留：显式 Style 会顶掉 wpf-ui 的隐式样式（含控件模板） -->
+            <Style x:Key="NavItemStyle"
+                   TargetType="{x:Type ui:NavigationViewItem}"
+                   BasedOn="{StaticResource {x:Type ui:NavigationViewItem}}">
+                <Setter Property="FontSize" Value="12" />
+            </Style>
+
+            <!-- 分段选择控件（如断句策略）内的选项按钮 -->
+            <Style x:Key="SegmentedOptionStyle" TargetType="{x:Type RadioButton}">
+                <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+                <Setter Property="FontSize" Value="13" />
+                <Setter Property="HorizontalContentAlignment" Value="Center" />
+                <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="{x:Type RadioButton}">
+                            <Border x:Name="ModeBorder"
+                                    Margin="2"
+                                    Padding="14,7"
+                                    CornerRadius="4"
+                                    Background="Transparent"
+                                    BorderThickness="1"
+                                    BorderBrush="Transparent">
+                                <TextBlock Text="{TemplateBinding Content}"
+                                           Foreground="{TemplateBinding Foreground}"
+                                           HorizontalAlignment="Center" />
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="ModeBorder" Property="Background" Value="{DynamicResource SubtleFillColorSecondaryBrush}" />
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="ModeBorder" Property="Background" Value="{DynamicResource SubtleFillColorTertiaryBrush}" />
+                                </Trigger>
+                                <Trigger Property="IsKeyboardFocused" Value="True">
+                                    <Setter TargetName="ModeBorder" Property="BorderBrush" Value="{DynamicResource FocusStrokeColorOuterBrush}" />
+                                </Trigger>
+                                <Trigger Property="IsChecked" Value="True">
+                                    <Setter TargetName="ModeBorder" Property="Background" Value="{DynamicResource AccentFillColorDefaultBrush}" />
+                                    <Setter Property="Foreground" Value="{DynamicResource TextOnAccentFillColorPrimaryBrush}" />
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
             </Style>
 
         </ResourceDictionary>

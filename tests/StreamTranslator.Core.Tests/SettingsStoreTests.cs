@@ -31,6 +31,38 @@ public sealed class SettingsStoreTests
     }
 
     [TestMethod]
+    public async Task LoadAsync_RecoversFromCorruptSettingsFile()
+    {
+        var directory = Directory.CreateTempSubdirectory("streamtranslator-settings-");
+        var settingsPath = Path.Combine(directory.FullName, "settings.json");
+        await File.WriteAllTextAsync(settingsPath, """{"schemaVersion": 4, "vad": {"EndSil""");
+        var store = new SettingsStore(settingsPath);
+
+        var settings = await store.LoadAsync();
+
+        Assert.AreEqual(4, settings.SchemaVersion);
+        Assert.AreEqual("auto", settings.Asr.Language);
+        var backups = Directory.GetFiles(directory.FullName, "settings.json.corrupt-*");
+        Assert.AreEqual(1, backups.Length);
+        StringAssert.Contains(await File.ReadAllTextAsync(backups[0]), "EndSil");
+        StringAssert.Contains(await File.ReadAllTextAsync(settingsPath), "\"schemaVersion\": 4");
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_LeavesNoTemporaryFileBehind()
+    {
+        var directory = Directory.CreateTempSubdirectory("streamtranslator-settings-");
+        var settingsPath = Path.Combine(directory.FullName, "settings.json");
+        var store = new SettingsStore(settingsPath);
+
+        await store.SaveAsync(new AppSettings());
+        await store.SaveAsync(new AppSettings());
+
+        Assert.IsTrue(File.Exists(settingsPath));
+        Assert.IsFalse(File.Exists($"{settingsPath}.tmp"));
+    }
+
+    [TestMethod]
     public async Task LoadAsync_ForcesLegacySettingsToBalancedAdaptiveMode()
     {
         var directory = Directory.CreateTempSubdirectory("streamtranslator-settings-");
