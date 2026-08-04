@@ -859,6 +859,25 @@
                                                    Style="{StaticResource CaptionText}"
                                                    Margin="0,8,0,0"
                                                    TextWrapping="Wrap" />
+                                        <Border Height="1"
+                                                Background="{DynamicResource DividerStrokeColorDefaultBrush}"
+                                                Margin="0,16,0,16" />
+                                        <TextBlock Text="翻译积累上限（字符）"
+                                                   Style="{StaticResource FieldLabelText}" />
+                                        <ui:NumberBox x:Name="SentenceAccumulationLimitBox"
+                                                      AutomationProperties.AutomationId="SentenceAccumulationLimitBox"
+                                                      Value="350"
+                                                      Minimum="50"
+                                                      Maximum="800"
+                                                      SmallChange="50"
+                                                      LargeChange="100"
+                                                      Width="180"
+                                                      HorizontalAlignment="Left"
+                                                      ValueChanged="OnNumberSettingChanged" />
+                                        <TextBlock Text="积累更多内容再翻译可提升连贯性，但会增加翻译延迟。"
+                                                   Style="{StaticResource CaptionText}"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,4,0,0" />
                                     </StackPanel>
                                 </Border>
 

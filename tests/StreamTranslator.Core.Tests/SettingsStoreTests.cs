@@ -14,7 +14,7 @@ public sealed class SettingsStoreTests
 
         var settings = await store.LoadAsync();
 
-        Assert.AreEqual(4, settings.SchemaVersion);
+        Assert.AreEqual(5, settings.SchemaVersion);
         Assert.AreEqual(VadEndpointMode.Balanced, settings.Vad.EndpointMode);
         Assert.AreEqual(400, settings.Vad.EndSilenceMs);
         Assert.AreEqual("https://api.xiaomimimo.com/v1", settings.Asr.BaseUrl);
@@ -35,17 +35,17 @@ public sealed class SettingsStoreTests
     {
         var directory = Directory.CreateTempSubdirectory("streamtranslator-settings-");
         var settingsPath = Path.Combine(directory.FullName, "settings.json");
-        await File.WriteAllTextAsync(settingsPath, """{"schemaVersion": 4, "vad": {"EndSil""");
+        await File.WriteAllTextAsync(settingsPath, """{"schemaVersion": 5, "vad": {"EndSil""");
         var store = new SettingsStore(settingsPath);
 
         var settings = await store.LoadAsync();
 
-        Assert.AreEqual(4, settings.SchemaVersion);
+        Assert.AreEqual(5, settings.SchemaVersion);
         Assert.AreEqual("auto", settings.Asr.Language);
         var backups = Directory.GetFiles(directory.FullName, "settings.json.corrupt-*");
         Assert.AreEqual(1, backups.Length);
         StringAssert.Contains(await File.ReadAllTextAsync(backups[0]), "EndSil");
-        StringAssert.Contains(await File.ReadAllTextAsync(settingsPath), "\"schemaVersion\": 4");
+        StringAssert.Contains(await File.ReadAllTextAsync(settingsPath), "\"schemaVersion\": 5");
     }
 
     [TestMethod]
@@ -81,13 +81,13 @@ public sealed class SettingsStoreTests
 
         var settings = await store.LoadAsync();
 
-        Assert.AreEqual(4, settings.SchemaVersion);
+        Assert.AreEqual(5, settings.SchemaVersion);
         Assert.AreEqual(VadEndpointMode.Balanced, settings.Vad.EndpointMode);
         Assert.AreEqual(400, settings.Vad.EndSilenceMs);
         Assert.AreEqual("legacy-key", settings.Asr.ApiKey);
 
         var rewritten = await File.ReadAllTextAsync(settingsPath);
-        StringAssert.Contains(rewritten, "\"schemaVersion\": 4");
+        StringAssert.Contains(rewritten, "\"schemaVersion\": 5");
         StringAssert.Contains(rewritten, "\"endpointMode\": \"Balanced\"");
         StringAssert.Contains(rewritten, "\"language\": \"auto\"");
     }
@@ -110,7 +110,7 @@ public sealed class SettingsStoreTests
 
         var settings = await new SettingsStore(settingsPath).LoadAsync();
 
-        Assert.AreEqual(4, settings.SchemaVersion);
+        Assert.AreEqual(5, settings.SchemaVersion);
         Assert.AreEqual("device-42", settings.Audio.DeviceId);
         Assert.AreEqual(VadEndpointMode.SentenceComplete, settings.Vad.EndpointMode);
         Assert.AreEqual(650, settings.Vad.EndSilenceMs);
@@ -129,14 +129,14 @@ public sealed class SettingsStoreTests
         var settingsPath = Path.Combine(directory.FullName, "settings.json");
         await File.WriteAllTextAsync(settingsPath, """
             {
-              "schemaVersion": 4,
+              "schemaVersion": 5,
               "asr": { "apiKey": "preserved", "language": "en" }
             }
             """);
 
         var settings = await new SettingsStore(settingsPath).LoadAsync();
 
-        Assert.AreEqual(4, settings.SchemaVersion);
+        Assert.AreEqual(5, settings.SchemaVersion);
         Assert.AreEqual("auto", settings.Asr.Language);
         StringAssert.Contains(await File.ReadAllTextAsync(settingsPath), "\"language\": \"auto\"");
     }

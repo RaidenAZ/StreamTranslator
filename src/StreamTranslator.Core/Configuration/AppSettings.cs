@@ -5,7 +5,7 @@ namespace StreamTranslator.Core.Configuration;
 
 public sealed record AppSettings
 {
-    public int SchemaVersion { get; init; } = 4;
+    public int SchemaVersion { get; init; } = 5;
     public AudioSettings Audio { get; init; } = new();
     public VadSettings Vad { get; init; } = new();
     public AsrSettings Asr { get; init; } = new();
@@ -85,6 +85,11 @@ public sealed record TranslationSettings
     public string TargetLanguage { get; init; } = "zh-Hans";
     public Guid? ActiveProfileId { get; init; }
     public List<TranslationProfile> Profiles { get; init; } = [];
+    /// <summary>
+    /// 翻译积累上限（字符数）。TextSentenceAccumulator 在积累文本超过此阈值且
+    /// 未找到句末边界时强制刷出翻译单元。范围 50–800，默认 350。
+    /// </summary>
+    public int SentenceAccumulationLimit { get; init; } = 350;
 
     [JsonIgnore]
     public TranslationProfile? ActiveProfile => ActiveProfileId is { } id
