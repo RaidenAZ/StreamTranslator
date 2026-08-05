@@ -17,6 +17,7 @@ public sealed record TranslationWorkerRequest
     public string? TargetLanguage { get; init; }
     public string? SourceText { get; init; }
     public IReadOnlyList<TranslationContextItem>? Context { get; init; }
+    public string? PreviousSource { get; init; }
     public DateTimeOffset? CreatedAt { get; init; }
     public bool IsConnectionTest { get; init; }
 
@@ -52,7 +53,8 @@ public sealed record TranslationWorkerRequest
         string sourceText,
         IReadOnlyList<TranslationContextItem> context,
         DateTimeOffset createdAt,
-        bool isConnectionTest = false)
+        bool isConnectionTest = false,
+        string? previousSource = null)
     {
         return new TranslationWorkerRequest
         {
@@ -66,7 +68,8 @@ public sealed record TranslationWorkerRequest
             SourceText = sourceText,
             Context = context,
             CreatedAt = createdAt,
-            IsConnectionTest = isConnectionTest
+            IsConnectionTest = isConnectionTest,
+            PreviousSource = previousSource
         };
     }
 

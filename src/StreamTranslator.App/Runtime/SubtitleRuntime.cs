@@ -29,6 +29,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     private SpeechSegmenter? _segmenter;
     private PythonWorkerClient? _worker;
     private TranslationSession? _translationSession;
+    private TextSentenceAccumulator? _sentenceAccumulator;
     private SubtitleHistoryStore? _history;
     private readonly SubtitleReorderBuffer _reorderBuffer = new(firstSequence: 1);
     private readonly UtteranceGroupTracker _utteranceGroupTracker;
@@ -67,6 +68,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
 
     public event EventHandler<RuntimeStatusUpdate>? StatusChanged;
     public event EventHandler<SubtitleItem>? SubtitleReady;
+    public event EventHandler<SubtitleItem>? SentenceUnitReady;
     public event EventHandler<Exception>? RuntimeError;
     public event EventHandler<double>? AudioLevelChanged;
     public event EventHandler<VadEndpointRuntimeStatus>? VadEndpointChanged;
@@ -85,6 +87,8 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         _workerRestartCount = 0;
         _stopCts = new CancellationTokenSource();
         _history = new SubtitleHistoryStore(Path.Combine(_dataDirectory, "subtitles"));
+        _sentenceAccumulator = new TextSentenceAccumulator(_settings.Translation.SentenceAccumulationLimit);
+        _sentenceAccumulator.SentenceUnitReady += OnSentenceUnitReady;
         StartAdaptiveMetricsWriter();
         StartDiagnosticsSession();
         _vad = CreateVadEngine();
@@ -141,6 +145,13 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             _translationSession.DiagnosticEvent -= OnTranslationDiagnosticEvent;
             WriteTranslationMetrics(_translationSession);
             _translationSession = null;
+        }
+
+        if (_sentenceAccumulator is not null)
+        {
+            _sentenceAccumulator.SentenceUnitReady -= OnSentenceUnitReady;
+            _sentenceAccumulator.Flush();
+            _sentenceAccumulator = null;
         }
 
         _vad?.Dispose();
@@ -515,7 +526,8 @@ public sealed class SubtitleRuntime : IAsyncDisposable
                 Start = TimeSpan.FromMilliseconds(segment.StartMs),
                 End = TimeSpan.FromMilliseconds(segment.EndMs),
                 SourceText = hasText ? response.Text! : $"识别失败: {response.ErrorMessage ?? "ASR 未返回文本"}",
-                Status = hasText ? SubtitleStatus.Final : SubtitleStatus.Failed
+                Status = hasText ? SubtitleStatus.Final : SubtitleStatus.Failed,
+                CutReason = segment.CutReason.ToString()
             };
 
             (SubtitleItem HistoryItem, SubtitlePublication Publication)[] publications;
@@ -572,7 +584,17 @@ public sealed class SubtitleRuntime : IAsyncDisposable
                 }
 
                 SubtitleReady?.Invoke(this, publication.Item);
-                _translationSession?.Submit(publication.Item);
+                // Non-revision items go through the accumulator; revisions bypass it
+                // so the history revision mechanism works immediately.
+                if (string.Equals(publication.Item.Type, "subtitle_revision", StringComparison.Ordinal))
+                {
+                    SentenceUnitReady?.Invoke(this, publication.Item);
+                    _translationSession?.Submit(publication.Item);
+                }
+                else
+                {
+                    _sentenceAccumulator?.Add(publication.Item);
+                }
             }
         }
         finally
@@ -896,6 +918,12 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             await session.DisposeAsync().ConfigureAwait(false);
             throw new TranslationStartupException("翻译 worker 启动失败。", ex);
         }
+    }
+
+    private void OnSentenceUnitReady(SubtitleItem unit)
+    {
+        SentenceUnitReady?.Invoke(this, unit);
+        _translationSession?.Submit(unit);
     }
 
     private void OnTranslationReady(object? sender, TranslationResultUpdate update)

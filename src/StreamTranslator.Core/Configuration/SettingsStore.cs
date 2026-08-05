@@ -96,6 +96,21 @@ public sealed class SettingsStore
             shouldSave = true;
         }
 
+        if (existingVersion < 5 || settings.SchemaVersion < 5)
+        {
+            settings = settings with
+            {
+                SchemaVersion = 5,
+                Translation = settings.Translation with
+                {
+                    SentenceAccumulationLimit = settings.Translation.SentenceAccumulationLimit == 0
+                        ? 350
+                        : settings.Translation.SentenceAccumulationLimit
+                }
+            };
+            shouldSave = true;
+        }
+
         if (shouldSave)
         {
             await SaveAsync(settings, cancellationToken).ConfigureAwait(false);

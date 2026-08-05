@@ -142,7 +142,8 @@ public sealed class TranslationSession : IAsyncDisposable
             generatedAt,
             now,
             isVisible,
-            CreateTaskKey(source.UtteranceGroupId, source.Revision));
+            CreateTaskKey(source.UtteranceGroupId, source.Revision),
+            source.PreviousSourceTail);
         List<TranslationWorkItem> dropped = [];
 
         lock (_stateLock)
@@ -390,7 +391,8 @@ public sealed class TranslationSession : IAsyncDisposable
             _targetLanguage,
             work.SourceText,
             context,
-            work.EnqueuedAt);
+            work.EnqueuedAt,
+            previousSource: work.PreviousSourceTail);
         DiagnosticEvent?.Invoke(this, new TranslationDiagnosticUpdate(
             "translation_request",
             request.Id,
@@ -1000,7 +1002,8 @@ public sealed class TranslationSession : IAsyncDisposable
         DateTimeOffset GeneratedAt,
         DateTimeOffset EnqueuedAt,
         bool IsVisible,
-        string Key);
+        string Key,
+        string? PreviousSourceTail = null);
 
     private sealed record TranslationContextState(long Sequence, TranslationContextItem Item);
 

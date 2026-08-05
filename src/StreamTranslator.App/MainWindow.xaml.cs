@@ -305,6 +305,7 @@ public partial class MainWindow : FluentWindow
         _runtime = new SubtitleRuntime(AppContext.BaseDirectory, _dataDirectory, runtimeSettings);
         _runtime.StatusChanged += OnRuntimeStatusChanged;
         _runtime.SubtitleReady += OnSubtitleReady;
+        _runtime.SentenceUnitReady += OnSentenceUnitReady;
         _runtime.RuntimeError += OnRuntimeError;
         _runtime.AudioLevelChanged += OnAudioLevelChanged;
         _runtime.VadEndpointChanged += OnVadEndpointChanged;
@@ -346,6 +347,7 @@ public partial class MainWindow : FluentWindow
         {
             _runtime.StatusChanged -= OnRuntimeStatusChanged;
             _runtime.SubtitleReady -= OnSubtitleReady;
+            _runtime.SentenceUnitReady -= OnSentenceUnitReady;
             _runtime.RuntimeError -= OnRuntimeError;
             _runtime.AudioLevelChanged -= OnAudioLevelChanged;
             _runtime.VadEndpointChanged -= OnVadEndpointChanged;
@@ -697,25 +699,37 @@ public partial class MainWindow : FluentWindow
     {
         Dispatcher.BeginInvoke(() =>
         {
-            var text = item.SourceText;
-            if (!string.IsNullOrWhiteSpace(text))
+            // Floating window only — history and translation are now driven by
+            // OnSentenceUnitReady (via TextSentenceAccumulator in SubtitleRuntime).
+            if (!string.IsNullOrWhiteSpace(item.SourceText))
             {
-                RemoveSubtitlePlaceholder();
-                if (string.Equals(item.Type, "subtitle_revision", StringComparison.Ordinal))
-                {
-                    ApplySubtitleRevision(item);
-                }
-                else
-                {
-                    SubtitleList.Items.Insert(0, item);
-                }
-
                 var translationPending = _sessionTranslationEnabled &&
                     !SourceLanguageDecision.ShouldSkip(
                         _settings.Asr.Language,
                         _settings.Translation.TargetLanguage,
                         item.SourceText);
                 _floatingWindow?.PublishSource(item, translationPending);
+            }
+        });
+    }
+
+    private void OnSentenceUnitReady(object? sender, SubtitleItem unit)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            var text = unit.SourceText;
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                RemoveSubtitlePlaceholder();
+                if (string.Equals(unit.Type, "subtitle_revision", StringComparison.Ordinal))
+                {
+                    ApplySubtitleRevision(unit);
+                }
+                else
+                {
+                    SubtitleList.Items.Insert(0, unit);
+                }
+
                 SubtitleOutputStatusText.Text = "输出中";
             }
         });
@@ -1215,6 +1229,7 @@ public partial class MainWindow : FluentWindow
         SelectThemeMode(settings.Appearance.Theme);
         TranslationEnabledSwitch.IsChecked = settings.Translation.Enabled;
         SelectTranslationTargetLanguage(settings.Translation.TargetLanguage);
+        SentenceAccumulationLimitBox.Value = settings.Translation.SentenceAccumulationLimit;
         RefreshTranslationProfileList(settings.Translation.ActiveProfileId);
     }
 
@@ -1231,7 +1246,7 @@ public partial class MainWindow : FluentWindow
         {
             _settings = _settings with
             {
-            SchemaVersion = 4,
+            SchemaVersion = 5,
             Audio = _settings.Audio with
             {
                 DeviceId = FollowDefaultDeviceSwitch.IsChecked == true ? "default" : SelectedAudioDeviceId(),
@@ -1257,7 +1272,8 @@ public partial class MainWindow : FluentWindow
             {
                 Enabled = TranslationEnabledSwitch.IsChecked == true,
                 TargetLanguage = GetSelectedTranslationTargetLanguage(),
-                ActiveProfileId = SelectedTranslationProfile()?.Id
+                ActiveProfileId = SelectedTranslationProfile()?.Id,
+                SentenceAccumulationLimit = (int)NumberValue(SentenceAccumulationLimitBox, 350)
             },
             SubtitleWindow = _settings.SubtitleWindow with
             {

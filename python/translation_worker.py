@@ -149,6 +149,7 @@ class TranslationWorker:
                     request["targetLanguage"],
                     request["sourceText"],
                     request.get("context", []),
+                    request.get("previousSource"),
                 ),
                 stream=False,
                 extra_body=config.extra_body,
@@ -269,6 +270,7 @@ def build_messages(
     target_language: str,
     source_text: str,
     context: list[dict[str, Any]],
+    previous_source: str | None = None,
 ) -> list[dict[str, str]]:
     if source_language not in ("auto", "zh", "en"):
         raise WorkerError("Unsupported sourceLanguage")
@@ -285,13 +287,17 @@ def build_messages(
                 "translation": str(item.get("translatedText") or ""),
             }
         )
-    payload = {
+    payload: dict[str, Any] = {
         "task": "translate_current_subtitle",
         "sourceLanguage": source_language,
         "targetLanguage": {"code": target_language, "name": TARGET_LANGUAGES[target_language]},
         "context": context_payload,
         "currentSubtitle": source_text,
     }
+    # previousSource: tail of the immediately preceding sentence unit's source text.
+    # Provides cross-segment continuity when hardMax cuts break a natural sentence.
+    if previous_source and previous_source.strip():
+        payload["previousSource"] = previous_source.strip()
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
