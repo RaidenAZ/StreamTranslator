@@ -88,7 +88,7 @@ public static class SentenceBoundaryScanner
         return i + 1;
     }
 
-    private static int CountWords(string text, int start, int end)
+    internal static int CountWords(string text, int start, int end)
     {
         var count = 0;
         var inWord = false;

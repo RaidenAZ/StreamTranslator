@@ -146,62 +146,81 @@ public sealed class TextSentenceAccumulatorTests
         Assert.AreEqual(1, emitted.Count, "Force-flush should fire when two items exceed threshold");
     }
 
-    // ── Trailing-period stripping (P2) ───────────────────────────────────────
+    // ── HardMax seam boundary validation (Direction C) ───────────────────────
 
     [TestMethod]
-    public void CombinedText_StripsTrailingPeriodFromHardMaxItemFollowedByMore()
+    public void SeamBoundary_ShortSentenceAtSeam_BlocksFalseFlush()
     {
-        // When a HardMax item ends with a short-stem period (≤ 2-char word, e.g. "6.")
-        // and is followed by more content, that artifact period must be stripped so
-        // the joined translation input does not carry a spurious mid-sentence period.
+        // 9-word sentence ending right at a HardMax seam must not trigger flush.
+        // Guards against ASR artifact periods where the model "closes" a mid-sentence
+        // cut before a capital word in the next segment.
+        // 9 words: We(1) will(2) take(3) a(4) look(5) at(6) the(7) new(8) roadmap(9).
         var emitted = new List<SubtitleItem>();
         var acc = new TextSentenceAccumulator(350);
         acc.SentenceUnitReady += unit => emitted.Add(unit);
 
-        // Matches the real log case: ASR closes "...World 6" with an artifact period
-        acc.Add(MakeItem("We will be taking a look at the Train Sim World 6.", "HardMax"));
-        // Continuation arrives via Silence, triggering flush
-        acc.Add(MakeItem("Roadmap and more add-ons are coming soon.", "Silence"));
+        acc.Add(MakeItem("We will take a look at the new roadmap.", "HardMax"));
+        acc.Add(MakeItem("Players can expect to see new features.", "HardMax"));
 
-        Assert.AreEqual(1, emitted.Count);
-        // Artifact "6. Roadmap" pattern must be gone — stripped to "6 Roadmap"
-        StringAssert.DoesNotMatch(
-            emitted[0].SourceText,
-            new System.Text.RegularExpressions.Regex(@"\b6\.\s+Roadmap"));
-        StringAssert.Contains(emitted[0].SourceText, "6 Roadmap");
+        Assert.AreEqual(0, emitted.Count,
+            "Seam boundary with fewer than MinSentenceWordsAtHardMaxSeam words must be blocked");
     }
 
     [TestMethod]
-    public void CombinedText_PreservesPeriodOnSilenceItem()
+    public void SeamBoundary_LongSentenceAtSeam_Flushes()
     {
-        // The trailing period on a Silence-terminated item is a real sentence end
-        // and must not be stripped; only HardMax items followed by more content lose theirs.
+        // A 10-word sentence (== MinSentenceWordsAtHardMaxSeam) at the seam must flush.
+        // Train(1) Sim(2) World(3) Six(4) will(5) be(6) coming(7) on(8) September(9) 2025(10).
         var emitted = new List<SubtitleItem>();
         var acc = new TextSentenceAccumulator(350);
         acc.SentenceUnitReady += unit => emitted.Add(unit);
 
-        acc.Add(MakeItem("We will take a look at the roadmap.", "Silence"));
+        acc.Add(MakeItem("Train Sim World Six will be coming on September 2025.", "HardMax"));
+        acc.Add(MakeItem("Five, coming with top-notch routes.", "HardMax"));
 
-        Assert.AreEqual(1, emitted.Count);
-        StringAssert.Contains(emitted[0].SourceText, "roadmap.");
+        Assert.AreEqual(1, emitted.Count, "10-word sentence at seam must flush (≥ threshold)");
+        StringAssert.Contains(emitted[0].SourceText, "2025");
     }
 
     [TestMethod]
-    public void CombinedText_OnlyStripsHardMax_NotIntermediateHardMaxAtEnd()
+    public void SeamBoundary_InternalBoundary_NotAffectedBySeamCheck()
     {
-        // A HardMax item that is the last in the buffer (no subsequent item yet)
-        // must keep its period, because we don't know whether more content is coming.
+        // When the seam boundary is blocked by the word-count guard, a real boundary
+        // found inside the second segment must still cause a flush.
         var emitted = new List<SubtitleItem>();
         var acc = new TextSentenceAccumulator(350);
         acc.SentenceUnitReady += unit => emitted.Add(unit);
 
-        // Single HardMax item, stays in buffer — manually flush to emit it
-        acc.Add(MakeItem("The segment ends here.", "HardMax"));
-        acc.Flush();
+        // Short sentence at seam (9 words → blocked)
+        acc.Add(MakeItem("We will take a look at the new roadmap.", "HardMax"));
+        // Second item has a real internal boundary "worry. So"
+        acc.Add(MakeItem(
+            "Players expect more. Don't you worry. So I think we should get this party started now.",
+            "HardMax"));
 
-        Assert.AreEqual(1, emitted.Count);
-        // Period preserved because it was the only / last item
-        StringAssert.Contains(emitted[0].SourceText, "here.");
+        Assert.AreEqual(1, emitted.Count,
+            "Internal boundary inside second item must flush even when seam boundary is blocked");
+        StringAssert.Contains(emitted[0].SourceText, "worry");
+    }
+
+    [TestMethod]
+    public void SeamBoundary_BoundaryInsideFirstItem_NotASeam_Flushes()
+    {
+        // A boundary found within the first item's own text is not at any seam and
+        // must flush normally without the seam word-count gate applying.
+        var emitted = new List<SubtitleItem>();
+        var acc = new TextSentenceAccumulator(350);
+        acc.SentenceUnitReady += unit => emitted.Add(unit);
+
+        // First item has an internal boundary; second item is lowercase continuation
+        acc.Add(MakeItem(
+            "We will announce the full schedule in October. Then we will discuss the details.",
+            "HardMax"));
+        acc.Add(MakeItem("right after the main presentation ends.", "HardMax"));
+
+        // "October. Then" is inside item1 — not at any HardMax seam → no word-count gate
+        Assert.AreEqual(1, emitted.Count, "Boundary inside an item's own text must flush");
+        StringAssert.Contains(emitted[0].SourceText, "October");
     }
 
     // ── PreviousSourceTail ────────────────────────────────────────────────────

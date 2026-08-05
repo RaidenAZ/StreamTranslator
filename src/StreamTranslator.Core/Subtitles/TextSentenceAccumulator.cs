@@ -6,7 +6,11 @@ namespace StreamTranslator.Core.Subtitles;
 ///
 /// Flush rules (priority order):
 ///   1. CutReason != HardMax  →  immediate flush (natural VAD boundary or revision).
-///   2. Sentence boundary found in accumulated text  →  flush up to the boundary.
+///   2. Sentence boundary found in accumulated text  →  flush up to the boundary,
+///      subject to seam validation (see IsValidBoundaryAtSeam). A boundary that falls
+///      exactly at the join point between two HardMax segments is a candidate for an
+///      ASR artifact period; it is only accepted when the sentence before the seam
+///      contains ≥ MinSentenceWordsAtHardMaxSeam words.
 ///   3. Combined text length exceeds ForceFlushThreshold AND more than one item is
 ///      buffered  →  force flush. A single HardMax item never force-flushes on its own;
 ///      it always waits for the next segment so the two can be evaluated together.
@@ -16,6 +20,20 @@ namespace StreamTranslator.Core.Subtitles;
 public sealed class TextSentenceAccumulator
 {
     private const int PreviousSourceTailLength = 120;
+
+    /// <summary>
+    /// Minimum word count required for a sentence boundary that falls exactly at the
+    /// seam between two HardMax buffer items. ASR models commonly append a closing period
+    /// when audio is cut mid-sentence; a short sentence at a seam is likely an artifact.
+    /// Boundaries with fewer words than this threshold are demoted to "no boundary".
+    /// </summary>
+    private const int MinSentenceWordsAtHardMaxSeam = 10;
+
+    /// <summary>
+    /// Character tolerance when checking whether a boundary position coincides with a
+    /// HardMax seam. Accounts for minor whitespace variation in the combined text.
+    /// </summary>
+    private const int SeamBoundaryTolerance = 1;
 
     private readonly List<SubtitleItem> _buffer = [];
     private string _previousSentenceSourceTail = "";
@@ -67,6 +85,17 @@ public sealed class TextSentenceAccumulator
 
         // Check for a sentence boundary in the accumulated text.
         var boundary = SentenceBoundaryScanner.FindLastBoundary(combined);
+
+        // Validate seam boundaries: a boundary that lands exactly at the join point
+        // between two HardMax items may be caused by an ASR artifact period. Require
+        // a higher word count to accept it.
+        if (boundary > 0)
+        {
+            var seamPositions = ComputeHardMaxSeamPositions();
+            if (!IsValidBoundaryAtSeam(boundary, combined, seamPositions))
+                boundary = -1;
+        }
+
         if (boundary > 0)
         {
             var sentenceText = combined[..boundary].TrimEnd();
@@ -102,31 +131,42 @@ public sealed class TextSentenceAccumulator
 
     private string BuildCombinedText()
     {
-        // For HardMax items joined with subsequent content, strip a trailing period
-        // if and only if the word-stem immediately before it is ≤ 2 characters
-        // (e.g. "6.", "V."). These are ASR artifacts from mid-sentence cuts —
-        // the sentence-boundary scanner already ignores them as abbreviation-like
-        // tokens, so stripping them improves the cosmetic quality of the joined
-        // translation input without affecting boundary detection.
-        // Longer-stem periods (e.g. "months.", "2025.", "here.") are real sentence
-        // ends and must be kept so the scanner can locate them correctly.
-        return string.Join(" ", _buffer.Select((item, idx) =>
+        return string.Join(" ", _buffer.Select(item => item.SourceText.Trim()));
+    }
+
+    /// <summary>
+    /// Returns the character offsets in the combined text where each HardMax item ends
+    /// and the next item begins (i.e. the seam positions). Only seams preceded by a
+    /// HardMax item are included, as those are the candidates for artifact periods.
+    /// </summary>
+    private int[] ComputeHardMaxSeamPositions()
+    {
+        var positions = new List<int>();
+        var offset = 0;
+        for (var i = 0; i < _buffer.Count - 1; i++)
         {
-            var t = item.SourceText.Trim();
-            var isHardMaxFollowedByMore =
-                string.Equals(item.CutReason, "HardMax", StringComparison.Ordinal)
-                && idx < _buffer.Count - 1;
-            if (isHardMaxFollowedByMore && t.Length >= 2 && t[^1] == '.')
-            {
-                var i = t.Length - 2;
-                while (i >= 0 && !char.IsWhiteSpace(t[i]))
-                    i--;
-                var stemLength = t.Length - 2 - i;
-                if (stemLength <= 2)
-                    t = t[..^1].TrimEnd();
-            }
-            return t;
-        }));
+            offset += _buffer[i].SourceText.Trim().Length + 1; // +1 = separator space
+            if (string.Equals(_buffer[i].CutReason, "HardMax", StringComparison.Ordinal))
+                positions.Add(offset);
+        }
+        return [..positions];
+    }
+
+    /// <summary>
+    /// Returns true if <paramref name="boundary"/> is a valid flush point.
+    /// A boundary that falls within <see cref="SeamBoundaryTolerance"/> characters of
+    /// a HardMax seam is treated as suspicious and must meet the higher word-count
+    /// requirement <see cref="MinSentenceWordsAtHardMaxSeam"/> to be accepted.
+    /// </summary>
+    private static bool IsValidBoundaryAtSeam(int boundary, string combined, int[] seamPositions)
+    {
+        var isAtSeam = seamPositions.Any(seam => Math.Abs(seam - boundary) <= SeamBoundaryTolerance);
+        if (!isAtSeam)
+            return true;
+
+        var sentenceText = combined[..boundary].TrimEnd();
+        return SentenceBoundaryScanner.CountWords(sentenceText, 0, sentenceText.Length)
+               >= MinSentenceWordsAtHardMaxSeam;
     }
 
     private void FlushAll()
