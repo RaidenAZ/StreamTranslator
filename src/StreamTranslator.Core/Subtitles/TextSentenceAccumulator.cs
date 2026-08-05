@@ -7,7 +7,9 @@ namespace StreamTranslator.Core.Subtitles;
 /// Flush rules (priority order):
 ///   1. CutReason != HardMax  →  immediate flush (natural VAD boundary or revision).
 ///   2. Sentence boundary found in accumulated text  →  flush up to the boundary.
-///   3. Combined text length exceeds ForceFlushThreshold  →  force flush.
+///   3. Combined text length exceeds ForceFlushThreshold AND more than one item is
+///      buffered  →  force flush. A single HardMax item never force-flushes on its own;
+///      it always waits for the next segment so the two can be evaluated together.
 ///
 /// Thread-safety: all public methods must be called from the same thread (UI / dispatch).
 /// </summary>
@@ -75,7 +77,10 @@ public sealed class TextSentenceAccumulator
         }
 
         // Force flush when the buffer has grown too large.
-        if (combined.Length >= ForceFlushThreshold)
+        // A single HardMax item never triggers force-flush on its own — it must wait
+        // for at least one more segment so the pair can be evaluated together. This
+        // prevents a long single segment from bypassing accumulation entirely.
+        if (_buffer.Count > 1 && combined.Length >= ForceFlushThreshold)
         {
             FlushAll();
         }
@@ -97,7 +102,31 @@ public sealed class TextSentenceAccumulator
 
     private string BuildCombinedText()
     {
-        return string.Join(" ", _buffer.Select(item => item.SourceText.Trim()));
+        // For HardMax items joined with subsequent content, strip a trailing period
+        // if and only if the word-stem immediately before it is ≤ 2 characters
+        // (e.g. "6.", "V."). These are ASR artifacts from mid-sentence cuts —
+        // the sentence-boundary scanner already ignores them as abbreviation-like
+        // tokens, so stripping them improves the cosmetic quality of the joined
+        // translation input without affecting boundary detection.
+        // Longer-stem periods (e.g. "months.", "2025.", "here.") are real sentence
+        // ends and must be kept so the scanner can locate them correctly.
+        return string.Join(" ", _buffer.Select((item, idx) =>
+        {
+            var t = item.SourceText.Trim();
+            var isHardMaxFollowedByMore =
+                string.Equals(item.CutReason, "HardMax", StringComparison.Ordinal)
+                && idx < _buffer.Count - 1;
+            if (isHardMaxFollowedByMore && t.Length >= 2 && t[^1] == '.')
+            {
+                var i = t.Length - 2;
+                while (i >= 0 && !char.IsWhiteSpace(t[i]))
+                    i--;
+                var stemLength = t.Length - 2 - i;
+                if (stemLength <= 2)
+                    t = t[..^1].TrimEnd();
+            }
+            return t;
+        }));
     }
 
     private void FlushAll()

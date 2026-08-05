@@ -578,6 +578,21 @@
                                                                      Style="{StaticResource SegmentedOptionStyle}" />
                                                     </Grid>
                                                 </Border>
+                                                <TextBlock Style="{StaticResource CaptionText}"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,8,0,0">
+                                                    <Run FontWeight="SemiBold">低延迟：</Run>
+                                                    <Run>断句等待 200–400 ms，响应最快。适合匀速、无停顿的语音场景；说话有自然停顿时容易将一句话切成多段，导致翻译单元碎片化。</Run>
+                                                    <LineBreak />
+                                                    <Run FontWeight="SemiBold">均衡（推荐）：</Run>
+                                                    <Run>断句等待 280–600 ms，自动根据实际停顿节奏调整。在大多数直播和演讲场景下平衡时效与语义完整性。</Run>
+                                                    <LineBreak />
+                                                    <Run FontWeight="SemiBold">句子完整：</Run>
+                                                    <Run>断句等待 400–800 ms，等待更长以确保句子尽量完整后再切断。适合语速较慢的演讲；响应延迟明显高于均衡模式。</Run>
+                                                    <LineBreak />
+                                                    <Run FontWeight="SemiBold">固定值：</Run>
+                                                    <Run>使用下方"固定断句等待"中指定的固定毫秒数，不随语速自适应。适合语速稳定、环境可控的场景。</Run>
+                                                </TextBlock>
                                             </StackPanel>
                                             <StackPanel Grid.Row="2" Grid.Column="0" Margin="0,0,0,16">
                                                 <TextBlock Text="固定断句等待 (ms)" Style="{StaticResource FieldLabelText}" />
@@ -874,10 +889,17 @@
                                                       Width="180"
                                                       HorizontalAlignment="Left"
                                                       ValueChanged="OnNumberSettingChanged" />
-                                        <TextBlock Text="积累更多内容再翻译可提升连贯性，但会增加翻译延迟。"
-                                                   Style="{StaticResource CaptionText}"
+                                        <TextBlock Style="{StaticResource CaptionText}"
                                                    TextWrapping="Wrap"
-                                                   Margin="0,4,0,0" />
+                                                   Margin="0,4,0,0">
+                                            <Run>积累更多内容再翻译可提升连贯性，但会增加翻译延迟。</Run>
+                                            <LineBreak />
+                                            <Run>建议与"最长片段"配套设置：积累上限（字符）≥ 最长片段（ms）× 0.028。</Run>
+                                            <LineBreak />
+                                            <Run>示例：最长片段 9000 ms → 积累上限建议 ≥ 250；12000 ms → 建议 ≥ 350。</Run>
+                                            <LineBreak />
+                                            <Run>若积累上限低于单个最长片段的预期文本量，每段将被单独翻译，积累效果失效。</Run>
+                                        </TextBlock>
                                     </StackPanel>
                                 </Border>
 

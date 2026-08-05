@@ -104,12 +104,104 @@ public sealed class TextSentenceAccumulatorTests
 
         acc.SentenceUnitReady += unit => emitted.Add(unit);
 
-        // Add HardMax items until threshold exceeded
+        // Two HardMax items whose combined text exceeds threshold → force-flush.
         acc.Add(MakeItem("no boundary here x", "HardMax"));
         acc.Add(MakeItem("and still no boundary to be found anywhere", "HardMax"));
 
         Assert.AreEqual(1, emitted.Count, "Should force-flush when combined text exceeds threshold");
         Assert.AreEqual("sentence_unit", emitted[0].Type);
+    }
+
+    [TestMethod]
+    public void SingleHardMax_ExceedingThreshold_ShouldNotForceFlush()
+    {
+        // A single HardMax segment must never force-flush on its own, regardless of length.
+        // It must wait for the next segment so the two can be evaluated together,
+        // preventing a long HardMax segment from bypassing accumulation entirely.
+        var emitted = new List<SubtitleItem>();
+        var acc = new TextSentenceAccumulator(50); // very low threshold
+
+        acc.SentenceUnitReady += unit => emitted.Add(unit);
+
+        acc.Add(MakeItem(
+            "This is a very long hardmax segment with many words and absolutely no sentence boundary anywhere in the text.",
+            "HardMax"));
+
+        Assert.AreEqual(0, emitted.Count,
+            "Single HardMax segment must not force-flush regardless of how long it is");
+    }
+
+    [TestMethod]
+    public void TwoHardMax_SecondPushesOverThreshold_ForceFlushes()
+    {
+        // Confirm force-flush still fires once a second segment tips the buffer over.
+        var emitted = new List<SubtitleItem>();
+        var acc = new TextSentenceAccumulator(50);
+
+        acc.SentenceUnitReady += unit => emitted.Add(unit);
+
+        acc.Add(MakeItem("First long segment no boundary", "HardMax"));
+        acc.Add(MakeItem("second segment pushes combined over fifty chars total", "HardMax"));
+
+        Assert.AreEqual(1, emitted.Count, "Force-flush should fire when two items exceed threshold");
+    }
+
+    // ── Trailing-period stripping (P2) ───────────────────────────────────────
+
+    [TestMethod]
+    public void CombinedText_StripsTrailingPeriodFromHardMaxItemFollowedByMore()
+    {
+        // When a HardMax item ends with a short-stem period (≤ 2-char word, e.g. "6.")
+        // and is followed by more content, that artifact period must be stripped so
+        // the joined translation input does not carry a spurious mid-sentence period.
+        var emitted = new List<SubtitleItem>();
+        var acc = new TextSentenceAccumulator(350);
+        acc.SentenceUnitReady += unit => emitted.Add(unit);
+
+        // Matches the real log case: ASR closes "...World 6" with an artifact period
+        acc.Add(MakeItem("We will be taking a look at the Train Sim World 6.", "HardMax"));
+        // Continuation arrives via Silence, triggering flush
+        acc.Add(MakeItem("Roadmap and more add-ons are coming soon.", "Silence"));
+
+        Assert.AreEqual(1, emitted.Count);
+        // Artifact "6. Roadmap" pattern must be gone — stripped to "6 Roadmap"
+        StringAssert.DoesNotMatch(
+            emitted[0].SourceText,
+            new System.Text.RegularExpressions.Regex(@"\b6\.\s+Roadmap"));
+        StringAssert.Contains(emitted[0].SourceText, "6 Roadmap");
+    }
+
+    [TestMethod]
+    public void CombinedText_PreservesPeriodOnSilenceItem()
+    {
+        // The trailing period on a Silence-terminated item is a real sentence end
+        // and must not be stripped; only HardMax items followed by more content lose theirs.
+        var emitted = new List<SubtitleItem>();
+        var acc = new TextSentenceAccumulator(350);
+        acc.SentenceUnitReady += unit => emitted.Add(unit);
+
+        acc.Add(MakeItem("We will take a look at the roadmap.", "Silence"));
+
+        Assert.AreEqual(1, emitted.Count);
+        StringAssert.Contains(emitted[0].SourceText, "roadmap.");
+    }
+
+    [TestMethod]
+    public void CombinedText_OnlyStripsHardMax_NotIntermediateHardMaxAtEnd()
+    {
+        // A HardMax item that is the last in the buffer (no subsequent item yet)
+        // must keep its period, because we don't know whether more content is coming.
+        var emitted = new List<SubtitleItem>();
+        var acc = new TextSentenceAccumulator(350);
+        acc.SentenceUnitReady += unit => emitted.Add(unit);
+
+        // Single HardMax item, stays in buffer — manually flush to emit it
+        acc.Add(MakeItem("The segment ends here.", "HardMax"));
+        acc.Flush();
+
+        Assert.AreEqual(1, emitted.Count);
+        // Period preserved because it was the only / last item
+        StringAssert.Contains(emitted[0].SourceText, "here.");
     }
 
     // ── PreviousSourceTail ────────────────────────────────────────────────────
