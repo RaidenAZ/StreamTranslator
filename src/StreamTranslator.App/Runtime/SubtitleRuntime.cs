@@ -15,7 +15,6 @@ namespace StreamTranslator.App.Runtime;
 
 public sealed class SubtitleRuntime : IAsyncDisposable
 {
-    private const string DefaultMimoBaseUrl = "https://api.xiaomimimo.com/v1";
     private readonly string _baseDirectory;
     private readonly string _dataDirectory;
     private readonly AppSettings _settings;
@@ -505,7 +504,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         {
             RuntimeError?.Invoke(
                 this,
-                fatalError ?? new RuntimeFatalException("MiMo API 鉴权失败，请检查 API Key 和访问权限。"));
+                fatalError ?? new RuntimeFatalException("ASR API 鉴权失败，请检查 API Key 和访问权限。"));
         }
     }
 
@@ -649,7 +648,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             minSegmentMs = _settings.Vad.MinSegmentMs,
             softMaxSegmentMs = _settings.Vad.SoftMaxSegmentMs,
             hardMaxSegmentMs = _settings.Vad.HardMaxSegmentMs,
-            asrModel = _settings.Asr.Model,
+            asrModel = _settings.Asr.ActiveModel,
             asrLanguage = "auto"
         });
         return controller;
@@ -871,11 +870,12 @@ public sealed class SubtitleRuntime : IAsyncDisposable
 
         var environment = new Dictionary<string, string>
         {
-            ["MIMO_API_KEY"] = _settings.Asr.ApiKey,
-            ["MIMO_BASE_URL"] = string.IsNullOrWhiteSpace(_settings.Asr.BaseUrl) ? DefaultMimoBaseUrl : _settings.Asr.BaseUrl,
-            ["MIMO_ASR_MODEL"] = _settings.Asr.Model,
-            ["MIMO_TIMEOUT_SECONDS"] = timeoutSeconds.ToString(),
-            ["MIMO_MAX_CONCURRENCY"] = Math.Max(1, _settings.Asr.MaxConcurrency).ToString()
+            ["ASR_API_KEY"]          = _settings.Asr.ActiveApiKey,
+            ["ASR_BASE_URL"]         = _settings.Asr.ActiveBaseUrl,
+            ["ASR_MODEL"]            = _settings.Asr.ActiveModel,
+            ["ASR_PROVIDER"]         = _settings.Asr.ActiveProviderType,
+            ["ASR_TIMEOUT_SECONDS"]  = timeoutSeconds.ToString(),
+            ["ASR_MAX_CONCURRENCY"]  = Math.Max(1, _settings.Asr.MaxConcurrency).ToString(),
         };
 
         return new PythonWorkerClient(
@@ -1202,8 +1202,9 @@ public sealed class SubtitleRuntime : IAsyncDisposable
                 vad = _settings.Vad,
                 asr = new
                 {
-                    _settings.Asr.BaseUrl,
-                    _settings.Asr.Model,
+                    Provider = _settings.Asr.ActiveProvider,
+                    BaseUrl  = _settings.Asr.ActiveBaseUrl,
+                    Model    = _settings.Asr.ActiveModel,
                     _settings.Asr.Language,
                     _settings.Asr.TimeoutMs,
                     _settings.Asr.MaxConcurrency

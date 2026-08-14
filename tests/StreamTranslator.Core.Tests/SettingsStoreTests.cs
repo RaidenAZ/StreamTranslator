@@ -14,11 +14,11 @@ public sealed class SettingsStoreTests
 
         var settings = await store.LoadAsync();
 
-        Assert.AreEqual(5, settings.SchemaVersion);
+        Assert.AreEqual(6, settings.SchemaVersion);
         Assert.AreEqual(VadEndpointMode.Balanced, settings.Vad.EndpointMode);
         Assert.AreEqual(400, settings.Vad.EndSilenceMs);
-        Assert.AreEqual("https://api.xiaomimimo.com/v1", settings.Asr.BaseUrl);
-        Assert.AreEqual("mimo-v2.5-asr", settings.Asr.Model);
+        Assert.AreEqual(AsrProviderDefaults.MimoBaseUrl, settings.Asr.ActiveBaseUrl);
+        Assert.AreEqual(AsrProviderDefaults.MimoModel, settings.Asr.ActiveModel);
         Assert.AreEqual("auto", settings.Asr.Language);
         Assert.AreEqual(10000, settings.Vad.HardMaxSegmentMs);
         Assert.IsFalse(settings.Translation.Enabled);
@@ -35,17 +35,17 @@ public sealed class SettingsStoreTests
     {
         var directory = Directory.CreateTempSubdirectory("streamtranslator-settings-");
         var settingsPath = Path.Combine(directory.FullName, "settings.json");
-        await File.WriteAllTextAsync(settingsPath, """{"schemaVersion": 5, "vad": {"EndSil""");
+        await File.WriteAllTextAsync(settingsPath, """{"schemaVersion": 6, "vad": {"EndSil""");
         var store = new SettingsStore(settingsPath);
 
         var settings = await store.LoadAsync();
 
-        Assert.AreEqual(5, settings.SchemaVersion);
+        Assert.AreEqual(6, settings.SchemaVersion);
         Assert.AreEqual("auto", settings.Asr.Language);
         var backups = Directory.GetFiles(directory.FullName, "settings.json.corrupt-*");
         Assert.AreEqual(1, backups.Length);
         StringAssert.Contains(await File.ReadAllTextAsync(backups[0]), "EndSil");
-        StringAssert.Contains(await File.ReadAllTextAsync(settingsPath), "\"schemaVersion\": 5");
+        StringAssert.Contains(await File.ReadAllTextAsync(settingsPath), "\"schemaVersion\": 6");
     }
 
     [TestMethod]
@@ -81,13 +81,15 @@ public sealed class SettingsStoreTests
 
         var settings = await store.LoadAsync();
 
-        Assert.AreEqual(5, settings.SchemaVersion);
+        Assert.AreEqual(6, settings.SchemaVersion);
         Assert.AreEqual(VadEndpointMode.Balanced, settings.Vad.EndpointMode);
         Assert.AreEqual(400, settings.Vad.EndSilenceMs);
-        Assert.AreEqual("legacy-key", settings.Asr.ApiKey);
+        // Legacy apiKey migrated into the Mimo slot (no bigmodel.cn URL detected)
+        Assert.AreEqual("legacy-key", settings.Asr.Mimo.ApiKey);
+        Assert.AreEqual("legacy-key", settings.Asr.ActiveApiKey);
 
         var rewritten = await File.ReadAllTextAsync(settingsPath);
-        StringAssert.Contains(rewritten, "\"schemaVersion\": 5");
+        StringAssert.Contains(rewritten, "\"schemaVersion\": 6");
         StringAssert.Contains(rewritten, "\"endpointMode\": \"Balanced\"");
         StringAssert.Contains(rewritten, "\"language\": \"auto\"");
     }
@@ -110,11 +112,11 @@ public sealed class SettingsStoreTests
 
         var settings = await new SettingsStore(settingsPath).LoadAsync();
 
-        Assert.AreEqual(5, settings.SchemaVersion);
+        Assert.AreEqual(6, settings.SchemaVersion);
         Assert.AreEqual("device-42", settings.Audio.DeviceId);
         Assert.AreEqual(VadEndpointMode.SentenceComplete, settings.Vad.EndpointMode);
         Assert.AreEqual(650, settings.Vad.EndSilenceMs);
-        Assert.AreEqual("preserved", settings.Asr.ApiKey);
+        Assert.AreEqual("preserved", settings.Asr.Mimo.ApiKey);
         Assert.AreEqual("auto", settings.Asr.Language);
         Assert.AreEqual(18d, settings.SubtitleWindow.FontSize);
         Assert.AreEqual(3, settings.SubtitleWindow.MaxSubtitleItems);
@@ -136,7 +138,7 @@ public sealed class SettingsStoreTests
 
         var settings = await new SettingsStore(settingsPath).LoadAsync();
 
-        Assert.AreEqual(5, settings.SchemaVersion);
+        Assert.AreEqual(6, settings.SchemaVersion);
         Assert.AreEqual("auto", settings.Asr.Language);
         StringAssert.Contains(await File.ReadAllTextAsync(settingsPath), "\"language\": \"auto\"");
     }

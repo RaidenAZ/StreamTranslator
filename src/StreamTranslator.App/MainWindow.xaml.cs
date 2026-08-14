@@ -547,7 +547,7 @@ public partial class MainWindow : FluentWindow
             VadStatus = VadStatusText.Text,
             AsrWorkerStatus = WorkerStatusText.Text,
             AsrApiStatus = ApiStatusText.Text,
-            AsrModel = ModelBox.Text,
+            AsrModel = _settings.Asr.ActiveModel,
             AsrLanguage = GetSelectedLanguage(),
             AsrMaxConcurrency = (int)NumberValue(MaxConcurrencyBox, 2),
             TranslationEnabled = _sessionTranslationEnabled,
@@ -1152,23 +1152,65 @@ public partial class MainWindow : FluentWindow
         ScheduleSettingsSave();
     }
 
+    private void OnAsrProviderChanged(object sender, SelectionChangedEventArgs e)
+    {
+        var provider = GetSelectedAsrProvider();
+        var isCustom = provider == "Custom";
+
+        AsrCustomBaseUrlPanel.Visibility = isCustom ? Visibility.Visible : Visibility.Collapsed;
+        AsrCustomModelPanel.Visibility   = isCustom ? Visibility.Visible : Visibility.Collapsed;
+
+        AsrProviderInfoText.Text = provider switch
+        {
+            "Mimo"  => $"接口  {AsrProviderDefaults.MimoBaseUrl}\n模型  {AsrProviderDefaults.MimoModel}",
+            "Zhipu" => $"接口  {AsrProviderDefaults.ZhipuBaseUrl}\n模型  {AsrProviderDefaults.ZhipuModel}",
+            _       => ""
+        };
+        AsrProviderInfoText.Visibility = isCustom ? Visibility.Collapsed : Visibility.Visible;
+
+        LoadAsrSlotToUi(provider);
+        UpdateAsrValidationHint();
+        UpdateApiKeyGuidance();
+        ScheduleSettingsSave();
+    }
+
+    private void LoadAsrSlotToUi(string provider)
+    {
+        AsrApiKeyBox.Password = provider switch
+        {
+            "Zhipu"  => _settings.Asr.Zhipu.ApiKey,
+            "Custom" => _settings.Asr.Custom.ApiKey,
+            _        => _settings.Asr.Mimo.ApiKey
+        };
+
+        if (provider == "Custom")
+        {
+            AsrCustomBaseUrlBox.Text = _settings.Asr.Custom.BaseUrl;
+            AsrCustomModelBox.Text   = _settings.Asr.Custom.Model;
+        }
+    }
+
+    private string GetSelectedAsrProvider()
+    {
+        return (AsrProviderBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "Mimo";
+    }
+
     private void UpdateAsrValidationHint()
     {
         var messages = new List<string>();
-        if (string.IsNullOrWhiteSpace(ApiKeyBox.Password))
-        {
+        var provider = GetSelectedAsrProvider();
+
+        if (string.IsNullOrWhiteSpace(AsrApiKeyBox.Password))
             messages.Add("API Key 不能为空。");
-        }
 
-        if (!Uri.TryCreate(BaseUrlBox.Text, UriKind.Absolute, out var baseUri) ||
-            baseUri.Scheme is not ("http" or "https"))
+        if (provider == "Custom")
         {
-            messages.Add("Base URL 必须是有效的 HTTP(S) 地址。");
-        }
+            if (!Uri.TryCreate(AsrCustomBaseUrlBox.Text, UriKind.Absolute, out var uri) ||
+                uri.Scheme is not ("http" or "https"))
+                messages.Add("自定义 Base URL 必须是有效的 HTTP(S) 地址。");
 
-        if (string.IsNullOrWhiteSpace(ModelBox.Text))
-        {
-            messages.Add("Model 不能为空。");
+            if (string.IsNullOrWhiteSpace(AsrCustomModelBox.Text))
+                messages.Add("自定义 Model 不能为空。");
         }
 
         AsrValidationText.Text = string.Join(" ", messages);
@@ -1177,7 +1219,7 @@ public partial class MainWindow : FluentWindow
 
     private void UpdateApiKeyGuidance()
     {
-        ApiKeyGuidanceBar.Visibility = string.IsNullOrWhiteSpace(ApiKeyBox.Password)
+        ApiKeyGuidanceBar.Visibility = string.IsNullOrWhiteSpace(AsrApiKeyBox.Password)
             ? Visibility.Visible
             : Visibility.Collapsed;
     }
@@ -1215,9 +1257,13 @@ public partial class MainWindow : FluentWindow
         MinSegmentBox.Value = settings.Vad.MinSegmentMs;
         HardMaxSegmentBox.Value = settings.Vad.HardMaxSegmentMs;
         DiagnosticsSwitch.IsChecked = settings.Diagnostics.Enabled;
-        ApiKeyBox.Password = settings.Asr.ApiKey;
-        BaseUrlBox.Text = settings.Asr.BaseUrl;
-        ModelBox.Text = settings.Asr.Model;
+        AsrProviderBox.SelectedItem = AsrProviderBox.Items
+            .OfType<ComboBoxItem>()
+            .FirstOrDefault(item => string.Equals(
+                item.Tag?.ToString(), settings.Asr.ActiveProvider,
+                StringComparison.Ordinal))
+            ?? AsrProviderBox.Items.OfType<ComboBoxItem>().First();
+        // OnAsrProviderChanged fires and loads the API key for the selected slot.
         TimeoutBox.Value = settings.Asr.TimeoutMs;
         MaxConcurrencyBox.Value = settings.Asr.MaxConcurrency;
         FloatingFontSizeBox.Value = settings.SubtitleWindow.FontSize;
@@ -1261,11 +1307,23 @@ public partial class MainWindow : FluentWindow
             },
             Asr = _settings.Asr with
             {
-                ApiKey = ApiKeyBox.Password,
-                BaseUrl = BaseUrlBox.Text,
-                Model = ModelBox.Text,
-                Language = "auto",
-                TimeoutMs = (int)NumberValue(TimeoutBox, 30000),
+                ActiveProvider = GetSelectedAsrProvider(),
+                Mimo   = GetSelectedAsrProvider() == "Mimo"
+                             ? _settings.Asr.Mimo with { ApiKey = AsrApiKeyBox.Password }
+                             : _settings.Asr.Mimo,
+                Zhipu  = GetSelectedAsrProvider() == "Zhipu"
+                             ? _settings.Asr.Zhipu with { ApiKey = AsrApiKeyBox.Password }
+                             : _settings.Asr.Zhipu,
+                Custom = GetSelectedAsrProvider() == "Custom"
+                             ? _settings.Asr.Custom with
+                               {
+                                   ApiKey  = AsrApiKeyBox.Password,
+                                   BaseUrl = AsrCustomBaseUrlBox.Text,
+                                   Model   = AsrCustomModelBox.Text
+                               }
+                             : _settings.Asr.Custom,
+                Language       = "auto",
+                TimeoutMs      = (int)NumberValue(TimeoutBox, 30000),
                 MaxConcurrency = (int)NumberValue(MaxConcurrencyBox, 2)
             },
             Translation = _settings.Translation with

@@ -8,9 +8,10 @@ public sealed class AppSettingsValidatorTests
     [TestMethod]
     public void ValidateForStart_RejectsMissingApiKeyAndUnsupportedLanguage()
     {
+        // ActiveProvider = "Mimo" by default; Mimo.ApiKey = "" → ActiveApiKey = ""
         var settings = new AppSettings
         {
-            Asr = new AsrSettings { ApiKey = "", Language = "ja" }
+            Asr = new AsrSettings { Language = "ja" }
         };
 
         var errors = AppSettingsValidator.ValidateForStart(settings);
@@ -24,7 +25,7 @@ public sealed class AppSettingsValidatorTests
     {
         var settings = new AppSettings
         {
-            Asr = new AsrSettings { ApiKey = "test-key", Language = "auto" }
+            Asr = new AsrSettings { Mimo = new AsrSlotConfig { ApiKey = "test-key" }, Language = "auto" }
         };
 
         Assert.AreEqual(0, AppSettingsValidator.ValidateForStart(settings).Count);
@@ -35,7 +36,7 @@ public sealed class AppSettingsValidatorTests
     {
         var settings = new AppSettings
         {
-            Asr = new AsrSettings { ApiKey = "test-key", Language = "auto" },
+            Asr = new AsrSettings { Mimo = new AsrSlotConfig { ApiKey = "test-key" }, Language = "auto" },
             Vad = new VadSettings { EndpointMode = (VadEndpointMode)99 }
         };
 
@@ -49,7 +50,7 @@ public sealed class AppSettingsValidatorTests
     {
         var settings = new AppSettings
         {
-            Asr = new AsrSettings { ApiKey = "test-key", Language = "en" }
+            Asr = new AsrSettings { Mimo = new AsrSlotConfig { ApiKey = "test-key" }, Language = "en" }
         };
 
         var errors = AppSettingsValidator.ValidateForStart(settings);
@@ -64,7 +65,7 @@ public sealed class AppSettingsValidatorTests
     {
         var settings = new AppSettings
         {
-            Asr = new AsrSettings { ApiKey = "test-key", Language = "auto" },
+            Asr = new AsrSettings { Mimo = new AsrSlotConfig { ApiKey = "test-key" }, Language = "auto" },
             Vad = new VadSettings { HardMaxSegmentMs = hardMaxSegmentMs }
         };
 
@@ -78,7 +79,7 @@ public sealed class AppSettingsValidatorTests
     {
         var settings = new AppSettings
         {
-            Asr = new AsrSettings { ApiKey = "test-key", Language = "auto" },
+            Asr = new AsrSettings { Mimo = new AsrSlotConfig { ApiKey = "test-key" }, Language = "auto" },
             Vad = new VadSettings
             {
                 MinSegmentMs = 7000,

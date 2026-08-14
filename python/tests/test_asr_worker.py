@@ -62,7 +62,7 @@ def test_transcribe_sends_mimo_data_url_and_language():
 def test_health_check_rejects_missing_api_key():
     worker = AsrWorker(config(api_key=""))
 
-    with pytest.raises(ValueError, match="MIMO_API_KEY"):
+    with pytest.raises(ValueError, match="ASR_API_KEY"):
         worker.health_check()
 
 
@@ -79,6 +79,46 @@ def test_protocol_accepts_utf8_bom_before_first_json_message():
 
     response = json.loads(output.getvalue())
     assert response == {"id": "shutdown-1", "type": "shutdown", "ok": True}
+
+
+def test_transcribe_whisper_uses_file_upload():
+    transcriptions = FakeTranscriptions()
+    worker = AsrWorker(config_whisper(api_key="key"), client=FakeWhisperClient(transcriptions))
+
+    result = worker.transcribe(
+        {
+            "id": "seg-1",
+            "type": "transcribe",
+            "sequence": 1,
+            "audioBase64": "UklGRg==",
+            "audioFormat": "wav",
+            "language": "zh",
+        }
+    )
+
+    assert transcriptions.kwargs["model"] == "glm-asr-2512"
+    assert transcriptions.kwargs.get("language") == "zh"
+    # file must be a file-like object with a name attribute
+    assert hasattr(transcriptions.kwargs["file"], "read")
+    assert transcriptions.kwargs["file"].name == "audio.wav"
+    assert result["text"] == "whisper 识别结果"
+
+
+def test_transcribe_whisper_converts_auto_language_to_none():
+    transcriptions = FakeTranscriptions()
+    worker = AsrWorker(config_whisper(api_key="key"), client=FakeWhisperClient(transcriptions))
+
+    worker.transcribe(
+        {
+            "id": "seg-1",
+            "audioBase64": "UklGRg==",
+            "audioFormat": "wav",
+            "language": "auto",
+        }
+    )
+
+    # "auto" must become None for the standard Whisper API
+    assert transcriptions.kwargs.get("language") is None
 
 
 def test_transcribe_rejects_unsupported_language_before_api_call():
@@ -180,6 +220,18 @@ def config(api_key: str) -> WorkerConfig:
         api_key=api_key,
         base_url="https://api.xiaomimimo.com/v1",
         model="mimo-v2.5-asr",
+        provider="Mimo",
+        timeout_seconds=30,
+        max_concurrency=2,
+    )
+
+
+def config_whisper(api_key: str) -> WorkerConfig:
+    return WorkerConfig(
+        api_key=api_key,
+        base_url="https://open.bigmodel.cn/api/paas/v4",
+        model="glm-asr-2512",
+        provider="Whisper",
         timeout_seconds=30,
         max_concurrency=2,
     )
@@ -197,6 +249,20 @@ class FakeCompletions:
 class FakeClient:
     def __init__(self, completions):
         self.chat = SimpleNamespace(completions=completions)
+
+
+class FakeTranscriptions:
+    def __init__(self):
+        self.kwargs = None
+
+    def create(self, **kwargs):
+        self.kwargs = kwargs
+        return SimpleNamespace(text="whisper 识别结果")
+
+
+class FakeWhisperClient:
+    def __init__(self, transcriptions):
+        self.audio = SimpleNamespace(transcriptions=transcriptions)
 
 
 class FakeHttpError(Exception):
