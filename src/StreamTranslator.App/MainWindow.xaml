@@ -650,6 +650,22 @@
                                         <TextBlock Text="识别服务"
                                                    AutomationProperties.AutomationId="SettingsRecognitionGroup"
                                                    Style="{StaticResource SectionTitleText}" />
+                                        <TextBlock Text="服务商" Style="{StaticResource FieldLabelText}" />
+                                        <ComboBox x:Name="AsrProviderBox"
+                                                  AutomationProperties.AutomationId="AsrProviderBox"
+                                                  Width="360"
+                                                  HorizontalAlignment="Left"
+                                                  Margin="0,0,0,12"
+                                                  SelectionChanged="OnAsrProviderChanged">
+                                            <ComboBoxItem Content="MiMo ASR" Tag="Mimo" />
+                                            <ComboBoxItem Content="GLM-ASR-2512（智谱 AI）" Tag="Zhipu" />
+                                            <ComboBoxItem Content="自定义..." Tag="Custom" />
+                                        </ComboBox>
+                                        <TextBlock x:Name="AsrProviderInfoText"
+                                                   AutomationProperties.AutomationId="AsrProviderInfoText"
+                                                   Style="{StaticResource CaptionText}"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,0,0,12" />
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
@@ -664,27 +680,39 @@
 
                                             <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,0,16">
                                                 <TextBlock Text="API Key" Style="{StaticResource FieldLabelText}" />
-                                                <ui:PasswordBox x:Name="ApiKeyBox"
-                                                                PlaceholderText="输入识别服务 API Key"
+                                                <ui:PasswordBox x:Name="AsrApiKeyBox"
+                                                                AutomationProperties.AutomationId="AsrApiKeyBox"
+                                                                PlaceholderText="输入服务商 API Key"
                                                                 LostFocus="OnAsrCredentialLostFocus" />
                                             </StackPanel>
                                             <StackPanel Grid.Row="0" Grid.Column="2" Margin="0,0,0,16">
-                                                <TextBlock Text="Base URL" Style="{StaticResource FieldLabelText}" />
-                                                <ui:TextBox x:Name="BaseUrlBox"
-                                                            PlaceholderText="https://..."
-                                                            LostFocus="OnAsrCredentialLostFocus" />
-                                            </StackPanel>
-                                            <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,0,0,16">
-                                                <TextBlock Text="Model" Style="{StaticResource FieldLabelText}" />
-                                                <ui:TextBox x:Name="ModelBox" Text="mimo-v2.5-asr" LostFocus="OnAsrCredentialLostFocus" />
-                                            </StackPanel>
-                                            <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,0,0,16">
                                                 <TextBlock Text="识别语言" Style="{StaticResource FieldLabelText}" />
                                                 <ui:TextBox x:Name="LanguageBox"
                                                             AutomationProperties.AutomationId="AsrLanguageBox"
                                                             Text="自动检测 (auto)"
                                                             IsReadOnly="True"
                                                             IsTabStop="False" />
+                                            </StackPanel>
+                                            <!-- ASR_CARD_CHUNK2 -->
+                                            <StackPanel x:Name="AsrCustomBaseUrlPanel"
+                                                        Grid.Row="1" Grid.Column="0"
+                                                        Margin="0,0,0,16"
+                                                        Visibility="Collapsed">
+                                                <TextBlock Text="Base URL" Style="{StaticResource FieldLabelText}" />
+                                                <ui:TextBox x:Name="AsrCustomBaseUrlBox"
+                                                            AutomationProperties.AutomationId="AsrCustomBaseUrlBox"
+                                                            PlaceholderText="https://..."
+                                                            LostFocus="OnAsrCredentialLostFocus" />
+                                            </StackPanel>
+                                            <StackPanel x:Name="AsrCustomModelPanel"
+                                                        Grid.Row="1" Grid.Column="2"
+                                                        Margin="0,0,0,16"
+                                                        Visibility="Collapsed">
+                                                <TextBlock Text="模型名" Style="{StaticResource FieldLabelText}" />
+                                                <ui:TextBox x:Name="AsrCustomModelBox"
+                                                            AutomationProperties.AutomationId="AsrCustomModelBox"
+                                                            PlaceholderText="model-name"
+                                                            LostFocus="OnAsrCredentialLostFocus" />
                                             </StackPanel>
                                             <StackPanel Grid.Row="2" Grid.Column="0">
                                                 <TextBlock Text="请求超时 (ms)" Style="{StaticResource FieldLabelText}" />
@@ -711,6 +739,7 @@
                                                               HorizontalAlignment="Left" />
                                             </StackPanel>
                                         </Grid>
+                                        <!-- ASR_CARD_CHUNK3 -->
                                         <TextBlock x:Name="AsrValidationText"
                                                    AutomationProperties.AutomationId="AsrValidationText"
                                                    Visibility="Collapsed"

@@ -18,20 +18,28 @@ public static class AppSettingsValidator
         ArgumentNullException.ThrowIfNull(settings);
         var errors = new List<string>();
 
-        if (string.IsNullOrWhiteSpace(settings.Asr.ApiKey))
+        if (string.IsNullOrWhiteSpace(settings.Asr.ActiveApiKey))
         {
-            errors.Add("请先配置 MiMo API Key。");
+            errors.Add("请先配置识别服务 API Key。");
         }
 
-        if (!Uri.TryCreate(settings.Asr.BaseUrl, UriKind.Absolute, out var baseUri) ||
-            baseUri.Scheme is not ("http" or "https"))
+        if (settings.Asr.ActiveProvider == "Custom")
         {
-            errors.Add("Base URL 必须是有效的 HTTP 或 HTTPS 地址。");
+            if (!Uri.TryCreate(settings.Asr.Custom.BaseUrl, UriKind.Absolute, out var customUri) ||
+                customUri.Scheme is not ("http" or "https"))
+            {
+                errors.Add("自定义 Base URL 必须是有效的 HTTP 或 HTTPS 地址。");
+            }
+
+            if (string.IsNullOrWhiteSpace(settings.Asr.Custom.Model))
+            {
+                errors.Add("自定义 ASR Model 不能为空。");
+            }
         }
 
-        if (string.IsNullOrWhiteSpace(settings.Asr.Model))
+        if (!new[] { "Mimo", "Zhipu", "Custom" }.Contains(settings.Asr.ActiveProvider))
         {
-            errors.Add("ASR Model 不能为空。");
+            errors.Add("识别服务商无效，请重新选择。");
         }
 
         if (!SupportedLanguages.Contains(settings.Asr.Language))
