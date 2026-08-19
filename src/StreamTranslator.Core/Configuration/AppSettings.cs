@@ -5,7 +5,7 @@ namespace StreamTranslator.Core.Configuration;
 
 public sealed record AppSettings
 {
-    public int SchemaVersion { get; init; } = 5;
+    public int SchemaVersion { get; init; } = 6;
     public AudioSettings Audio { get; init; } = new();
     public VadSettings Vad { get; init; } = new();
     public AsrSettings Asr { get; init; } = new();
@@ -59,12 +59,72 @@ public enum VadEndpointMode
 
 public sealed record AsrSettings
 {
-    public string ApiKey { get; init; } = "";
-    public string BaseUrl { get; init; } = "https://api.xiaomimimo.com/v1";
-    public string Model { get; init; } = "mimo-v2.5-asr";
+    /// <summary>Active provider slot: "Mimo" | "Zhipu" | "Custom".</summary>
+    public string ActiveProvider { get; init; } = "Mimo";
+    public AsrSlotConfig Mimo { get; init; } = new();
+    public AsrSlotConfig Zhipu { get; init; } = new();
+    public AsrCustomSlotConfig Custom { get; init; } = new();
     public string Language { get; init; } = "auto";
     public int TimeoutMs { get; init; } = 30000;
     public int MaxConcurrency { get; init; } = 2;
+
+    [JsonIgnore]
+    public string ActiveApiKey => ActiveProvider switch
+    {
+        "Zhipu"  => Zhipu.ApiKey,
+        "Custom" => Custom.ApiKey,
+        _        => Mimo.ApiKey
+    };
+
+    [JsonIgnore]
+    public string ActiveBaseUrl => ActiveProvider switch
+    {
+        "Zhipu"  => AsrProviderDefaults.ZhipuBaseUrl,
+        "Custom" => Custom.BaseUrl,
+        _        => AsrProviderDefaults.MimoBaseUrl
+    };
+
+    [JsonIgnore]
+    public string ActiveModel => ActiveProvider switch
+    {
+        "Zhipu"  => AsrProviderDefaults.ZhipuModel,
+        "Custom" => Custom.Model,
+        _        => AsrProviderDefaults.MimoModel
+    };
+
+    /// <summary>
+    /// Wire protocol type sent to the Python worker via the ASR_PROVIDER env var.
+    /// "Mimo" uses chat-completion with inline base64 audio;
+    /// "Whisper" uses the standard audio/transcriptions file-upload endpoint.
+    /// </summary>
+    [JsonIgnore]
+    public string ActiveProviderType => ActiveProvider == "Mimo" ? "Mimo" : "Whisper";
+}
+
+/// <summary>API-key slot for a named ASR provider (MiMo or Zhipu).
+/// The base URL and model are fixed constants for these providers.</summary>
+public sealed record AsrSlotConfig
+{
+    public string ApiKey { get; init; } = "";
+}
+
+/// <summary>Fully-configurable slot for a user-defined ASR provider.</summary>
+public sealed record AsrCustomSlotConfig
+{
+    public string ApiKey { get; init; } = "";
+    public string BaseUrl { get; init; } = "";
+    public string Model { get; init; } = "";
+    /// <summary>"Whisper" (standard audio/transcriptions) or "Mimo" (chat-completions).</summary>
+    public string ProviderType { get; init; } = "Whisper";
+}
+
+/// <summary>Canonical base-URL and model-name constants for the two built-in ASR providers.</summary>
+public static class AsrProviderDefaults
+{
+    public const string MimoBaseUrl = "https://api.xiaomimimo.com/v1";
+    public const string MimoModel   = "mimo-v2.5-asr";
+    public const string ZhipuBaseUrl = "https://open.bigmodel.cn/api/paas/v4";
+    public const string ZhipuModel   = "glm-asr-2512";
 }
 
 public sealed record SubtitleWindowSettings

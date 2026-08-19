@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import base64
+import io
 import json
 import os
 import sys
 import threading
 import time
 import traceback
+from abc import ABC, abstractmethod
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, TextIO
@@ -13,8 +16,11 @@ from typing import Any, TextIO
 from openai import OpenAI
 
 
-DEFAULT_BASE_URL = "https://api.xiaomimimo.com/v1"
-DEFAULT_MODEL = "mimo-v2.5-asr"
+DEFAULT_MIMO_BASE_URL = "https://api.xiaomimimo.com/v1"
+DEFAULT_MIMO_MODEL = "mimo-v2.5-asr"
+
+PROVIDER_MIMO = "Mimo"
+PROVIDER_WHISPER = "Whisper"
 
 
 class WorkerError(Exception):
@@ -31,50 +37,54 @@ class WorkerConfig:
     api_key: str
     base_url: str
     model: str
+    provider: str  # "Mimo" | "Whisper"
     timeout_seconds: float
     max_concurrency: int
 
     @staticmethod
     def from_env() -> "WorkerConfig":
+        # Support both ASR_* (new) and MIMO_* (legacy) env var names.
+        def env(new: str, legacy: str, default: str = "") -> str:
+            return os.environ.get(new) or os.environ.get(legacy, default)
+
         return WorkerConfig(
-            api_key=os.environ.get("MIMO_API_KEY", ""),
-            base_url=os.environ.get("MIMO_BASE_URL", DEFAULT_BASE_URL),
-            model=os.environ.get("MIMO_ASR_MODEL", DEFAULT_MODEL),
-            timeout_seconds=float(os.environ.get("MIMO_TIMEOUT_SECONDS", "30")),
-            max_concurrency=max(1, int(os.environ.get("MIMO_MAX_CONCURRENCY", "2"))),
+            api_key=env("ASR_API_KEY", "MIMO_API_KEY"),
+            base_url=env("ASR_BASE_URL", "MIMO_BASE_URL", DEFAULT_MIMO_BASE_URL),
+            model=env("ASR_MODEL", "MIMO_ASR_MODEL", DEFAULT_MIMO_MODEL),
+            provider=os.environ.get("ASR_PROVIDER", PROVIDER_MIMO),
+            timeout_seconds=float(env("ASR_TIMEOUT_SECONDS", "MIMO_TIMEOUT_SECONDS", "30")),
+            max_concurrency=max(1, int(env("ASR_MAX_CONCURRENCY", "MIMO_MAX_CONCURRENCY", "2"))),
         )
 
 
-class AsrWorker:
-    def __init__(self, config: WorkerConfig, client: Any | None = None) -> None:
+class AsrBackend(ABC):
+    """Abstract base for ASR provider-specific transcription logic."""
+
+    @abstractmethod
+    def transcribe(self, audio_base64: str, audio_format: str, language: str, client: Any) -> str:
+        """Transcribe audio and return the recognized text."""
+
+
+class MimoBackend(AsrBackend):
+    """MiMo ASR: uses chat.completions with an inline base64 audio message."""
+
+    _SUPPORTED_FORMATS = frozenset(("wav", "mp3"))
+    _SUPPORTED_LANGUAGES = frozenset(("auto", "zh", "en"))
+    _MAX_AUDIO_BYTES = 10 * 1024 * 1024
+
+    def __init__(self, config: WorkerConfig) -> None:
         self._config = config
-        self._client: Any | None = client
-        self._client_lock = threading.Lock()
 
-    def health_check(self) -> None:
-        if not self._config.api_key:
-            raise ValueError("MIMO_API_KEY is required")
-        if self._config.max_concurrency < 1:
-            raise ValueError("MIMO_MAX_CONCURRENCY must be positive")
-
-    def transcribe(self, request: dict[str, Any]) -> dict[str, Any]:
-        started = time.perf_counter()
-        audio_base64 = request.get("audioBase64") or request.get("audio_base64")
-        audio_format = request.get("audioFormat") or request.get("audio_format") or "wav"
-        language = request.get("language") or "auto"
-
-        if not audio_base64:
-            raise ValueError("audioBase64 is required")
-        self.health_check()
-        if audio_format not in ("wav", "mp3"):
-            raise ValueError("audioFormat must be wav or mp3")
-        if language not in ("auto", "zh", "en"):
-            raise ValueError("language must be auto, zh, or en")
-        if len(audio_base64.encode("ascii")) > 10 * 1024 * 1024:
-            raise ValueError("audioBase64 exceeds the MiMo 10MB limit")
+    def transcribe(self, audio_base64: str, audio_format: str, language: str, client: Any) -> str:
+        if audio_format not in self._SUPPORTED_FORMATS:
+            raise ValueError(f"audioFormat must be one of {sorted(self._SUPPORTED_FORMATS)}")
+        if language not in self._SUPPORTED_LANGUAGES:
+            raise ValueError(f"language must be one of {sorted(self._SUPPORTED_LANGUAGES)}")
+        if len(audio_base64.encode("ascii")) > self._MAX_AUDIO_BYTES:
+            raise ValueError("audioBase64 exceeds the MiMo 10 MB limit")
 
         mime_type = "audio/wav" if audio_format == "wav" else "audio/mpeg"
-        completion = self._get_client().chat.completions.create(
+        completion = client.chat.completions.create(
             model=self._config.model,
             messages=[
                 {
@@ -95,8 +105,55 @@ class AsrWorker:
                 }
             },
         )
+        return extract_text(completion)
 
-        text = extract_text(completion)
+
+class WhisperBackend(AsrBackend):
+    """Whisper-compatible ASR: uses audio.transcriptions with a multipart file upload."""
+
+    def __init__(self, config: WorkerConfig) -> None:
+        self._config = config
+
+    def transcribe(self, audio_base64: str, audio_format: str, language: str, client: Any) -> str:
+        audio_bytes = base64.b64decode(audio_base64)
+        audio_file = io.BytesIO(audio_bytes)
+        # The OpenAI library inspects the name attribute for MIME-type detection.
+        audio_file.name = f"audio.{audio_format}"
+        lang = language if language != "auto" else None
+        response = client.audio.transcriptions.create(
+            model=self._config.model,
+            file=audio_file,
+            language=lang,
+        )
+        return response.text if hasattr(response, "text") else str(response)
+
+
+class AsrWorker:
+    def __init__(self, config: WorkerConfig, client: Any | None = None) -> None:
+        self._config = config
+        self._client: Any | None = client
+        self._client_lock = threading.Lock()
+        self._backend: AsrBackend = (
+            MimoBackend(config) if config.provider == PROVIDER_MIMO else WhisperBackend(config)
+        )
+
+    def health_check(self) -> None:
+        if not self._config.api_key:
+            raise ValueError("ASR_API_KEY is required")
+        if self._config.max_concurrency < 1:
+            raise ValueError("ASR_MAX_CONCURRENCY must be positive")
+
+    def transcribe(self, request: dict[str, Any]) -> dict[str, Any]:
+        started = time.perf_counter()
+        audio_base64 = request.get("audioBase64") or request.get("audio_base64")
+        audio_format = request.get("audioFormat") or request.get("audio_format") or "wav"
+        language = request.get("language") or "auto"
+
+        if not audio_base64:
+            raise ValueError("audioBase64 is required")
+        self.health_check()
+
+        text = self._backend.transcribe(audio_base64, audio_format, language, self._get_client())
         latency_ms = int((time.perf_counter() - started) * 1000)
         return {
             "id": request["id"],
@@ -220,8 +277,7 @@ def run_protocol(
     max_concurrency: int,
 ) -> None:
     write_lock = threading.Lock()
-    # Second line of defense behind the host-side semaphore: reject instead of
-    # queueing without bound when the host misbehaves or the API stalls.
+    # Second line of defense behind the host-side semaphore.
     slots = threading.BoundedSemaphore(max(1, max_concurrency))
 
     def write_payload(payload: dict[str, Any]) -> None:
@@ -236,16 +292,16 @@ def run_protocol(
     def finish_transcription(future: Future[dict[str, Any]], request: dict[str, Any]) -> None:
         try:
             write_payload(future.result())
-        except Exception as exc:  # noqa: BLE001 - each request must receive a terminal response.
+        except Exception as exc:  # noqa: BLE001
             log_exception(exc)
             write_payload(error_response(request, exc, _sensitive_values(worker)))
         finally:
             slots.release()
 
-    executor = ThreadPoolExecutor(max_workers=max(1, max_concurrency), thread_name_prefix="mimo-asr")
+    executor = ThreadPoolExecutor(max_workers=max(1, max_concurrency), thread_name_prefix="asr-worker")
     try:
         for line in input_stream:
-            line = line.strip().lstrip("\ufeff")
+            line = line.strip().lstrip("﻿")
             if not line:
                 continue
 
@@ -277,7 +333,7 @@ def run_protocol(
                     future.add_done_callback(lambda completed, item=request: finish_transcription(completed, item))
                 else:
                     raise ValueError(f"unknown request type: {message_type}")
-            except Exception as exc:  # noqa: BLE001 - malformed requests must not terminate the worker.
+            except Exception as exc:  # noqa: BLE001
                 log_exception(exc)
                 write_payload(error_response(request, exc, _sensitive_values(worker)))
     finally:
@@ -285,8 +341,6 @@ def run_protocol(
 
 
 def _force_utf8_stdio() -> None:
-    # The host process speaks UTF-8 JSON lines; never fall back to the locale
-    # code page (e.g. GBK on Chinese Windows).
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:

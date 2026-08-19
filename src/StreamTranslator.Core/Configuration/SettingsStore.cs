@@ -111,6 +111,37 @@ public sealed class SettingsStore
             shouldSave = true;
         }
 
+        if (existingVersion < 6 || settings.SchemaVersion < 6)
+        {
+            // Migrate the flat ASR config (apiKey / baseUrl / model) to the new
+            // multi-provider slot model.  Those properties no longer exist on
+            // AsrSettings, so we read them directly from the raw JSON document.
+            var legacyApiKey = "";
+            var legacyBaseUrl = "";
+            if (document.RootElement.TryGetProperty("asr", out var asrElement))
+            {
+                if (asrElement.TryGetProperty("apiKey", out var kp)) legacyApiKey = kp.GetString() ?? "";
+                if (asrElement.TryGetProperty("baseUrl", out var bp)) legacyBaseUrl = bp.GetString() ?? "";
+            }
+
+            var wasZhipu = legacyBaseUrl.Contains("bigmodel.cn", StringComparison.OrdinalIgnoreCase);
+            settings = settings with
+            {
+                SchemaVersion = 6,
+                Asr = new AsrSettings
+                {
+                    ActiveProvider  = wasZhipu ? "Zhipu" : "Mimo",
+                    Mimo    = new AsrSlotConfig   { ApiKey = wasZhipu ? "" : legacyApiKey },
+                    Zhipu   = new AsrSlotConfig   { ApiKey = wasZhipu ? legacyApiKey : "" },
+                    Custom  = new AsrCustomSlotConfig(),
+                    Language       = "auto",
+                    TimeoutMs      = settings.Asr.TimeoutMs,
+                    MaxConcurrency = settings.Asr.MaxConcurrency
+                }
+            };
+            shouldSave = true;
+        }
+
         if (shouldSave)
         {
             await SaveAsync(settings, cancellationToken).ConfigureAwait(false);
