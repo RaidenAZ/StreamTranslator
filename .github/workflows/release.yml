@@ -1,0 +1,90 @@
+name: Release
+
+# 触发时机：PR 合并到 master（即任何 push 到 master 的提交）
+on:
+  push:
+    branches:
+      - master
+
+# 创建 Release 和 tag 需要写权限
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      # ── 代码检出 ─────────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 完整历史，供 generate_release_notes 使用
+
+      # ── 运行时环境 ────────────────────────────────────────────────────────────
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # ── 缓存：避免重复下载模型和 Python 依赖 ─────────────────────────────────
+      - name: Cache Silero VAD model
+        uses: actions/cache@v4
+        with:
+          path: models/silero_vad.onnx
+          # Key 绑定 ensure-model.ps1 中硬编码的 SHA256；
+          # 脚本升级模型版本时 key 自动失效并重新下载。
+          key: silero-vad-1A153A22F4509E292A94E67D6F9B85E8DEB25B4988682B7E174C65279D8788E3
+
+      - name: Cache Python build venv
+        uses: actions/cache@v4
+        with:
+          path: artifacts/build-venv
+          key: ${{ runner.os }}-venv-${{ hashFiles('python/requirements-build.txt') }}
+
+      # ── 读取版本号 ────────────────────────────────────────────────────────────
+      - name: Read version from csproj
+        id: ver
+        shell: pwsh
+        run: |
+          $xml   = [xml](Get-Content src/StreamTranslator.App/StreamTranslator.App.csproj)
+          $ver   = $xml.Project.PropertyGroup.Version
+          $short = "${{ github.sha }}".Substring(0, 7)
+          "tag=v${ver}-build.${short}"  >> $env:GITHUB_OUTPUT
+          "name=StreamTranslator v${ver}" >> $env:GITHUB_OUTPUT
+
+      # ── 测试 ─────────────────────────────────────────────────────────────────
+      - name: Run .NET tests
+        shell: pwsh
+        run: dotnet test --nologo --logger "console;verbosity=quiet"
+
+      # ── 构建发行包 ────────────────────────────────────────────────────────────
+      # publish.ps1 会依次执行：
+      #   1. ensure-model.ps1 — 校验 / 下载 silero_vad.onnx（有缓存时直接通过）
+      #   2. dotnet publish   — 编译 .NET 10 WPF 应用
+      #   3. PyInstaller      — 打包 asr_worker 和 translation_worker
+      #   4. 复制 models / docs，生成 artifacts/StreamTranslator 便携包
+      - name: Build portable package
+        shell: pwsh
+        run: scripts/publish.ps1
+
+      # ── 打包为 ZIP ────────────────────────────────────────────────────────────
+      - name: Create release ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path artifacts/StreamTranslator/* `
+            -DestinationPath "artifacts/StreamTranslator-${{ steps.ver.outputs.tag }}-win-x64.zip"
+
+      # ── 发布 GitHub Release ───────────────────────────────────────────────────
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.name }}
+          files: artifacts/StreamTranslator-${{ steps.ver.outputs.tag }}-win-x64.zip
+          generate_release_notes: true   # 自动从 PR/commit 生成 release notes
