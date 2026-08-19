@@ -43,7 +43,8 @@ public sealed partial class TranslationWorkerClient
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(5));
             var request = TranslationWorkerRequest.Configure($"cfg-{Guid.NewGuid():N}", profile);
-            var response = await SendAsync(request.Id, request, timeout.Token).ConfigureAwait(false);
+            var response = await SendAsync(request.Id, request, timeout.Token,
+                timeoutOverride: TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             if (!response.Ok || response.Type != TranslationWorkerMessageTypes.Configured)
             {
                 throw new InvalidOperationException(response.ErrorMessage ?? "Translation worker configuration failed.");

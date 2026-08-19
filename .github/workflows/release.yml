@@ -59,10 +59,13 @@ jobs:
           "name=StreamTranslator v${ver}" >> $env:GITHUB_OUTPUT
 
       # ── 测试 ─────────────────────────────────────────────────────────────────
+      # Integration 类测试（TestCategory=Integration）依赖真实 Python+openai 运行时，
+      # 仅在本地完整环境中执行；CI 只跑单元测试和协议测试。
       - name: Run .NET tests
         shell: pwsh
         run: |
           dotnet test --nologo `
+            --filter "TestCategory!=Integration" `
             --logger "console;verbosity=normal" `
             --logger "trx;LogFileName=test-results.trx"
 

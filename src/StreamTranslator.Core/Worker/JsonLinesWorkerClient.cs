@@ -102,7 +102,8 @@ public abstract class JsonLinesWorkerClient<TResponse> : IAsyncDisposable
     protected async Task<TResponse> SendAsync<TRequest>(
         string requestId,
         TRequest request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeSpan? timeoutOverride = null)
     {
         var process = _process ?? throw new InvalidOperationException($"{WorkerName} is not running.");
         if (process.HasExited)
@@ -116,8 +117,11 @@ public abstract class JsonLinesWorkerClient<TResponse> : IAsyncDisposable
             throw new InvalidOperationException($"Duplicate {WorkerName} request id: {requestId}");
         }
 
+        // Use timeoutOverride for handshake calls (e.g. startup ping) so the
+        // per-request _requestTimeout cap does not fire before the process starts.
+        var effectiveTimeout = timeoutOverride ?? _requestTimeout;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(_requestTimeout);
+        timeout.CancelAfter(effectiveTimeout);
 
         try
         {

@@ -33,7 +33,8 @@ public sealed class PythonWorkerClient : JsonLinesWorkerClient<WorkerResponse>
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(5));
             var request = WorkerRequest.Ping($"ping-{Guid.NewGuid():N}");
-            var response = await SendAsync(request.Id, request, timeout.Token).ConfigureAwait(false);
+            var response = await SendAsync(request.Id, request, timeout.Token,
+                timeoutOverride: TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
             if (!response.Ok)
             {
@@ -71,7 +72,8 @@ public sealed class PythonWorkerClient : JsonLinesWorkerClient<WorkerResponse>
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 timeout.CancelAfter(TimeSpan.FromSeconds(3));
                 var request = WorkerRequest.Shutdown($"shutdown-{Guid.NewGuid():N}");
-                await SendAsync(request.Id, request, timeout.Token).ConfigureAwait(false);
+                await SendAsync(request.Id, request, timeout.Token,
+                    timeoutOverride: TimeSpan.FromSeconds(3)).ConfigureAwait(false);
             }
         }
         catch
