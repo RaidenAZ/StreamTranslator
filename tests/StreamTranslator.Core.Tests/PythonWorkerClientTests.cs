@@ -6,6 +6,7 @@ namespace StreamTranslator.Core.Tests;
 public sealed class PythonWorkerClientTests
 {
     [TestMethod]
+    [TestCategory("Integration")]
     public async Task Client_CancelsPendingRequestAndShutsDownGracefully()
     {
         if (!OperatingSystem.IsWindows())
@@ -38,6 +39,7 @@ public sealed class PythonWorkerClientTests
     }
 
     [TestMethod]
+    [TestCategory("Integration")]
     public async Task Client_HandlesProtocolStderrCrashAndShutdown()
     {
         if (!OperatingSystem.IsWindows())
@@ -75,6 +77,7 @@ public sealed class PythonWorkerClientTests
     }
 
     [TestMethod]
+    [TestCategory("Integration")]
     public async Task Client_TimesOutWhenWorkerNeverReplies()
     {
         if (!OperatingSystem.IsWindows())
@@ -112,6 +115,7 @@ public sealed class PythonWorkerClientTests
     }
 
     [TestMethod]
+    [TestCategory("Integration")]
     public async Task Client_SurvivesMalformedStdoutLines()
     {
         if (!OperatingSystem.IsWindows())

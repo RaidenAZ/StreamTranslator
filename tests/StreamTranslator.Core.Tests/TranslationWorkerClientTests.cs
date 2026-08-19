@@ -12,6 +12,7 @@ namespace StreamTranslator.Core.Tests;
 public sealed class TranslationWorkerClientTests
 {
     [TestMethod]
+    [TestCategory("Integration")]
     public async Task Client_ConfiguresTranslatesAndRedactsSecretsFromStderr()
     {
         if (!OperatingSystem.IsWindows())
@@ -52,6 +53,7 @@ public sealed class TranslationWorkerClientTests
     }
 
     [TestMethod]
+    [TestCategory("Integration")]
     public async Task Client_SurvivesMalformedStdoutLines()
     {
         if (!OperatingSystem.IsWindows())
