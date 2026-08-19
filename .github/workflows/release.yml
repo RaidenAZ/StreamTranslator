@@ -61,7 +61,17 @@ jobs:
       # ── 测试 ─────────────────────────────────────────────────────────────────
       - name: Run .NET tests
         shell: pwsh
-        run: dotnet test --nologo --logger "console;verbosity=quiet"
+        run: |
+          dotnet test --nologo `
+            --logger "console;verbosity=normal" `
+            --logger "trx;LogFileName=test-results.trx"
+
+      - name: Upload test results (always, even on failure)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: '**/*.trx'
 
       # ── 构建发行包 ────────────────────────────────────────────────────────────
       # publish.ps1 会依次执行：
