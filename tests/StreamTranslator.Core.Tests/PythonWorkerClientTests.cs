@@ -21,7 +21,7 @@ public sealed class PythonWorkerClientTests
         try
         {
             await using var client = new PythonWorkerClient(
-                "powershell",
+                "pwsh",
                 $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"",
                 new Dictionary<string, string>());
             await client.StartAsync();
@@ -54,7 +54,7 @@ public sealed class PythonWorkerClientTests
         try
         {
             await using var client = new PythonWorkerClient(
-                "powershell",
+                "pwsh",
                 $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"",
                 new Dictionary<string, string>(),
                 logPath);
@@ -90,7 +90,7 @@ public sealed class PythonWorkerClientTests
         try
         {
             await using var client = new PythonWorkerClient(
-                "powershell",
+                "pwsh",
                 $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"",
                 new Dictionary<string, string>(),
                 stderrLogPath: null,
@@ -127,7 +127,7 @@ public sealed class PythonWorkerClientTests
         try
         {
             await using var client = new PythonWorkerClient(
-                "powershell",
+                "pwsh",
                 $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"",
                 new Dictionary<string, string>());
             await client.StartAsync();

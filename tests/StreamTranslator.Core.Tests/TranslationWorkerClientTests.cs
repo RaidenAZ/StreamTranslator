@@ -29,7 +29,7 @@ public sealed class TranslationWorkerClientTests
         try
         {
             await using var client = new TranslationWorkerClient(
-                "powershell",
+                "pwsh",
                 $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"",
                 logPath);
 
@@ -67,7 +67,7 @@ public sealed class TranslationWorkerClientTests
         try
         {
             await using var client = new TranslationWorkerClient(
-                "powershell",
+                "pwsh",
                 $"-NoProfile -ExecutionPolicy Bypass -File \"{scriptPath}\"",
                 stderrLogPath: null);
 
