@@ -142,4 +142,27 @@ public sealed class SettingsStoreTests
         Assert.AreEqual("auto", settings.Asr.Language);
         StringAssert.Contains(await File.ReadAllTextAsync(settingsPath), "\"language\": \"auto\"");
     }
+
+    [TestMethod]
+    public async Task LoadAsync_PreservesNestedAsrApiKeyWhenSchemaVersionIsFive()
+    {
+        var directory = Directory.CreateTempSubdirectory("streamtranslator-settings-");
+        var settingsPath = Path.Combine(directory.FullName, "settings.json");
+        await File.WriteAllTextAsync(settingsPath, """
+            {
+              "schemaVersion": 5,
+              "asr": {
+                "activeProvider": "Mimo",
+                "mimo": { "apiKey": "saved-key" },
+                "language": "auto"
+              }
+            }
+            """);
+
+        var settings = await new SettingsStore(settingsPath).LoadAsync();
+
+        Assert.AreEqual(6, settings.SchemaVersion);
+        Assert.AreEqual("saved-key", settings.Asr.Mimo.ApiKey);
+        Assert.AreEqual("saved-key", settings.Asr.ActiveApiKey);
+    }
 }

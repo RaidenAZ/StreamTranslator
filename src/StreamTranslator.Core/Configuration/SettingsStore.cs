@@ -114,30 +114,27 @@ public sealed class SettingsStore
         if (existingVersion < 6 || settings.SchemaVersion < 6)
         {
             // Migrate the flat ASR config (apiKey / baseUrl / model) to the new
-            // multi-provider slot model.  Those properties no longer exist on
-            // AsrSettings, so we read them directly from the raw JSON document.
+            // multi-provider slot model.  A previous app build accidentally
+            // wrote the new nested format with schemaVersion 5, so preserve
+            // that format instead of treating it as the old flat shape.
+            var hasNestedAsrSlots = false;
             var legacyApiKey = "";
             var legacyBaseUrl = "";
             if (document.RootElement.TryGetProperty("asr", out var asrElement))
             {
+                hasNestedAsrSlots = asrElement.TryGetProperty("mimo", out _) ||
+                                    asrElement.TryGetProperty("zhipu", out _) ||
+                                    asrElement.TryGetProperty("custom", out _);
                 if (asrElement.TryGetProperty("apiKey", out var kp)) legacyApiKey = kp.GetString() ?? "";
                 if (asrElement.TryGetProperty("baseUrl", out var bp)) legacyBaseUrl = bp.GetString() ?? "";
             }
 
-            var wasZhipu = legacyBaseUrl.Contains("bigmodel.cn", StringComparison.OrdinalIgnoreCase);
             settings = settings with
             {
                 SchemaVersion = 6,
-                Asr = new AsrSettings
-                {
-                    ActiveProvider  = wasZhipu ? "Zhipu" : "Mimo",
-                    Mimo    = new AsrSlotConfig   { ApiKey = wasZhipu ? "" : legacyApiKey },
-                    Zhipu   = new AsrSlotConfig   { ApiKey = wasZhipu ? legacyApiKey : "" },
-                    Custom  = new AsrCustomSlotConfig(),
-                    Language       = "auto",
-                    TimeoutMs      = settings.Asr.TimeoutMs,
-                    MaxConcurrency = settings.Asr.MaxConcurrency
-                }
+                Asr = hasNestedAsrSlots
+                    ? settings.Asr with { Language = "auto" }
+                    : MigrateLegacyAsrSettings(settings.Asr, legacyApiKey, legacyBaseUrl)
             };
             shouldSave = true;
         }
@@ -148,6 +145,24 @@ public sealed class SettingsStore
         }
 
         return settings;
+    }
+
+    private static AsrSettings MigrateLegacyAsrSettings(
+        AsrSettings current,
+        string legacyApiKey,
+        string legacyBaseUrl)
+    {
+        var wasZhipu = legacyBaseUrl.Contains("bigmodel.cn", StringComparison.OrdinalIgnoreCase);
+        return new AsrSettings
+        {
+            ActiveProvider  = wasZhipu ? "Zhipu" : "Mimo",
+            Mimo            = new AsrSlotConfig { ApiKey = wasZhipu ? "" : legacyApiKey },
+            Zhipu           = new AsrSlotConfig { ApiKey = wasZhipu ? legacyApiKey : "" },
+            Custom          = new AsrCustomSlotConfig(),
+            Language        = "auto",
+            TimeoutMs       = current.TimeoutMs,
+            MaxConcurrency  = current.MaxConcurrency
+        };
     }
 
     private static int? ReadLegacyMaxLines(JsonElement root)
