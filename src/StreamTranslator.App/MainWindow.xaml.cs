@@ -1292,7 +1292,9 @@ public partial class MainWindow : FluentWindow
         {
             _settings = _settings with
             {
-            SchemaVersion = 5,
+            // Keep the persisted document at the current schema.  Writing v5
+            // here re-runs the v6 ASR migration on the next startup.
+            SchemaVersion = 6,
             Audio = _settings.Audio with
             {
                 DeviceId = FollowDefaultDeviceSwitch.IsChecked == true ? "default" : SelectedAudioDeviceId(),

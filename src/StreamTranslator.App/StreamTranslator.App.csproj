@@ -23,7 +23,7 @@
     <!-- 仅用于 System.Windows.Forms.Clipboard.SetDataObject 的可控重试重载 -->
     <UseWindowsForms>true</UseWindowsForms>
     <PlatformTarget>x64</PlatformTarget>
-    <Version>1.3.0</Version>
+    <Version>0.2.2</Version>
   </PropertyGroup>
 
 </Project>
