@@ -14,13 +14,14 @@ All requirement files pin exact versions so worker builds are reproducible:
 
 Required environment variables:
 
-- `MIMO_API_KEY`
-- `MIMO_BASE_URL`, optional, defaults to `https://api.xiaomimimo.com/v1`
-- `MIMO_ASR_MODEL`, optional, defaults to `mimo-v2.5-asr`
-- `MIMO_TIMEOUT_SECONDS`, optional, defaults to `30`
-- `MIMO_MAX_CONCURRENCY`, optional, defaults to `2`
+- `ASR_API_KEY` (legacy alias `MIMO_API_KEY`)
+- `ASR_BASE_URL`, optional (legacy alias `MIMO_BASE_URL`), defaults to `https://api.xiaomimimo.com/v1`
+- `ASR_MODEL`, optional (legacy alias `MIMO_ASR_MODEL`), defaults to `mimo-v2.5-asr`
+- `ASR_PROVIDER`, optional: `Mimo` (default), `Whisper`, or `DeepSeekTools`
+- `ASR_TIMEOUT_SECONDS`, optional (legacy alias `MIMO_TIMEOUT_SECONDS`), defaults to `30`
+- `ASR_MAX_CONCURRENCY`, optional (legacy alias `MIMO_MAX_CONCURRENCY`), defaults to `2`
 
-The worker validates `wav`/`mp3`, the MiMo 10MB Base64 limit, and protocol languages `auto`/`zh`/`en`. The production C# app locks recognition to `auto`; `zh` and `en` remain worker-level compatibility values and are not exposed in the UI. Errors are returned with `errorKind`, `statusCode`, and `retryable` fields so C# can apply the V1.0 retry policy.
+The `Mimo` provider validates `wav`/`mp3`, the MiMo 10MB Base64 limit, and protocol languages `auto`/`zh`/`en`. `Whisper` uses the OpenAI `audio.transcriptions` file upload. `DeepSeekTools` posts a multipart upload to DeepSeek's standalone ASR endpoint; for this provider `ASR_BASE_URL` is the full endpoint and defaults to `https://api.deepseek.com/v1/tools/asr`. It accepts 16-bit PCM WAV only, up to 8 MiB and 120 seconds. The request has no model or language parameter (the service detects the language itself), so `ASR_MODEL` is ignored. The production C# app locks recognition to `auto`; `zh` and `en` remain worker-level compatibility values and are not exposed in the UI. Errors are returned with `errorKind`, `statusCode`, and `retryable` fields so C# can apply the V1.0 retry policy.
 
 The worker is an implementation detail. Users should not start or stop it manually.
 

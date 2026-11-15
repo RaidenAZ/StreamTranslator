@@ -14,7 +14,7 @@ public sealed class SettingsStoreTests
 
         var settings = await store.LoadAsync();
 
-        Assert.AreEqual(6, settings.SchemaVersion);
+        Assert.AreEqual(7, settings.SchemaVersion);
         Assert.AreEqual(VadEndpointMode.Balanced, settings.Vad.EndpointMode);
         Assert.AreEqual(400, settings.Vad.EndSilenceMs);
         Assert.AreEqual(AsrProviderDefaults.MimoBaseUrl, settings.Asr.ActiveBaseUrl);
@@ -40,12 +40,12 @@ public sealed class SettingsStoreTests
 
         var settings = await store.LoadAsync();
 
-        Assert.AreEqual(6, settings.SchemaVersion);
+        Assert.AreEqual(7, settings.SchemaVersion);
         Assert.AreEqual("auto", settings.Asr.Language);
         var backups = Directory.GetFiles(directory.FullName, "settings.json.corrupt-*");
         Assert.AreEqual(1, backups.Length);
         StringAssert.Contains(await File.ReadAllTextAsync(backups[0]), "EndSil");
-        StringAssert.Contains(await File.ReadAllTextAsync(settingsPath), "\"schemaVersion\": 6");
+        StringAssert.Contains(await File.ReadAllTextAsync(settingsPath), "\"schemaVersion\": 7");
     }
 
     [TestMethod]
@@ -81,7 +81,7 @@ public sealed class SettingsStoreTests
 
         var settings = await store.LoadAsync();
 
-        Assert.AreEqual(6, settings.SchemaVersion);
+        Assert.AreEqual(7, settings.SchemaVersion);
         Assert.AreEqual(VadEndpointMode.Balanced, settings.Vad.EndpointMode);
         Assert.AreEqual(400, settings.Vad.EndSilenceMs);
         // Legacy apiKey migrated into the Mimo slot (no bigmodel.cn URL detected)
@@ -89,7 +89,7 @@ public sealed class SettingsStoreTests
         Assert.AreEqual("legacy-key", settings.Asr.ActiveApiKey);
 
         var rewritten = await File.ReadAllTextAsync(settingsPath);
-        StringAssert.Contains(rewritten, "\"schemaVersion\": 6");
+        StringAssert.Contains(rewritten, "\"schemaVersion\": 7");
         StringAssert.Contains(rewritten, "\"endpointMode\": \"Balanced\"");
         StringAssert.Contains(rewritten, "\"language\": \"auto\"");
     }
@@ -112,7 +112,7 @@ public sealed class SettingsStoreTests
 
         var settings = await new SettingsStore(settingsPath).LoadAsync();
 
-        Assert.AreEqual(6, settings.SchemaVersion);
+        Assert.AreEqual(7, settings.SchemaVersion);
         Assert.AreEqual("device-42", settings.Audio.DeviceId);
         Assert.AreEqual(VadEndpointMode.SentenceComplete, settings.Vad.EndpointMode);
         Assert.AreEqual(650, settings.Vad.EndSilenceMs);
@@ -138,7 +138,7 @@ public sealed class SettingsStoreTests
 
         var settings = await new SettingsStore(settingsPath).LoadAsync();
 
-        Assert.AreEqual(6, settings.SchemaVersion);
+        Assert.AreEqual(7, settings.SchemaVersion);
         Assert.AreEqual("auto", settings.Asr.Language);
         StringAssert.Contains(await File.ReadAllTextAsync(settingsPath), "\"language\": \"auto\"");
     }
@@ -161,7 +161,7 @@ public sealed class SettingsStoreTests
 
         var settings = await new SettingsStore(settingsPath).LoadAsync();
 
-        Assert.AreEqual(6, settings.SchemaVersion);
+        Assert.AreEqual(7, settings.SchemaVersion);
         Assert.AreEqual("saved-key", settings.Asr.Mimo.ApiKey);
         Assert.AreEqual("saved-key", settings.Asr.ActiveApiKey);
     }

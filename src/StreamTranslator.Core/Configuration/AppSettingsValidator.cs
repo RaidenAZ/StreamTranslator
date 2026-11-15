@@ -37,7 +37,7 @@ public static class AppSettingsValidator
             }
         }
 
-        if (!new[] { "Mimo", "Zhipu", "Custom" }.Contains(settings.Asr.ActiveProvider))
+        if (!new[] { "Mimo", "Zhipu", "DeepSeek", "Custom" }.Contains(settings.Asr.ActiveProvider))
         {
             errors.Add("识别服务商无效，请重新选择。");
         }

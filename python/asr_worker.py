@@ -13,6 +13,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, TextIO
 
+import httpx
 from openai import OpenAI
 
 
@@ -21,6 +22,14 @@ DEFAULT_MIMO_MODEL = "mimo-v2.5-asr"
 
 PROVIDER_MIMO = "Mimo"
 PROVIDER_WHISPER = "Whisper"
+PROVIDER_DEEPSEEK_TOOLS = "DeepSeekTools"
+
+# Full endpoint from the DeepSeek ASR docs; it takes no model parameter.
+DEFAULT_DEEPSEEK_ASR_URL = "https://api.deepseek.com/v1/tools/asr"
+
+# DeepSeek ASR caps: 8 MiB upload, 120 s duration, 16-bit PCM WAV or Ogg Opus.
+DEEPSEEK_MAX_AUDIO_BYTES = 8 * 1024 * 1024
+DEEPSEEK_MAX_DURATION_SECONDS = 120
 
 
 class WorkerError(Exception):
@@ -37,7 +46,7 @@ class WorkerConfig:
     api_key: str
     base_url: str
     model: str
-    provider: str  # "Mimo" | "Whisper"
+    provider: str  # "Mimo" | "Whisper" | "DeepSeekTools"
     timeout_seconds: float
     max_concurrency: int
 
@@ -47,11 +56,15 @@ class WorkerConfig:
         def env(new: str, legacy: str, default: str = "") -> str:
             return os.environ.get(new) or os.environ.get(legacy, default)
 
+        provider = os.environ.get("ASR_PROVIDER", PROVIDER_MIMO)
+        is_deepseek = provider == PROVIDER_DEEPSEEK_TOOLS
         return WorkerConfig(
             api_key=env("ASR_API_KEY", "MIMO_API_KEY"),
-            base_url=env("ASR_BASE_URL", "MIMO_BASE_URL", DEFAULT_MIMO_BASE_URL),
-            model=env("ASR_MODEL", "MIMO_ASR_MODEL", DEFAULT_MIMO_MODEL),
-            provider=os.environ.get("ASR_PROVIDER", PROVIDER_MIMO),
+            # For DeepSeekTools this is the full endpoint, posted to verbatim.
+            base_url=env("ASR_BASE_URL", "MIMO_BASE_URL",
+                         DEFAULT_DEEPSEEK_ASR_URL if is_deepseek else DEFAULT_MIMO_BASE_URL),
+            model=env("ASR_MODEL", "MIMO_ASR_MODEL", "" if is_deepseek else DEFAULT_MIMO_MODEL),
+            provider=provider,
             timeout_seconds=float(env("ASR_TIMEOUT_SECONDS", "MIMO_TIMEOUT_SECONDS", "30")),
             max_concurrency=max(1, int(env("ASR_MAX_CONCURRENCY", "MIMO_MAX_CONCURRENCY", "2"))),
         )
@@ -128,14 +141,100 @@ class WhisperBackend(AsrBackend):
         return response.text if hasattr(response, "text") else str(response)
 
 
+class DeepSeekToolsBackend(AsrBackend):
+    """DeepSeek ASR: POST base_url (the full /v1/tools/asr endpoint) with a multipart WAV upload.
+
+    The endpoint is not part of the OpenAI SDK surface, so requests go through
+    httpx directly. The request carries no model or language parameter; the
+    service detects the language itself. Limits: 8 MiB, 120 s, 16-bit PCM WAV
+    or Ogg Opus.
+    """
+
+    _SUPPORTED_FORMATS = frozenset(("wav",))
+
+    def __init__(self, config: WorkerConfig) -> None:
+        self._config = config
+
+    def transcribe(self, audio_base64: str, audio_format: str, language: str, client: Any) -> str:
+        if audio_format not in self._SUPPORTED_FORMATS:
+            raise ValueError("DeepSeek ASR 仅支持 WAV（16 位 PCM），请确认音频格式。")
+        audio_bytes = base64.b64decode(audio_base64)
+        if len(audio_bytes) > DEEPSEEK_MAX_AUDIO_BYTES:
+            raise ValueError("音频超过 DeepSeek ASR 的 8 MiB 上限。")
+        duration_seconds = wav_duration_seconds(audio_bytes)
+        if duration_seconds is not None and duration_seconds > DEEPSEEK_MAX_DURATION_SECONDS:
+            raise ValueError("音频超过 DeepSeek ASR 的 120 秒时长上限。")
+
+        try:
+            response = client.post(
+                self._config.base_url,
+                headers={"Authorization": f"Bearer {self._config.api_key}"},
+                files={"file": (f"audio.{audio_format}", audio_bytes, "audio/wav")},
+            )
+        except httpx.TimeoutException as exc:
+            raise WorkerError("DeepSeek ASR 请求超时", kind="timeout", retryable=True) from exc
+        except httpx.RequestError as exc:
+            raise WorkerError("DeepSeek ASR 网络错误", kind="network", retryable=True) from exc
+
+        if response.status_code != 200:
+            raise http_status_error(response.status_code, response.text)
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise WorkerError("DeepSeek ASR 返回了无法解析的响应", kind="invalid_response", retryable=False) from exc
+        text = payload.get("text") if isinstance(payload, dict) else None
+        if not isinstance(text, str):
+            raise WorkerError("DeepSeek ASR 响应缺少 text 字段", kind="invalid_response", retryable=False)
+        return text
+
+
+def wav_duration_seconds(audio_bytes: bytes) -> float | None:
+    """Best-effort duration from a WAV header; None when the header is unreadable."""
+    if len(audio_bytes) < 44 or audio_bytes[:4] != b"RIFF" or audio_bytes[8:12] != b"WAVE":
+        return None
+    try:
+        with io.BytesIO(audio_bytes) as stream:
+            import wave
+
+            with wave.open(stream, "rb") as wav_file:
+                frame_rate = wav_file.getframerate()
+                if frame_rate <= 0:
+                    return None
+                return wav_file.getnframes() / frame_rate
+    except (wave.Error, EOFError):
+        return None
+
+
+def http_status_error(status_code: int, body: str) -> WorkerError:
+    kind, retryable = classify_error(RuntimeError("http"), status_code)
+    detail = body.strip().replace("\n", " ")
+    if len(detail) > 300:
+        detail = detail[:300] + "..."
+    message = f"DeepSeek ASR 返回 HTTP {status_code}" + (f": {detail}" if detail else "")
+    return WorkerError(message, kind=kind, retryable=retryable)
+
+
+def create_backend(config: WorkerConfig) -> AsrBackend:
+    if config.provider == PROVIDER_MIMO:
+        return MimoBackend(config)
+    if config.provider == PROVIDER_DEEPSEEK_TOOLS:
+        return DeepSeekToolsBackend(config)
+    if config.provider == PROVIDER_WHISPER:
+        return WhisperBackend(config)
+    raise WorkerError(
+        f"未知的 ASR provider: {config.provider}",
+        kind="configuration",
+        retryable=False,
+    )
+
+
 class AsrWorker:
     def __init__(self, config: WorkerConfig, client: Any | None = None) -> None:
         self._config = config
         self._client: Any | None = client
         self._client_lock = threading.Lock()
-        self._backend: AsrBackend = (
-            MimoBackend(config) if config.provider == PROVIDER_MIMO else WhisperBackend(config)
-        )
+        self._backend: AsrBackend = create_backend(config)
 
     def health_check(self) -> None:
         if not self._config.api_key:
@@ -167,22 +266,29 @@ class AsrWorker:
     def sensitive_values(self) -> list[str]:
         return [value for value in [self._config.api_key] if len(value) >= 4]
 
-    def _get_client(self) -> OpenAI:
+    def _get_client(self) -> Any:
         if self._client is not None:
             return self._client
 
         with self._client_lock:
             if self._client is None:
-                self._client = OpenAI(
-                    api_key=self._config.api_key,
-                    base_url=self._config.base_url,
-                    timeout=self._config.timeout_seconds,
-                    # The host owns the single-retry policy; SDK retries would
-                    # stack on top of it and stall the realtime pipeline.
-                    max_retries=0,
-                )
+                self._client = self._create_client()
 
         return self._client
+
+    def _create_client(self) -> Any:
+        if self._config.provider == PROVIDER_DEEPSEEK_TOOLS:
+            # The host owns the single-retry policy, so no transport-level retries.
+            return httpx.Client(timeout=self._config.timeout_seconds)
+
+        return OpenAI(
+            api_key=self._config.api_key,
+            base_url=self._config.base_url,
+            timeout=self._config.timeout_seconds,
+            # The host owns the single-retry policy; SDK retries would
+            # stack on top of it and stall the realtime pipeline.
+            max_retries=0,
+        )
 
 
 def extract_text(completion: Any) -> str:
@@ -285,7 +391,9 @@ def run_protocol(
             write_json(payload, output_stream)
 
     def log_exception(exc: BaseException) -> None:
-        if isinstance(exc, WorkerError):
+        # Malformed input and protocol mistakes are answered on stdout; a
+        # traceback there would only bury the structured error response.
+        if isinstance(exc, (WorkerError, ValueError, json.JSONDecodeError)):
             return
         print(redact(traceback.format_exc(), _sensitive_values(worker)), file=sys.stderr, flush=True)
 

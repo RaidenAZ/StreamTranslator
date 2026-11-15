@@ -40,7 +40,7 @@ public static class DiagnosticsReportBuilder
             VadStatus: {snapshot.VadStatus}
             AsrWorkerStatus: {snapshot.AsrWorkerStatus}
             AsrApiStatus: {snapshot.AsrApiStatus}
-            AsrModel: {snapshot.AsrModel}
+            AsrModel: {(string.IsNullOrEmpty(snapshot.AsrModel) ? "none" : snapshot.AsrModel)}
             AsrLanguage: {snapshot.AsrLanguage}
             AsrMaxConcurrency: {snapshot.AsrMaxConcurrency}
             TranslationEnabled: {snapshot.TranslationEnabled}
