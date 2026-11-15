@@ -5,7 +5,7 @@ namespace StreamTranslator.Core.Configuration;
 
 public sealed record AppSettings
 {
-    public int SchemaVersion { get; init; } = 6;
+    public int SchemaVersion { get; init; } = 7;
     public AudioSettings Audio { get; init; } = new();
     public VadSettings Vad { get; init; } = new();
     public AsrSettings Asr { get; init; } = new();
@@ -59,10 +59,11 @@ public enum VadEndpointMode
 
 public sealed record AsrSettings
 {
-    /// <summary>Active provider slot: "Mimo" | "Zhipu" | "Custom".</summary>
+    /// <summary>Active provider slot: "Mimo" | "Zhipu" | "DeepSeek" | "Custom".</summary>
     public string ActiveProvider { get; init; } = "Mimo";
     public AsrSlotConfig Mimo { get; init; } = new();
     public AsrSlotConfig Zhipu { get; init; } = new();
+    public AsrSlotConfig DeepSeek { get; init; } = new();
     public AsrCustomSlotConfig Custom { get; init; } = new();
     public string Language { get; init; } = "auto";
     public int TimeoutMs { get; init; } = 30000;
@@ -71,37 +72,46 @@ public sealed record AsrSettings
     [JsonIgnore]
     public string ActiveApiKey => ActiveProvider switch
     {
-        "Zhipu"  => Zhipu.ApiKey,
-        "Custom" => Custom.ApiKey,
-        _        => Mimo.ApiKey
+        "Zhipu"     => Zhipu.ApiKey,
+        "DeepSeek"  => DeepSeek.ApiKey,
+        "Custom"    => Custom.ApiKey,
+        _           => Mimo.ApiKey
     };
 
     [JsonIgnore]
     public string ActiveBaseUrl => ActiveProvider switch
     {
-        "Zhipu"  => AsrProviderDefaults.ZhipuBaseUrl,
-        "Custom" => Custom.BaseUrl,
-        _        => AsrProviderDefaults.MimoBaseUrl
+        "Zhipu"     => AsrProviderDefaults.ZhipuBaseUrl,
+        "DeepSeek"  => AsrProviderDefaults.DeepSeekBaseUrl,
+        "Custom"    => Custom.BaseUrl,
+        _           => AsrProviderDefaults.MimoBaseUrl
     };
 
     [JsonIgnore]
     public string ActiveModel => ActiveProvider switch
     {
-        "Zhipu"  => AsrProviderDefaults.ZhipuModel,
-        "Custom" => Custom.Model,
-        _        => AsrProviderDefaults.MimoModel
+        "Zhipu"     => AsrProviderDefaults.ZhipuModel,
+        "DeepSeek"  => AsrProviderDefaults.DeepSeekModel,
+        "Custom"    => Custom.Model,
+        _           => AsrProviderDefaults.MimoModel
     };
 
     /// <summary>
     /// Wire protocol type sent to the Python worker via the ASR_PROVIDER env var.
     /// "Mimo" uses chat-completion with inline base64 audio;
-    /// "Whisper" uses the standard audio/transcriptions file-upload endpoint.
+    /// "Whisper" uses the standard audio/transcriptions file-upload endpoint;
+    /// "DeepSeekTools" uses DeepSeek's standalone POST /v1/tools/asr multipart endpoint.
     /// </summary>
     [JsonIgnore]
-    public string ActiveProviderType => ActiveProvider == "Mimo" ? "Mimo" : "Whisper";
+    public string ActiveProviderType => ActiveProvider switch
+    {
+        "Mimo"     => "Mimo",
+        "DeepSeek" => "DeepSeekTools",
+        _          => "Whisper"
+    };
 }
 
-/// <summary>API-key slot for a named ASR provider (MiMo or Zhipu).
+/// <summary>API-key slot for a named ASR provider (MiMo, Zhipu, or DeepSeek).
 /// The base URL and model are fixed constants for these providers.</summary>
 public sealed record AsrSlotConfig
 {
@@ -118,13 +128,17 @@ public sealed record AsrCustomSlotConfig
     public string ProviderType { get; init; } = "Whisper";
 }
 
-/// <summary>Canonical base-URL and model-name constants for the two built-in ASR providers.</summary>
+/// <summary>Canonical base-URL and model-name constants for the built-in ASR providers.</summary>
 public static class AsrProviderDefaults
 {
     public const string MimoBaseUrl = "https://api.xiaomimimo.com/v1";
     public const string MimoModel   = "mimo-v2.5-asr";
     public const string ZhipuBaseUrl = "https://open.bigmodel.cn/api/paas/v4";
     public const string ZhipuModel   = "glm-asr-2512";
+    // DeepSeek ASR is a standalone endpoint (POST {base}/tools/asr), not an OpenAI
+    // transcriptions model; the model name is a display label only.
+    public const string DeepSeekBaseUrl = "https://api.deepseek.com/v1";
+    public const string DeepSeekModel   = "deepseek-asr";
 }
 
 public sealed record SubtitleWindowSettings

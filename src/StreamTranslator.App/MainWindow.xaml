@@ -659,6 +659,7 @@
                                                   SelectionChanged="OnAsrProviderChanged">
                                             <ComboBoxItem Content="MiMo ASR" Tag="Mimo" />
                                             <ComboBoxItem Content="GLM-ASR-2512（智谱 AI）" Tag="Zhipu" />
+                                            <ComboBoxItem Content="DeepSeek ASR" Tag="DeepSeek" />
                                             <ComboBoxItem Content="自定义..." Tag="Custom" />
                                         </ComboBox>
                                         <TextBlock x:Name="AsrProviderInfoText"

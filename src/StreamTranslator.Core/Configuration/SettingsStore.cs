@@ -139,6 +139,14 @@ public sealed class SettingsStore
             shouldSave = true;
         }
 
+        if (existingVersion < 7 || settings.SchemaVersion < 7)
+        {
+            // Schema 7 adds the DeepSeek ASR slot. The slot deserializes to an
+            // empty default, so this bump only stamps the version.
+            settings = settings with { SchemaVersion = 7 };
+            shouldSave = true;
+        }
+
         if (shouldSave)
         {
             await SaveAsync(settings, cancellationToken).ConfigureAwait(false);

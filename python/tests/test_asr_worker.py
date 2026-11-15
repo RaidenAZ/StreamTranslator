@@ -1,12 +1,14 @@
+import base64
 import io
 import json
 import threading
 import time
+import wave
 from types import SimpleNamespace
 
 import pytest
 
-from asr_worker import AsrWorker, WorkerConfig, error_response, extract_text, run_protocol
+from asr_worker import AsrWorker, WorkerConfig, WorkerError, error_response, extract_text, run_protocol
 
 
 def test_extract_text_reads_message_content_string():
@@ -119,6 +121,106 @@ def test_transcribe_whisper_converts_auto_language_to_none():
 
     # "auto" must become None for the standard Whisper API
     assert transcriptions.kwargs.get("language") is None
+
+
+def test_transcribe_deepseek_posts_multipart_wav_to_tools_asr():
+    client = FakeHttpxClient(200, {"text": "deepseek 识别结果", "duration_ms": 3200})
+    worker = AsrWorker(config_deepseek(api_key="ds-key"), client=client)
+
+    result = worker.transcribe(
+        {
+            "id": "seg-1",
+            "type": "transcribe",
+            "sequence": 1,
+            "audioBase64": base64.b64encode(wav_bytes(seconds=1)).decode("ascii"),
+            "audioFormat": "wav",
+            "language": "auto",
+        }
+    )
+
+    assert client.url == "https://api.deepseek.com/v1/tools/asr"
+    assert client.headers["Authorization"] == "Bearer ds-key"
+    filename, content, content_type = client.files["file"]
+    assert filename == "audio.wav"
+    assert content.startswith(b"RIFF")
+    assert content_type == "audio/wav"
+    # The service detects the language itself; nothing language-related is sent.
+    assert "language" not in client.captured
+    assert result["text"] == "deepseek 识别结果"
+    assert result["ok"] is True
+
+
+def test_transcribe_deepseek_rejects_non_wav_before_request():
+    client = FakeHttpxClient(200, {"text": "unused"})
+    worker = AsrWorker(config_deepseek(api_key="ds-key"), client=client)
+
+    with pytest.raises(ValueError, match="WAV"):
+        worker.transcribe({"id": "seg-1", "audioBase64": "AAAA", "audioFormat": "mp3", "language": "auto"})
+
+    assert client.url is None
+
+
+def test_transcribe_deepseek_rejects_audio_longer_than_120_seconds():
+    client = FakeHttpxClient(200, {"text": "unused"})
+    worker = AsrWorker(config_deepseek(api_key="ds-key"), client=client)
+
+    with pytest.raises(ValueError, match="120"):
+        worker.transcribe(
+            {
+                "id": "seg-1",
+                "audioBase64": base64.b64encode(wav_bytes(seconds=121)).decode("ascii"),
+                "audioFormat": "wav",
+                "language": "auto",
+            }
+        )
+
+    assert client.url is None
+
+
+@pytest.mark.parametrize(
+    ("status_code", "kind", "retryable"),
+    [(401, "authentication", False), (429, "rate_limit", True), (503, "server", True), (504, "server", True)],
+)
+def test_transcribe_deepseek_classifies_http_failures(status_code, kind, retryable):
+    worker = AsrWorker(
+        config_deepseek(api_key="ds-key"),
+        client=FakeHttpxClient(status_code, "service unavailable"),
+    )
+
+    with pytest.raises(WorkerError) as caught:
+        worker.transcribe(
+            {
+                "id": "seg-1",
+                "audioBase64": base64.b64encode(wav_bytes(seconds=1)).decode("ascii"),
+                "audioFormat": "wav",
+                "language": "auto",
+            }
+        )
+
+    assert caught.value.kind == kind
+    assert caught.value.retryable is retryable
+
+
+def test_transcribe_deepseek_rejects_response_without_text():
+    worker = AsrWorker(config_deepseek(api_key="ds-key"), client=FakeHttpxClient(200, {"duration_ms": 1}))
+
+    with pytest.raises(WorkerError) as caught:
+        worker.transcribe(
+            {
+                "id": "seg-1",
+                "audioBase64": base64.b64encode(wav_bytes(seconds=1)).decode("ascii"),
+                "audioFormat": "wav",
+                "language": "auto",
+            }
+        )
+
+    assert caught.value.kind == "invalid_response"
+    assert caught.value.retryable is False
+
+
+def test_unknown_provider_fails_at_construction():
+    with pytest.raises(WorkerError, match="provider"):
+        AsrWorker(config_with_provider("Nope"))
 
 
 def test_transcribe_rejects_unsupported_language_before_api_call():
@@ -237,6 +339,39 @@ def config_whisper(api_key: str) -> WorkerConfig:
     )
 
 
+def config_deepseek(api_key: str) -> WorkerConfig:
+    return WorkerConfig(
+        api_key=api_key,
+        base_url="https://api.deepseek.com/v1/",
+        model="deepseek-asr",
+        provider="DeepSeekTools",
+        timeout_seconds=30,
+        max_concurrency=2,
+    )
+
+
+def config_with_provider(provider: str) -> WorkerConfig:
+    base = config(api_key="key")
+    return WorkerConfig(
+        api_key=base.api_key,
+        base_url=base.base_url,
+        model=base.model,
+        provider=provider,
+        timeout_seconds=base.timeout_seconds,
+        max_concurrency=base.max_concurrency,
+    )
+
+
+def wav_bytes(seconds: int, sample_rate: int = 16000) -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"\x00\x00" * sample_rate * seconds)
+    return buffer.getvalue()
+
+
 class FakeCompletions:
     def __init__(self):
         self.kwargs = None
@@ -263,6 +398,34 @@ class FakeTranscriptions:
 class FakeWhisperClient:
     def __init__(self, transcriptions):
         self.audio = SimpleNamespace(transcriptions=transcriptions)
+
+
+class FakeHttpResponse:
+    def __init__(self, status_code: int, payload):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = payload if isinstance(payload, str) else json.dumps(payload)
+
+    def json(self):
+        if isinstance(self._payload, str):
+            raise ValueError("not json")
+        return self._payload
+
+
+class FakeHttpxClient:
+    def __init__(self, status_code: int, payload):
+        self._response = FakeHttpResponse(status_code, payload)
+        self.url = None
+        self.headers = None
+        self.files = None
+        self.captured = {}
+
+    def post(self, url, headers=None, files=None, **kwargs):
+        self.url = url
+        self.headers = headers or {}
+        self.files = files or {}
+        self.captured = kwargs
+        return self._response
 
 
 class FakeHttpError(Exception):

@@ -32,6 +32,25 @@ public sealed class AppSettingsValidatorTests
     }
 
     [TestMethod]
+    public void ValidateForStart_AcceptsDeepSeekProvider()
+    {
+        var settings = new AppSettings
+        {
+            Asr = new AsrSettings
+            {
+                ActiveProvider = "DeepSeek",
+                DeepSeek = new AsrSlotConfig { ApiKey = "test-key" },
+                Language = "auto"
+            }
+        };
+
+        Assert.AreEqual(0, AppSettingsValidator.ValidateForStart(settings).Count);
+        Assert.AreEqual(AsrProviderDefaults.DeepSeekBaseUrl, settings.Asr.ActiveBaseUrl);
+        Assert.AreEqual(AsrProviderDefaults.DeepSeekModel, settings.Asr.ActiveModel);
+        Assert.AreEqual("DeepSeekTools", settings.Asr.ActiveProviderType);
+    }
+
+    [TestMethod]
     public void ValidateForStart_RejectsUnknownVadEndpointMode()
     {
         var settings = new AppSettings

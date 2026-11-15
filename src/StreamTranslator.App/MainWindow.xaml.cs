@@ -1162,9 +1162,10 @@ public partial class MainWindow : FluentWindow
 
         AsrProviderInfoText.Text = provider switch
         {
-            "Mimo"  => $"接口  {AsrProviderDefaults.MimoBaseUrl}\n模型  {AsrProviderDefaults.MimoModel}",
-            "Zhipu" => $"接口  {AsrProviderDefaults.ZhipuBaseUrl}\n模型  {AsrProviderDefaults.ZhipuModel}",
-            _       => ""
+            "Mimo"     => $"接口  {AsrProviderDefaults.MimoBaseUrl}\n模型  {AsrProviderDefaults.MimoModel}",
+            "Zhipu"    => $"接口  {AsrProviderDefaults.ZhipuBaseUrl}\n模型  {AsrProviderDefaults.ZhipuModel}",
+            "DeepSeek" => $"接口  {AsrProviderDefaults.DeepSeekBaseUrl}/tools/asr\n模型  {AsrProviderDefaults.DeepSeekModel}（语种自动识别，单段最长 120 秒、8 MiB）",
+            _          => ""
         };
         AsrProviderInfoText.Visibility = isCustom ? Visibility.Collapsed : Visibility.Visible;
 
@@ -1178,9 +1179,10 @@ public partial class MainWindow : FluentWindow
     {
         AsrApiKeyBox.Password = provider switch
         {
-            "Zhipu"  => _settings.Asr.Zhipu.ApiKey,
-            "Custom" => _settings.Asr.Custom.ApiKey,
-            _        => _settings.Asr.Mimo.ApiKey
+            "Zhipu"    => _settings.Asr.Zhipu.ApiKey,
+            "DeepSeek" => _settings.Asr.DeepSeek.ApiKey,
+            "Custom"   => _settings.Asr.Custom.ApiKey,
+            _          => _settings.Asr.Mimo.ApiKey
         };
 
         if (provider == "Custom")
@@ -1292,9 +1294,9 @@ public partial class MainWindow : FluentWindow
         {
             _settings = _settings with
             {
-            // Keep the persisted document at the current schema.  Writing v5
-            // here re-runs the v6 ASR migration on the next startup.
-            SchemaVersion = 6,
+            // Keep the persisted document at the current schema.  Writing an older
+            // schema here re-runs the newer ASR migrations on the next startup.
+            SchemaVersion = 7,
             Audio = _settings.Audio with
             {
                 DeviceId = FollowDefaultDeviceSwitch.IsChecked == true ? "default" : SelectedAudioDeviceId(),
@@ -1316,6 +1318,9 @@ public partial class MainWindow : FluentWindow
                 Zhipu  = GetSelectedAsrProvider() == "Zhipu"
                              ? _settings.Asr.Zhipu with { ApiKey = AsrApiKeyBox.Password }
                              : _settings.Asr.Zhipu,
+                DeepSeek = GetSelectedAsrProvider() == "DeepSeek"
+                             ? _settings.Asr.DeepSeek with { ApiKey = AsrApiKeyBox.Password }
+                             : _settings.Asr.DeepSeek,
                 Custom = GetSelectedAsrProvider() == "Custom"
                              ? _settings.Asr.Custom with
                                {
