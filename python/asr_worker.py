@@ -24,6 +24,9 @@ PROVIDER_MIMO = "Mimo"
 PROVIDER_WHISPER = "Whisper"
 PROVIDER_DEEPSEEK_TOOLS = "DeepSeekTools"
 
+# Full endpoint from the DeepSeek ASR docs; it takes no model parameter.
+DEFAULT_DEEPSEEK_ASR_URL = "https://api.deepseek.com/v1/tools/asr"
+
 # DeepSeek ASR caps: 8 MiB upload, 120 s duration, 16-bit PCM WAV or Ogg Opus.
 DEEPSEEK_MAX_AUDIO_BYTES = 8 * 1024 * 1024
 DEEPSEEK_MAX_DURATION_SECONDS = 120
@@ -43,7 +46,7 @@ class WorkerConfig:
     api_key: str
     base_url: str
     model: str
-    provider: str  # "Mimo" | "Whisper"
+    provider: str  # "Mimo" | "Whisper" | "DeepSeekTools"
     timeout_seconds: float
     max_concurrency: int
 
@@ -53,11 +56,15 @@ class WorkerConfig:
         def env(new: str, legacy: str, default: str = "") -> str:
             return os.environ.get(new) or os.environ.get(legacy, default)
 
+        provider = os.environ.get("ASR_PROVIDER", PROVIDER_MIMO)
+        is_deepseek = provider == PROVIDER_DEEPSEEK_TOOLS
         return WorkerConfig(
             api_key=env("ASR_API_KEY", "MIMO_API_KEY"),
-            base_url=env("ASR_BASE_URL", "MIMO_BASE_URL", DEFAULT_MIMO_BASE_URL),
-            model=env("ASR_MODEL", "MIMO_ASR_MODEL", DEFAULT_MIMO_MODEL),
-            provider=os.environ.get("ASR_PROVIDER", PROVIDER_MIMO),
+            # For DeepSeekTools this is the full endpoint, posted to verbatim.
+            base_url=env("ASR_BASE_URL", "MIMO_BASE_URL",
+                         DEFAULT_DEEPSEEK_ASR_URL if is_deepseek else DEFAULT_MIMO_BASE_URL),
+            model=env("ASR_MODEL", "MIMO_ASR_MODEL", "" if is_deepseek else DEFAULT_MIMO_MODEL),
+            provider=provider,
             timeout_seconds=float(env("ASR_TIMEOUT_SECONDS", "MIMO_TIMEOUT_SECONDS", "30")),
             max_concurrency=max(1, int(env("ASR_MAX_CONCURRENCY", "MIMO_MAX_CONCURRENCY", "2"))),
         )
@@ -135,11 +142,12 @@ class WhisperBackend(AsrBackend):
 
 
 class DeepSeekToolsBackend(AsrBackend):
-    """DeepSeek ASR: POST {base_url}/tools/asr with a multipart WAV upload.
+    """DeepSeek ASR: POST base_url (the full /v1/tools/asr endpoint) with a multipart WAV upload.
 
     The endpoint is not part of the OpenAI SDK surface, so requests go through
-    httpx directly. The service auto-detects the language; the request has no
-    language parameter. Limits: 8 MiB, 120 s, 16-bit PCM WAV or Ogg Opus.
+    httpx directly. The request carries no model or language parameter; the
+    service detects the language itself. Limits: 8 MiB, 120 s, 16-bit PCM WAV
+    or Ogg Opus.
     """
 
     _SUPPORTED_FORMATS = frozenset(("wav",))
@@ -157,10 +165,9 @@ class DeepSeekToolsBackend(AsrBackend):
         if duration_seconds is not None and duration_seconds > DEEPSEEK_MAX_DURATION_SECONDS:
             raise ValueError("音频超过 DeepSeek ASR 的 120 秒时长上限。")
 
-        endpoint = self._config.base_url.rstrip("/") + "/tools/asr"
         try:
             response = client.post(
-                endpoint,
+                self._config.base_url,
                 headers={"Authorization": f"Bearer {self._config.api_key}"},
                 files={"file": (f"audio.{audio_format}", audio_bytes, "audio/wav")},
             )
@@ -234,8 +241,6 @@ class AsrWorker:
             raise ValueError("ASR_API_KEY is required")
         if self._config.max_concurrency < 1:
             raise ValueError("ASR_MAX_CONCURRENCY must be positive")
-        if self._config.provider == PROVIDER_DEEPSEEK_TOOLS and not self._config.base_url.strip():
-            raise ValueError("ASR_BASE_URL is required for DeepSeek ASR")
 
     def transcribe(self, request: dict[str, Any]) -> dict[str, Any]:
         started = time.perf_counter()

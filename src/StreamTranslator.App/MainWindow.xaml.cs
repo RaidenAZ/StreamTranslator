@@ -1164,7 +1164,7 @@ public partial class MainWindow : FluentWindow
         {
             "Mimo"     => $"接口  {AsrProviderDefaults.MimoBaseUrl}\n模型  {AsrProviderDefaults.MimoModel}",
             "Zhipu"    => $"接口  {AsrProviderDefaults.ZhipuBaseUrl}\n模型  {AsrProviderDefaults.ZhipuModel}",
-            "DeepSeek" => $"接口  {AsrProviderDefaults.DeepSeekBaseUrl}/tools/asr\n模型  {AsrProviderDefaults.DeepSeekModel}（语种自动识别，单段最长 120 秒、8 MiB）",
+            "DeepSeek" => $"接口  {AsrProviderDefaults.DeepSeekAsrEndpoint}\n语种自动识别，单段最长 120 秒、8 MiB",
             _          => ""
         };
         AsrProviderInfoText.Visibility = isCustom ? Visibility.Collapsed : Visibility.Visible;

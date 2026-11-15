@@ -75,6 +75,14 @@ public sealed class DiagnosticsReportBuilderTests
     }
 
     [TestMethod]
+    public void Build_ReportsNoneForProviderWithoutAsrModel()
+    {
+        var report = DiagnosticsReportBuilder.Build(new DiagnosticsSnapshot { AsrModel = "" });
+
+        StringAssert.Contains(report, "AsrModel: none");
+    }
+
+    [TestMethod]
     public void Build_StripsCredentialsAndQueryFromEndpointPreview()
     {
         var report = DiagnosticsReportBuilder.Build(new DiagnosticsSnapshot

@@ -82,7 +82,7 @@ public sealed record AsrSettings
     public string ActiveBaseUrl => ActiveProvider switch
     {
         "Zhipu"     => AsrProviderDefaults.ZhipuBaseUrl,
-        "DeepSeek"  => AsrProviderDefaults.DeepSeekBaseUrl,
+        "DeepSeek"  => AsrProviderDefaults.DeepSeekAsrEndpoint,
         "Custom"    => Custom.BaseUrl,
         _           => AsrProviderDefaults.MimoBaseUrl
     };
@@ -91,7 +91,8 @@ public sealed record AsrSettings
     public string ActiveModel => ActiveProvider switch
     {
         "Zhipu"     => AsrProviderDefaults.ZhipuModel,
-        "DeepSeek"  => AsrProviderDefaults.DeepSeekModel,
+        // DeepSeek ASR has no model parameter.
+        "DeepSeek"  => "",
         "Custom"    => Custom.Model,
         _           => AsrProviderDefaults.MimoModel
     };
@@ -100,7 +101,7 @@ public sealed record AsrSettings
     /// Wire protocol type sent to the Python worker via the ASR_PROVIDER env var.
     /// "Mimo" uses chat-completion with inline base64 audio;
     /// "Whisper" uses the standard audio/transcriptions file-upload endpoint;
-    /// "DeepSeekTools" uses DeepSeek's standalone POST /v1/tools/asr multipart endpoint.
+    /// "DeepSeekTools" posts a multipart upload to the full endpoint in ActiveBaseUrl.
     /// </summary>
     [JsonIgnore]
     public string ActiveProviderType => ActiveProvider switch
@@ -135,10 +136,9 @@ public static class AsrProviderDefaults
     public const string MimoModel   = "mimo-v2.5-asr";
     public const string ZhipuBaseUrl = "https://open.bigmodel.cn/api/paas/v4";
     public const string ZhipuModel   = "glm-asr-2512";
-    // DeepSeek ASR is a standalone endpoint (POST {base}/tools/asr), not an OpenAI
-    // transcriptions model; the model name is a display label only.
-    public const string DeepSeekBaseUrl = "https://api.deepseek.com/v1";
-    public const string DeepSeekModel   = "deepseek-asr";
+    // Full endpoint from the DeepSeek ASR docs. Unlike the providers above this is
+    // not an OpenAI-style base URL, and the request takes no model parameter.
+    public const string DeepSeekAsrEndpoint = "https://api.deepseek.com/v1/tools/asr";
 }
 
 public sealed record SubtitleWindowSettings

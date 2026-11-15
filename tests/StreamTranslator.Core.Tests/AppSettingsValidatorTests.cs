@@ -45,8 +45,8 @@ public sealed class AppSettingsValidatorTests
         };
 
         Assert.AreEqual(0, AppSettingsValidator.ValidateForStart(settings).Count);
-        Assert.AreEqual(AsrProviderDefaults.DeepSeekBaseUrl, settings.Asr.ActiveBaseUrl);
-        Assert.AreEqual(AsrProviderDefaults.DeepSeekModel, settings.Asr.ActiveModel);
+        Assert.AreEqual("https://api.deepseek.com/v1/tools/asr", settings.Asr.ActiveBaseUrl);
+        Assert.AreEqual("", settings.Asr.ActiveModel);
         Assert.AreEqual("DeepSeekTools", settings.Asr.ActiveProviderType);
     }
 

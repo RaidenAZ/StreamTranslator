@@ -150,6 +150,18 @@ def test_transcribe_deepseek_posts_multipart_wav_to_tools_asr():
     assert result["ok"] is True
 
 
+def test_from_env_defaults_deepseek_to_documented_endpoint_without_model(monkeypatch):
+    for name in ("ASR_BASE_URL", "MIMO_BASE_URL", "ASR_MODEL", "MIMO_ASR_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ASR_PROVIDER", "DeepSeekTools")
+    monkeypatch.setenv("ASR_API_KEY", "ds-key")
+
+    loaded = WorkerConfig.from_env()
+
+    assert loaded.base_url == "https://api.deepseek.com/v1/tools/asr"
+    assert loaded.model == ""
+
+
 def test_transcribe_deepseek_rejects_non_wav_before_request():
     client = FakeHttpxClient(200, {"text": "unused"})
     worker = AsrWorker(config_deepseek(api_key="ds-key"), client=client)
@@ -342,8 +354,8 @@ def config_whisper(api_key: str) -> WorkerConfig:
 def config_deepseek(api_key: str) -> WorkerConfig:
     return WorkerConfig(
         api_key=api_key,
-        base_url="https://api.deepseek.com/v1/",
-        model="deepseek-asr",
+        base_url="https://api.deepseek.com/v1/tools/asr",
+        model="",
         provider="DeepSeekTools",
         timeout_seconds=30,
         max_concurrency=2,
