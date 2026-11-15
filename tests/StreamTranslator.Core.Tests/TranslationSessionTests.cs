@@ -237,8 +237,11 @@ public sealed class TranslationSessionTests
         session.Submit(Source(1, 1, "First") with { UtteranceGroupId = "session:1" });
         await WaitUntilAsync(() => session.Metrics.WorkerRestarts == 1);
         session.Submit(Source(2, 1, "Second") with { UtteranceGroupId = "session:2" });
-        await WaitUntilAsync(() => session.Metrics.Successes == 1);
+        // Successes is counted before TranslationReady fires, so wait for the event
+        // itself; polling the metric races the publish on slow CI runners.
+        await WaitUntilAsync(() => updates.Any(update => update.UtteranceGroupId == "session:2"));
 
+        Assert.AreEqual(1, session.Metrics.Successes);
         Assert.AreEqual(1, failedWorker.TranslateCalls);
         Assert.AreEqual(1, replacement.TranslateCalls);
         Assert.AreEqual("session:2", replacement.Requests.Single().UtteranceGroupId);
