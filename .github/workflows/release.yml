@@ -1,6 +1,7 @@
 name: Release
 
-# 触发时机：PR 合并到 master（即任何 push 到 master 的提交）
+# 触发时机：任何 push 到 master 的提交（含 PR 合并），
+# 但只有 csproj 中的版本号还没有对应的 Release tag 时才构建发布，版本号不变则跳过。
 on:
   push:
     branches:
@@ -10,8 +11,48 @@ on:
 permissions:
   contents: write
 
+# 串行执行：连续 push 同一个新版本时，后一次等前一次打完 tag 再检查，避免重复发布
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  # ── 版本检查：该版本从未发布过才放行 release job ─────────────────────────────
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.ver.outputs.release }}
+      tag: ${{ steps.ver.outputs.tag }}
+      name: ${{ steps.ver.outputs.name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 拉取全部 tag，用于判断版本是否已发布
+
+      - name: Read version and check existing tags
+        id: ver
+        shell: pwsh
+        run: |
+          $xml   = [xml](Get-Content src/StreamTranslator.App/StreamTranslator.App.csproj)
+          $ver   = $xml.Project.PropertyGroup.Version
+          if (-not $ver) { throw "Version not found in StreamTranslator.App.csproj" }
+          # tag 格式为 v<版本>；该 tag 已存在即视为已发布
+          $existing = git tag --list "v${ver}"
+          if ($existing) {
+            Write-Host "Version $ver already released ($existing), skipping."
+            "release=false" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "Version $ver has not been released yet."
+            "release=true" >> $env:GITHUB_OUTPUT
+          }
+          "tag=v${ver}"  >> $env:GITHUB_OUTPUT
+          "name=StreamTranslator v${ver}" >> $env:GITHUB_OUTPUT
+
   release:
+    needs: check
+    if: needs.check.outputs.release == 'true'
     runs-on: windows-latest
 
     steps:
@@ -47,18 +88,7 @@ jobs:
           path: artifacts/build-venv
           key: ${{ runner.os }}-venv-${{ hashFiles('python/requirements-build.txt') }}
 
-      # ── 读取版本号 ────────────────────────────────────────────────────────────
-      - name: Read version from csproj
-        id: ver
-        shell: pwsh
-        run: |
-          $xml   = [xml](Get-Content src/StreamTranslator.App/StreamTranslator.App.csproj)
-          $ver   = $xml.Project.PropertyGroup.Version
-          $short = "${{ github.sha }}".Substring(0, 7)
-          "tag=v${ver}-build.${short}"  >> $env:GITHUB_OUTPUT
-          "name=StreamTranslator v${ver}" >> $env:GITHUB_OUTPUT
-
-      # ── 测试 ─────────────────────────────────────────────────────────────────
+      # ── 测试─────────────────────────────────────────────────────────────────
       # Integration 类测试（TestCategory=Integration）依赖真实 Python+openai 运行时，
       # 仅在本地完整环境中执行；CI 只跑单元测试和协议测试。
       - name: Run .NET tests
@@ -91,13 +121,13 @@ jobs:
         shell: pwsh
         run: |
           Compress-Archive -Path artifacts/StreamTranslator/* `
-            -DestinationPath "artifacts/StreamTranslator-${{ steps.ver.outputs.tag }}-win-x64.zip"
+            -DestinationPath "artifacts/StreamTranslator-${{ needs.check.outputs.tag }}-win-x64.zip"
 
       # ── 发布 GitHub Release ───────────────────────────────────────────────────
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.ver.outputs.tag }}
-          name: ${{ steps.ver.outputs.name }}
-          files: artifacts/StreamTranslator-${{ steps.ver.outputs.tag }}-win-x64.zip
+          tag_name: ${{ needs.check.outputs.tag }}
+          name: ${{ needs.check.outputs.name }}
+          files: artifacts/StreamTranslator-${{ needs.check.outputs.tag }}-win-x64.zip
           generate_release_notes: true   # 自动从 PR/commit 生成 release notes
