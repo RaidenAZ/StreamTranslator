@@ -326,7 +326,8 @@ MaxConcurrentAsr: 2 by default
 - 正常情况下按 `sequence` 显示。
 - 前序片段失败时标记失败并继续释放后续字幕。
 - 慢段由 ASR timeout、worker 失败传播和停止时取消来避免永久阻塞。
-- 每个已分配 sequence 必须提交 final 或 failed 终态，异常不能在 reorder buffer 中留下缺口。
+- 每个已分配 sequence 必须提交 final、failed 或 no-speech 终态，异常不能在 reorder buffer 中留下缺口。
+- ASR 调用成功但没有文本时记为 no-speech（背景音乐、呼吸声、音效等被 VAD 放行的片段，DeepSeek ASR 对此返回空 `text`）。它只占住 reorder buffer 的位置，不显示、不写历史、不参与修订分组和翻译，也不重试；非 HardMax 切段时照常结束句子累积。诊断模式下在 session JSON 的 `asrNoSpeech` 字段记录。
 
 ## Subtitle Model
 
@@ -337,7 +338,8 @@ public enum SubtitleStatus
 {
     Interim,
     Final,
-    Failed
+    Failed,
+    NoSpeech
 }
 
 public sealed record SubtitleItem
