@@ -450,17 +450,6 @@ public sealed class SubtitleRuntime : IAsyncDisposable
                 audioBase64: Convert.ToBase64String(wav));
 
             response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
-            if (response.Ok && string.IsNullOrWhiteSpace(response.Text))
-            {
-                response = response with
-                {
-                    Ok = false,
-                    ErrorCode = "EmptyResult",
-                    ErrorMessage = "ASR 未返回文本",
-                    ErrorKind = "empty_result",
-                    Retryable = false
-                };
-            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -479,14 +468,19 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             }
         }
 
-        UpdateDiagnosticAsr(diagnosticRecord, response);
+        var outcome = AsrResultClassifier.Classify(response);
+        UpdateDiagnosticAsr(diagnosticRecord, response, outcome);
+        var latencyText = response.LatencyMs?.ToString() ?? "-";
         StatusChanged?.Invoke(
             this,
             new RuntimeStatusUpdate(
                 RuntimeStatusCategory.AsrApi,
-                response.Ok
-                    ? $"ASR API 正常 ({response.LatencyMs?.ToString() ?? "-"} ms)"
-                    : $"ASR API 错误: {response.ErrorKind ?? response.ErrorCode ?? "Unknown"}"));
+                outcome switch
+                {
+                    SubtitleStatus.Final => $"ASR API 正常 ({latencyText} ms)",
+                    SubtitleStatus.NoSpeech => $"ASR API 正常 ({latencyText} ms，无语音)",
+                    _ => $"ASR API 错误: {response.ErrorKind ?? response.ErrorCode ?? "Unknown"}"
+                }));
 
         try
         {
@@ -517,25 +511,38 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         await _subtitlePublishLock.WaitAsync().ConfigureAwait(false);
         try
         {
-            var hasText = response.Ok && !string.IsNullOrWhiteSpace(response.Text);
+            var status = AsrResultClassifier.Classify(response);
             var subtitle = new SubtitleItem
             {
                 Sequence = sequence,
                 UtteranceGroupId = groupAssignment.UtteranceGroupId,
                 Start = TimeSpan.FromMilliseconds(segment.StartMs),
                 End = TimeSpan.FromMilliseconds(segment.EndMs),
-                SourceText = hasText ? response.Text! : $"识别失败: {response.ErrorMessage ?? "ASR 未返回文本"}",
-                Status = hasText ? SubtitleStatus.Final : SubtitleStatus.Failed,
+                SourceText = status switch
+                {
+                    SubtitleStatus.Final => response.Text!,
+                    SubtitleStatus.NoSpeech => "",
+                    _ => $"识别失败: {response.ErrorMessage ?? "未知错误"}"
+                },
+                Status = status,
                 CutReason = segment.CutReason.ToString()
             };
 
-            (SubtitleItem HistoryItem, SubtitlePublication Publication)[] publications;
+            // A null publication marks a NoSpeech item: it only fills its slot in
+            // the reorder buffer so later sequences can be released in order.
+            (SubtitleItem HistoryItem, SubtitlePublication? Publication)[] publications;
             lock (_subtitleLock)
             {
                 var releasedItems = _reorderBuffer.Add(subtitle);
-                publications = new (SubtitleItem, SubtitlePublication)[releasedItems.Count];
+                publications = new (SubtitleItem, SubtitlePublication?)[releasedItems.Count];
                 for (var index = 0; index < releasedItems.Count; index++)
                 {
+                    if (releasedItems[index].Status == SubtitleStatus.NoSpeech)
+                    {
+                        publications[index] = (releasedItems[index], null);
+                        continue;
+                    }
+
                     var deduplicated = ApplyDeduplicationLocked(releasedItems[index]);
                     UpdateDiagnosticDedupLocked(deduplicated.Item.Sequence, deduplicated.DedupApplied);
                     var historyItem = deduplicated.Item with
@@ -551,6 +558,18 @@ public sealed class SubtitleRuntime : IAsyncDisposable
 
             foreach (var (historyItem, publication) in publications)
             {
+                if (publication is null)
+                {
+                    // Nothing to show, record or translate. A non-HardMax cut still
+                    // ends the sentence in progress, as a published segment would.
+                    if (!string.Equals(historyItem.CutReason, nameof(SpeechSegmentCutReason.HardMax), StringComparison.Ordinal))
+                    {
+                        _sentenceAccumulator?.Flush();
+                    }
+
+                    continue;
+                }
+
                 var generatedAt = historyItem.GeneratedAt ?? DateTimeOffset.Now;
 
                 if (_history is not null)
@@ -1154,7 +1173,10 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         return record;
     }
 
-    private static void UpdateDiagnosticAsr(DiagnosticSegmentRecord? record, WorkerResponse response)
+    private static void UpdateDiagnosticAsr(
+        DiagnosticSegmentRecord? record,
+        WorkerResponse response,
+        SubtitleStatus outcome)
     {
         if (record is null)
         {
@@ -1164,6 +1186,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         record.AsrLatencyMs = response.LatencyMs;
         record.AsrOk = response.Ok;
         record.AsrErrorCode = response.ErrorCode;
+        record.AsrNoSpeech = outcome == SubtitleStatus.NoSpeech;
     }
 
     private void UpdateDiagnosticDedupLocked(long sequence, bool dedupApplied)
@@ -1231,6 +1254,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         public int? AsrLatencyMs { get; set; }
         public bool? AsrOk { get; set; }
         public string? AsrErrorCode { get; set; }
+        public bool? AsrNoSpeech { get; set; }
         public bool? DedupApplied { get; set; }
     }
 

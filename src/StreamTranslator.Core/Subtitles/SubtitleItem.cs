@@ -35,5 +35,8 @@ public enum SubtitleStatus
 {
     Interim,
     Final,
-    Failed
+    Failed,
+    // ASR succeeded but the segment held no transcribable speech. The sequence
+    // is terminal for the reorder buffer but is never shown, recorded or translated.
+    NoSpeech
 }

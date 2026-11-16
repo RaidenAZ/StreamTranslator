@@ -35,6 +35,20 @@ public sealed class SubtitleReorderBufferTests
     }
 
     [TestMethod]
+    public void Add_NoSpeechPlaceholderReleasesLaterSuccessfulItems()
+    {
+        var buffer = new SubtitleReorderBuffer(firstSequence: 1);
+        Assert.AreEqual(0, buffer.Add(Item(2, "第二句")).Count);
+
+        var released = buffer.Add(Item(1, "", SubtitleStatus.NoSpeech));
+
+        Assert.AreEqual(2, released.Count);
+        Assert.AreEqual(SubtitleStatus.NoSpeech, released[0].Status);
+        Assert.AreEqual("第二句", released[1].SourceText);
+        Assert.AreEqual(0, buffer.SkippedSequences);
+    }
+
+    [TestMethod]
     public void Add_SkipsMissingSequenceAfterGapTimeout()
     {
         var timeProvider = new ManualReorderTimeProvider(DateTimeOffset.Parse("2026-07-26T12:00:00+08:00"));
