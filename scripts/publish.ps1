@@ -61,8 +61,12 @@ if (-not $SkipWorker) {
     & $venvPython -m pip install -r (Join-Path $pythonRoot "requirements-build.txt")
     Assert-LastExitCode "pip install requirements-build.txt"
 
+    # 使用 --onedir 打包到 worker/<name>/，彻底避免 --onefile 每次启动在
+    # %LOCALAPPDATA%\Temp 解压 30~50MB _MEI* 临时目录以及异常退出时的目录残留，
+    # 同时显著加快 Worker 启动与连接测试速度。
     & $venvPython -m PyInstaller `
-        --onefile `
+        --onedir `
+        --noconfirm `
         --name asr_worker `
         --distpath $workerRoot `
         --workpath (Join-Path $root "artifacts\pyinstaller-work") `
@@ -71,7 +75,8 @@ if (-not $SkipWorker) {
     Assert-LastExitCode "PyInstaller asr_worker"
 
     & $venvPython -m PyInstaller `
-        --onefile `
+        --onedir `
+        --noconfirm `
         --name translation_worker `
         --distpath $workerRoot `
         --workpath (Join-Path $root "artifacts\pyinstaller-translation-work") `

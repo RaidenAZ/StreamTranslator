@@ -7,17 +7,30 @@ internal static class TranslationWorkerClientFactory
 {
     public static TranslationWorkerClient Create(string baseDirectory, string dataDirectory)
     {
-        var workerExe = Path.Combine(baseDirectory, "worker", "translation_worker.exe");
-        var hasWorkerExe = File.Exists(workerExe);
+        var workerExe = ResolvePackagedWorkerExe(baseDirectory);
+        var hasWorkerExe = workerExe is not null;
         var workerScript = hasWorkerExe ? "" : FindWorkerScriptPath(baseDirectory);
         var configuredPython = Environment.GetEnvironmentVariable("STREAMTRANSLATOR_PYTHON");
         var executable = hasWorkerExe
-            ? workerExe
+            ? workerExe!
             : string.IsNullOrWhiteSpace(configuredPython) ? "python" : configuredPython;
         return new TranslationWorkerClient(
             executable,
             hasWorkerExe ? "" : $"\"{workerScript}\"",
             Path.Combine(dataDirectory, "logs", "translation-worker.log"));
+    }
+
+    private static string? ResolvePackagedWorkerExe(string baseDirectory)
+    {
+        // 优先使用 --onedir 目录（零 Temp 解压与残留），同时兼容旧版 --onefile 单文件布局
+        var onedirExe = Path.Combine(baseDirectory, "worker", "translation_worker", "translation_worker.exe");
+        if (File.Exists(onedirExe))
+        {
+            return onedirExe;
+        }
+
+        var onefileExe = Path.Combine(baseDirectory, "worker", "translation_worker.exe");
+        return File.Exists(onefileExe) ? onefileExe : null;
     }
 
     private static string FindWorkerScriptPath(string baseDirectory)

@@ -119,6 +119,25 @@ if (Test-Path $mainWindowXaml) {
     if ($mainWindowMarkup -notmatch 'Text="模型配置"[\s\S]*?x:Name="TranslationSelectionSummaryText"[\s\S]*?x:Name="TranslationProfileList"') {
         throw "Translation profile status should appear below the section heading and above the profile list."
     }
+
+    if ($mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="SettingsTabServicesButton"' -or
+        $mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="SettingsTabAudioButton"' -or
+        $mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="SettingsTabFloatingButton"' -or
+        $mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="SettingsTabGeneralButton"') {
+        throw "Settings should expose the 4 segmented section tabs."
+    }
+
+    if ($mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="TestAsrConnectionButton"') {
+        throw "Recognition settings should expose an ASR connection test button."
+    }
+
+    if ($mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="FloatingPreviewStage"') {
+        throw "Floating subtitle settings should include the live preview stage."
+    }
+
+    if ($mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="SettingsTrayGroup"') {
+        throw "General settings should expose the system tray configuration section."
+    }
 }
 
 $mainWindowCode = Join-Path $PSScriptRoot "..\src\StreamTranslator.App\MainWindow.xaml.cs"
@@ -461,24 +480,6 @@ try {
             $subtitleHistoryNav.Current.ItemStatus -ne "Active"
     } while (-not $navigationUpdated -and (Get-Date) -lt $navigationDeadline)
 
-    $audioSettingsGroup = Find-ByAutomationId "SettingsAudioGroup"
-    $recognitionSettingsGroup = Find-ByAutomationId "SettingsRecognitionGroup"
-    $floatingSettingsGroup = Find-ByAutomationId "SettingsFloatingGroup"
-    $translationSettingsGroup = Find-ByAutomationId "SettingsTranslationGroup"
-    $diagnosticsSettingsGroup = Find-ByAutomationId "SettingsDiagnosticsGroup"
-    $balancedVadMode = Find-ByAutomationId "VadModeBalanced"
-    $fixedEndSilenceBox = Find-ByAutomationId "FixedEndSilenceBox"
-    $hardMaxSegmentBox = Find-ByAutomationId "HardMaxSegmentBox"
-    $asrLanguageBox = Find-ByAutomationId "AsrLanguageBox"
-    $adaptiveVadStatusText = Find-ByAutomationId "AdaptiveVadStatusText"
-    $audioDeviceComboBox = Find-ByAutomationId "AudioDeviceComboBox"
-    $currentVadEndpointText = Find-ByAutomationId "CurrentVadEndpointText"
-    $followDefaultDeviceSwitch = Find-ByAutomationId "FollowDefaultDeviceSwitch"
-    $translationTargetLanguageBox = Find-ByAutomationId "TranslationTargetLanguageBox"
-    $translationEnabledSwitch = Find-ByAutomationId "TranslationEnabledSwitch"
-    $translationSelectionSummaryText = Find-ByAutomationId "TranslationSelectionSummaryText"
-    $translationProfileList = Find-ByAutomationId "TranslationProfileList"
-
     if ($settingsNav.Current.ItemStatus -ne "Active") {
         throw "Navigation active state did not move to the clicked settings page."
     }
@@ -487,40 +488,39 @@ try {
         throw "Previous navigation item remained active after switching pages."
     }
 
-    if ($null -eq $audioSettingsGroup) { throw "Settings audio group was not found." }
+    $tabServices = Find-ByAutomationId "SettingsTabServicesButton"
+    $tabAudio = Find-ByAutomationId "SettingsTabAudioButton"
+    $tabFloating = Find-ByAutomationId "SettingsTabFloatingButton"
+    $tabGeneral = Find-ByAutomationId "SettingsTabGeneralButton"
+    if ($null -eq $tabServices) { throw "Settings Services tab button was not found." }
+    if ($null -eq $tabAudio) { throw "Settings Audio tab button was not found." }
+    if ($null -eq $tabFloating) { throw "Settings Floating tab button was not found." }
+    if ($null -eq $tabGeneral) { throw "Settings General tab button was not found." }
+
+    # Tab 1: Services & Translation (default)
+    $recognitionSettingsGroup = Find-ByAutomationId "SettingsRecognitionGroup"
+    $asrLanguageBox = Find-ByAutomationId "AsrLanguageBox"
+    $testAsrButton = Find-ByAutomationId "TestAsrConnectionButton"
+    $translationSettingsGroup = Find-ByAutomationId "SettingsTranslationGroup"
+    $translationTargetLanguageBox = Find-ByAutomationId "TranslationTargetLanguageBox"
+    $translationEnabledSwitch = Find-ByAutomationId "TranslationEnabledSwitch"
+    $translationSelectionSummaryText = Find-ByAutomationId "TranslationSelectionSummaryText"
+    $translationProfileList = Find-ByAutomationId "TranslationProfileList"
+
     if ($null -eq $recognitionSettingsGroup) { throw "Settings recognition service group was not found." }
-    if ($null -eq $floatingSettingsGroup) { throw "Settings floating subtitle group was not found." }
-    if ($null -eq $translationSettingsGroup) { throw "Settings translation group was not found." }
-    if ($null -eq $diagnosticsSettingsGroup) { throw "Settings diagnostics group was not found." }
-    if ($null -eq $balancedVadMode) { throw "Balanced adaptive VAD mode was not found." }
-    if ($null -eq $fixedEndSilenceBox) { throw "Fixed end-silence input was not found." }
-    if ($fixedEndSilenceBox.Current.IsEnabled) { throw "Fixed end-silence input should be disabled in balanced mode." }
-    if ($null -eq $hardMaxSegmentBox) { throw "Hard maximum segment input was not found." }
     if ($null -eq $asrLanguageBox) { throw "ASR language auto-detection field was not found." }
     $asrLanguageValuePattern = $asrLanguageBox.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
     if (-not $asrLanguageValuePattern.Current.IsReadOnly) { throw "ASR language should not be user-editable." }
-    if ($null -eq $adaptiveVadStatusText) { throw "Adaptive VAD live status was not found." }
-    if ($null -eq $audioDeviceComboBox) { throw "Audio-device selector was not found." }
-    if ($null -eq $currentVadEndpointText) { throw "Current VAD endpoint status was not found." }
-    if ($null -eq $followDefaultDeviceSwitch) { throw "Default-device toggle was not found." }
+    if ($null -eq $testAsrButton) { throw "ASR test connection button was not found." }
+    if ($null -eq $translationSettingsGroup) { throw "Settings translation group was not found." }
     if ($null -eq $translationTargetLanguageBox) { throw "Translation target-language control was not found." }
     if ($null -eq $translationEnabledSwitch) { throw "Translation enable toggle was not found." }
     if ($null -eq $translationSelectionSummaryText) { throw "Translation profile status was not found." }
     if ($null -eq $translationProfileList) { throw "Translation profile list was not found." }
 
-    $vadStatusRect = $currentVadEndpointText.Current.BoundingRectangle
-    $followDefaultRect = $followDefaultDeviceSwitch.Current.BoundingRectangle
-    if ([Math]::Abs($vadStatusRect.Left - $followDefaultRect.Left) -gt 2) {
-        throw "Current VAD endpoint status is not aligned with the default-device toggle."
-    }
-
     $targetLanguageRect = $translationTargetLanguageBox.Current.BoundingRectangle
-    $audioDeviceRect = $audioDeviceComboBox.Current.BoundingRectangle
     $profileStatusRect = $translationSelectionSummaryText.Current.BoundingRectangle
     $profileListRect = $translationProfileList.Current.BoundingRectangle
-    if ($targetLanguageRect.Width -ge ($audioDeviceRect.Width * 0.65)) {
-        throw "Translation target-language control is not visibly shorter than a full-width settings field."
-    }
     if ($profileStatusRect.Top -le $targetLanguageRect.Bottom -or
         $profileStatusRect.Bottom -gt $profileListRect.Top) {
         throw "Translation profile status is not positioned below the form and above the profile list."
@@ -574,6 +574,56 @@ try {
     $cancelTranslationProfileButton = $mainElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cancelCondition)
     Invoke-Element $cancelTranslationProfileButton "Cancel translation profile editor button"
     Start-Sleep -Milliseconds 300
+
+    # Tab 2: Audio & Segmentation
+    Click-Element $tabAudio "Settings Audio tab button"
+    Start-Sleep -Milliseconds 300
+    $audioSettingsGroup = Find-ByAutomationId "SettingsAudioGroup"
+    $balancedVadMode = Find-ByAutomationId "VadModeBalanced"
+    $fixedEndSilenceBox = Find-ByAutomationId "FixedEndSilenceBox"
+    $audioDeviceComboBox = Find-ByAutomationId "AudioDeviceComboBox"
+    $currentVadEndpointText = Find-ByAutomationId "CurrentVadEndpointText"
+    $followDefaultDeviceSwitch = Find-ByAutomationId "FollowDefaultDeviceSwitch"
+    $audioAdvancedExpander = Find-ByAutomationId "AudioAdvancedExpander"
+
+    if ($null -eq $audioSettingsGroup) { throw "Settings audio group was not found." }
+    if ($null -eq $balancedVadMode) { throw "Balanced adaptive VAD mode was not found." }
+    if ($null -eq $fixedEndSilenceBox) { throw "Fixed end-silence input was not found." }
+    if ($fixedEndSilenceBox.Current.IsEnabled) { throw "Fixed end-silence input should be disabled in balanced mode." }
+    if ($null -eq $audioDeviceComboBox) { throw "Audio-device selector was not found." }
+    if ($null -eq $currentVadEndpointText) { throw "Current VAD endpoint status was not found." }
+    if ($null -eq $followDefaultDeviceSwitch) { throw "Default-device toggle was not found." }
+    if ($null -eq $audioAdvancedExpander) { throw "Audio advanced settings expander was not found." }
+
+    $vadStatusRect = $currentVadEndpointText.Current.BoundingRectangle
+    $followDefaultRect = $followDefaultDeviceSwitch.Current.BoundingRectangle
+    if ([Math]::Abs($vadStatusRect.Left - $followDefaultRect.Left) -gt 2) {
+        throw "Current VAD endpoint status is not aligned with the default-device toggle."
+    }
+
+    $audioExpandPattern = $audioAdvancedExpander.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+    $audioExpandPattern.Expand()
+    Start-Sleep -Milliseconds 250
+    $hardMaxSegmentBox = Find-ByAutomationId "HardMaxSegmentBox"
+    $adaptiveVadStatusText = Find-ByAutomationId "AdaptiveVadStatusText"
+    if ($null -eq $hardMaxSegmentBox) { throw "Hard maximum segment input was not found." }
+    if ($null -eq $adaptiveVadStatusText) { throw "Adaptive VAD live status was not found." }
+
+    # Tab 3: Floating Subtitle Appearance
+    Click-Element $tabFloating "Settings Floating tab button"
+    Start-Sleep -Milliseconds 300
+    $floatingSettingsGroup = Find-ByAutomationId "SettingsFloatingGroup"
+    if ($null -eq $floatingSettingsGroup) { throw "Settings floating subtitle group was not found." }
+
+    # Tab 4: General (Appearance, Tray, Shortcuts, Diagnostics)
+    Click-Element $tabGeneral "Settings General tab button"
+    Start-Sleep -Milliseconds 300
+    $appearanceSettingsGroup = Find-ByAutomationId "SettingsAppearanceGroup"
+    $traySettingsGroup = Find-ByAutomationId "SettingsTrayGroup"
+    $diagnosticsSettingsGroup = Find-ByAutomationId "SettingsDiagnosticsGroup"
+    if ($null -eq $appearanceSettingsGroup) { throw "Settings appearance group was not found." }
+    if ($null -eq $traySettingsGroup) { throw "Settings tray group was not found." }
+    if ($null -eq $diagnosticsSettingsGroup) { throw "Settings diagnostics group was not found." }
 
     Click-Element $homeNav "Home navigation item"
     Start-Sleep -Milliseconds 500

@@ -20,7 +20,7 @@ public sealed class SubtitleHistoryStoreTests
     [TestMethod]
     public async Task LoadLatestAsync_MaterializesTranslationForCurrentSourceRevision()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-history-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-history-");
         var store = new SubtitleHistoryStore(directory.FullName);
         var date = new DateOnly(2026, 7, 14);
         var source = Item(1, "Hello") with
@@ -52,7 +52,7 @@ public sealed class SubtitleHistoryStoreTests
     [TestMethod]
     public async Task LoadLatestAsync_IgnoresStaleTranslationAndCorruptTranslationEvent()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-history-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-history-");
         var store = new SubtitleHistoryStore(directory.FullName);
         var date = new DateOnly(2026, 7, 14);
         var first = Item(1, "Hello") with { UtteranceGroupId = "session:1", Revision = 1 };
@@ -89,7 +89,7 @@ public sealed class SubtitleHistoryStoreTests
     [TestMethod]
     public async Task TranslationStatus_DoesNotOverwriteSuccessfulTranslation()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-history-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-history-");
         var store = new SubtitleHistoryStore(directory.FullName);
         var date = new DateOnly(2026, 7, 14);
         await store.AppendAsync(Item(1, "Hello") with { UtteranceGroupId = "session:1" }, date);
@@ -127,7 +127,7 @@ public sealed class SubtitleHistoryStoreTests
     [TestMethod]
     public async Task AppendAsync_WritesSubtitleAsJsonLine()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-subtitles-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-subtitles-");
         var store = new SubtitleHistoryStore(directory.FullName);
 
         var generatedAt = new DateTimeOffset(2026, 7, 7, 9, 8, 7, TimeSpan.FromHours(8));
@@ -154,7 +154,7 @@ public sealed class SubtitleHistoryStoreTests
     [TestMethod]
     public async Task LoadLatestAsync_MaterializesNewestAppendOnlyRevision()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-subtitles-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-subtitles-");
         var store = new SubtitleHistoryStore(directory.FullName);
         var date = new DateOnly(2026, 7, 14);
         var first = HistoryItem(1, "Welcome to the show", "utt-000001");
@@ -178,7 +178,7 @@ public sealed class SubtitleHistoryStoreTests
     [TestMethod]
     public async Task LoadLatestAsync_DoesNotReplaceSameSequenceFromAnotherSessionGroup()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-subtitles-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-subtitles-");
         var store = new SubtitleHistoryStore(directory.FullName);
         var date = new DateOnly(2026, 7, 14);
         var previousSession = HistoryItem(1, "previous session", "session-a-utt-000001");

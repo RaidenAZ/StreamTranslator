@@ -14,6 +14,16 @@ public sealed record AppSettings
     public HotkeySettings Hotkeys { get; init; } = new();
     public DiagnosticsSettings Diagnostics { get; init; } = new();
     public AppearanceSettings Appearance { get; init; } = new();
+    public TraySettings Tray { get; init; } = new();
+}
+
+public sealed record TraySettings
+{
+    /// <summary>点击主窗口关闭按钮时隐藏到系统托盘而不退出程序。</summary>
+    public bool CloseToTray { get; init; }
+
+    /// <summary>最小化主窗口时隐藏任务栏图标并收入系统托盘。</summary>
+    public bool MinimizeToTray { get; init; }
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<AppThemeMode>))]

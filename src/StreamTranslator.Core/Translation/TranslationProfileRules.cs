@@ -101,6 +101,19 @@ public static class TranslationProfileRules
         return $"{NormalizeBaseUrl(baseUrl)}/chat/completions";
     }
 
+    public static bool TryBuildFinalEndpoint(string? baseUrl, out string endpoint)
+    {
+        if (string.IsNullOrWhiteSpace(baseUrl) || !TryGetBaseUri(baseUrl, out var uri, out _))
+        {
+            endpoint = string.Empty;
+            return false;
+        }
+
+        var builder = new UriBuilder(uri) { Fragment = "", Query = "" };
+        endpoint = $"{builder.Uri.AbsoluteUri.TrimEnd('/')}/chat/completions";
+        return true;
+    }
+
     public static TranslationServiceLocation SuggestLocation(string baseUrl)
     {
         if (!TryGetBaseUri(baseUrl, out var uri, out _))

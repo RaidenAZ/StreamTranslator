@@ -18,10 +18,12 @@ using StreamTranslator.Core.Configuration;
 using StreamTranslator.Core.Diagnostics;
 using StreamTranslator.Core.Subtitles;
 using StreamTranslator.Core.Translation;
+using StreamTranslator.Core.Worker;
 using Wpf.Ui.Appearance;
 using Wpf.Ui.Controls;
 using System.Windows.Interop;
 using System.Windows.Media.Animation;
+using System.Windows.Media.Effects;
 using System.Windows.Threading;
 using PasswordBox = System.Windows.Controls.PasswordBox;
 using TextBlock = System.Windows.Controls.TextBlock;
@@ -77,6 +79,10 @@ public partial class MainWindow : FluentWindow
     private string? _lastVoiceActivityBadgeKey;
     private readonly Dictionary<Border, PipelineNodeVisualState> _pipelineNodeStates = new();
     private readonly Action _applyPendingAudioLevelAction;
+    private TrayIconManager? _trayIcon;
+    private bool _forceExit;
+    private bool _isFloatingLocked;
+    private bool _testingAsrConnection;
 
     public MainWindow()
     {
@@ -99,10 +105,15 @@ public partial class MainWindow : FluentWindow
             ApplyThemeMode(_settings.Appearance.Theme);
             LoadAudioDevices(_settings.Audio.DeviceId);
             RegisterHotkeys();
+            InitializeTrayIcon();
             ShowPage(HomePage);
             SetActiveNavigationItem("HomePage");
-            AboutVersionText.Text = $"StreamTranslator V{AppVersion()}";
-            DataDirectoryText.Text = $"数据目录: {_dataDirectory}";
+            AboutVersionText.Text = $"V{AppVersion()}";
+            DataDirectoryText.Text = _dataDirectory;
+            AboutLogsDirectoryText.Text = Path.Combine(_dataDirectory, "logs");
+            AboutRuntimeEnvText.Text =
+                $"OS       {RuntimeInformation.OSDescription.Trim()}{Environment.NewLine}" +
+                $"Runtime  {RuntimeInformation.FrameworkDescription} ({RuntimeInformation.ProcessArchitecture})";
             UpdateApiKeyGuidance();
             ResetSubtitlePlaceholder();
             await LoadTodaySubtitleHistoryAsync();
@@ -120,6 +131,8 @@ public partial class MainWindow : FluentWindow
             UpdateHomeQuickControlsEnabledState();
             UpdateHomeServiceSummary();
             RefreshPipelineVisualStates();
+            UpdateFloatingPreviewStage();
+            SyncTrayMenuState();
         }
     }
 
@@ -135,6 +148,13 @@ public partial class MainWindow : FluentWindow
             // Shutdown is still draining; a second Alt+F4 must not close the
             // window early and orphan the worker processes.
             e.Cancel = true;
+            return;
+        }
+
+        if (!_forceExit && CloseToTraySwitch?.IsChecked == true && _trayIcon is not null)
+        {
+            e.Cancel = true;
+            HideToTray(showBalloon: true);
             return;
         }
 
@@ -177,6 +197,13 @@ public partial class MainWindow : FluentWindow
         ApplicationThemeManager.Changed -= OnApplicationThemeChanged;
         StateChanged -= OnWindowVisibilityOrStateChanged;
         IsVisibleChanged -= OnWindowVisibilityOrStateChanged;
+        if (Application.Current is not null)
+        {
+            Application.Current.SessionEnding -= OnSessionEnding;
+        }
+
+        _trayIcon?.Dispose();
+        _trayIcon = null;
         _floatingWindow?.Close();
         _readyToClose = true;
         Close();
@@ -237,6 +264,7 @@ public partial class MainWindow : FluentWindow
         StartStopText.Text = starting ? "启动中…" : "停止中…";
         StartStopButton.IsEnabled = false;
         UpdateHomeQuickControlsEnabledState();
+        SyncTrayMenuState();
     }
 
     private void ClearStartStopBusy()
@@ -247,6 +275,7 @@ public partial class MainWindow : FluentWindow
         StartStopIcon.Symbol = _isRunning ? SymbolRegular.Stop24 : SymbolRegular.Play24;
         StartStopButton.IsEnabled = true;
         UpdateHomeQuickControlsEnabledState();
+        SyncTrayMenuState();
     }
 
     private async Task StartRuntimeAsync()
@@ -267,8 +296,7 @@ public partial class MainWindow : FluentWindow
                     "StartValidationDialog");
                 if (goToSettings)
                 {
-                    ShowPage(SettingsPage);
-                    SetActiveNavigationItem("SettingsPage");
+                    OpenSettingsTab("Services");
                 }
 
                 return;
@@ -294,8 +322,7 @@ public partial class MainWindow : FluentWindow
                 "TranslationUnavailableDialog");
             if (!sourceOnly)
             {
-                ShowPage(SettingsPage);
-                SetActiveNavigationItem("SettingsPage");
+                OpenSettingsTab("Services");
                 return;
             }
 
@@ -859,15 +886,16 @@ public partial class MainWindow : FluentWindow
     private void SetStateBadge(string text)
     {
         HomeStateBadgeText.Text = text;
-        var (foregroundKey, dotKey) = text switch
+        var (foregroundKey, dotKey, trayStatus) = text switch
         {
-            "运行中" => ("AcousticLiveBrush", "AcousticLiveBrush"),
-            "启动中" => ("AcousticWarmBrush", "AcousticWarmBrush"),
-            "错误" => ("AcousticPeakBrush", "AcousticPeakBrush"),
-            _ => ("AccentTextFillColorPrimaryBrush", "AcousticIdleBrush")
+            "运行中" => ("AcousticLiveBrush", "AcousticLiveBrush", TrayStatus.Running),
+            "启动中" => ("AcousticWarmBrush", "AcousticWarmBrush", TrayStatus.Starting),
+            "错误" => ("AcousticPeakBrush", "AcousticPeakBrush", TrayStatus.Error),
+            _ => ("AccentTextFillColorPrimaryBrush", "AcousticIdleBrush", TrayStatus.Ready)
         };
         HomeStateBadgeText.SetResourceReference(TextBlock.ForegroundProperty, foregroundKey);
         HomeStateDot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, dotKey);
+        _trayIcon?.UpdateStatus(trayStatus);
     }
 
     private void UpdateTranslationIssueUi(TranslationIssueState state)
@@ -1444,12 +1472,105 @@ public partial class MainWindow : FluentWindow
 
     private void OnWindowVisibilityOrStateChanged(object? sender, EventArgs e)
     {
+        if (WindowState == WindowState.Minimized &&
+            !_isClosing &&
+            MinimizeToTraySwitch?.IsChecked == true &&
+            _trayIcon is not null)
+        {
+            HideToTray(showBalloon: false);
+            return;
+        }
+
         UpdateHomeLiveMetricsVisibility();
+        SyncTrayMenuState();
     }
 
     private void OnWindowVisibilityOrStateChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
         UpdateHomeLiveMetricsVisibility();
+        SyncTrayMenuState();
+    }
+
+    private void InitializeTrayIcon()
+    {
+        try
+        {
+            _trayIcon = new TrayIconManager();
+            _trayIcon.ToggleMainWindowRequested += () => Dispatcher.BeginInvoke(ToggleMainWindowFromTray);
+            _trayIcon.ToggleStartStopRequested += () => Dispatcher.BeginInvoke(() => OnStartStopClick(this, new RoutedEventArgs()));
+            _trayIcon.ToggleFloatingWindowRequested += () => Dispatcher.BeginInvoke(ToggleFloatingWindowVisibility);
+            _trayIcon.ToggleFloatingLockRequested += () => Dispatcher.BeginInvoke(() => OnToggleFloatingLockClick(this, new RoutedEventArgs()));
+            _trayIcon.ExitRequested += () => Dispatcher.BeginInvoke(() =>
+            {
+                _forceExit = true;
+                ShowFromTray();
+                Close();
+            });
+            if (Application.Current is not null)
+            {
+                Application.Current.SessionEnding += OnSessionEnding;
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendAppLog($"系统托盘初始化失败（已降级运行）: {ex.Message}");
+            _trayIcon = null;
+        }
+    }
+
+    private void OnSessionEnding(object? sender, SessionEndingCancelEventArgs e)
+    {
+        _forceExit = true;
+    }
+
+    private void ToggleMainWindowFromTray()
+    {
+        if (IsVisible && WindowState != WindowState.Minimized)
+        {
+            HideToTray(showBalloon: false);
+        }
+        else
+        {
+            ShowFromTray();
+        }
+    }
+
+    private void ShowFromTray()
+    {
+        if (!IsVisible)
+        {
+            Show();
+        }
+
+        if (WindowState == WindowState.Minimized)
+        {
+            WindowState = WindowState.Normal;
+        }
+
+        Activate();
+        UpdateHomeLiveMetricsVisibility();
+        SyncTrayMenuState();
+    }
+
+    private void HideToTray(bool showBalloon)
+    {
+        Hide();
+        UpdateHomeLiveMetricsVisibility();
+        SyncTrayMenuState();
+        if (showBalloon)
+        {
+            _trayIcon?.ShowMinimizedBalloonOnce();
+        }
+    }
+
+    private void SyncTrayMenuState()
+    {
+        _trayIcon?.UpdateMenuState(
+            isMainWindowVisible: IsVisible && WindowState != WindowState.Minimized,
+            isRunning: _isRunning,
+            isTransitioning: _isTransitioning,
+            isFloatingVisible: _floatingWindow?.IsVisible == true,
+            isFloatingLocked: _isFloatingLocked);
     }
 
     private void UpdateHomeLiveMetricsVisibility()
@@ -1607,6 +1728,7 @@ public partial class MainWindow : FluentWindow
             _suppressSettingChanges = previousSuppress;
         }
 
+        UpdateFloatingPreviewStage();
         ScheduleSettingsSave();
     }
 
@@ -1621,19 +1743,13 @@ public partial class MainWindow : FluentWindow
 
     private void OnFloatingWindowOpenSettingsRequested()
     {
-        if (WindowState == WindowState.Minimized)
-        {
-            WindowState = WindowState.Normal;
-        }
-
-        Show();
-        Activate();
-        ShowPage(SettingsPage);
-        SetActiveNavigationItem("SettingsPage");
+        ShowFromTray();
+        OpenSettingsTab("Floating");
     }
 
     private void UpdateFloatingLockButtonState(bool locked)
     {
+        _isFloatingLocked = locked;
         FloatingLockButton.Content = locked ? "解锁悬浮窗" : "锁定悬浮窗";
         FloatingLockButton.Icon = new SymbolIcon(locked ? SymbolRegular.LockOpen24 : SymbolRegular.LockClosed24);
         HomeFloatingLockText.Text = locked ? "已锁定" : "锁定";
@@ -1641,6 +1757,7 @@ public partial class MainWindow : FluentWindow
         HomeFloatingLockButton.ToolTip = locked
             ? "悬浮窗已锁定（点击穿透），点击或按 Ctrl+Alt+L 解锁"
             : "锁定悬浮窗（开启鼠标点击穿透，Ctrl+Alt+L）";
+        SyncTrayMenuState();
     }
 
     private void TryShowFloatingWindow()
@@ -1792,6 +1909,87 @@ public partial class MainWindow : FluentWindow
         ScheduleSettingsSave();
     }
 
+    private void OnHotkeysEnabledChanged(object sender, RoutedEventArgs e)
+    {
+        if (_suppressSettingChanges)
+        {
+            return;
+        }
+
+        UnregisterHotkeys();
+        if (HotkeysEnabledSwitch.IsChecked == true)
+        {
+            RegisterHotkeys();
+        }
+
+        ScheduleSettingsSave();
+    }
+
+    private void OnSettingsTabChecked(object sender, RoutedEventArgs e)
+    {
+        if (sender is not RadioButton { Tag: string tabTag })
+        {
+            return;
+        }
+
+        ApplySettingsTabVisibility(tabTag);
+    }
+
+    private void OpenSettingsTab(string tabTag)
+    {
+        ShowPage(SettingsPage);
+        SetActiveNavigationItem("SettingsPage");
+
+        var tabButton = tabTag switch
+        {
+            "Audio" => SettingsTabAudioButton,
+            "Floating" => SettingsTabFloatingButton,
+            "General" => SettingsTabGeneralButton,
+            _ => SettingsTabServicesButton
+        };
+
+        if (tabButton is not null)
+        {
+            tabButton.IsChecked = true;
+        }
+
+        ApplySettingsTabVisibility(tabTag);
+    }
+
+    private void ApplySettingsTabVisibility(string tabTag)
+    {
+        if (SettingsServicesPanel is null ||
+            SettingsAudioPanel is null ||
+            SettingsFloatingPanel is null ||
+            SettingsGeneralPanel is null)
+        {
+            return;
+        }
+
+        SettingsServicesPanel.Visibility = tabTag == "Services" ? Visibility.Visible : Visibility.Collapsed;
+        SettingsAudioPanel.Visibility = tabTag == "Audio" ? Visibility.Visible : Visibility.Collapsed;
+        SettingsFloatingPanel.Visibility = tabTag == "Floating" ? Visibility.Visible : Visibility.Collapsed;
+        SettingsGeneralPanel.Visibility = tabTag == "General" ? Visibility.Visible : Visibility.Collapsed;
+
+        if (SettingsActiveTabHintText is not null)
+        {
+            SettingsActiveTabHintText.Text = tabTag switch
+            {
+                "Audio" => "选择监听输出设备并调节 VAD 断句响应节奏",
+                "Floating" => "实时预览并调整悬浮字幕窗的皮肤、排版与透明度",
+                "General" => "管理主题外观、系统托盘行为、快捷键与诊断模式",
+                _ => "配置语音识别服务与字幕翻译模型"
+            };
+        }
+
+        if (tabTag == "Floating")
+        {
+            UpdateFloatingPreviewStage();
+        }
+
+        SettingsScrollViewer?.ScrollToHome();
+    }
+
     private void OnNumberSettingChanged(object sender, NumberBoxValueChangedEventArgs e)
     {
         ScheduleSettingsSave();
@@ -1861,12 +2059,215 @@ public partial class MainWindow : FluentWindow
             return;
         }
 
+        UpdateFloatingPreviewStage();
         _floatingWindow?.ApplySettings(
             NumberValue(FloatingFontSizeBox, 18),
             (int)NumberValue(FloatingLinesBox, 2),
             FloatingOpacitySlider.Value,
             SelectedFloatingDisplayMode(),
             SelectedFloatingTheme());
+    }
+
+    private void OnPreviewBackdropChecked(object sender, RoutedEventArgs e)
+    {
+        if (PreviewBackdropDarkVideo is null ||
+            PreviewBackdropLightPpt is null ||
+            PreviewBackdropWallpaper is null ||
+            sender is not RadioButton { Tag: string backdropTag })
+        {
+            return;
+        }
+
+        PreviewBackdropDarkVideo.Visibility = backdropTag == "DarkVideo" ? Visibility.Visible : Visibility.Collapsed;
+        PreviewBackdropLightPpt.Visibility = backdropTag == "LightPpt" ? Visibility.Visible : Visibility.Collapsed;
+        PreviewBackdropWallpaper.Visibility = backdropTag == "Wallpaper" ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void UpdateFloatingPreviewStage()
+    {
+        if (PreviewChromeBackgroundBrush is null ||
+            PreviewEntryLatest is null ||
+            PreviewEntryPrevious is null ||
+            PreviewEntryOldest is null ||
+            FloatingFontSizeBox is null ||
+            FloatingLinesBox is null ||
+            FloatingOpacitySlider is null)
+        {
+            return;
+        }
+
+        var fontSize = Math.Clamp(NumberValue(FloatingFontSizeBox, 18), 12d, 72d);
+        var maxItems = Math.Clamp((int)NumberValue(FloatingLinesBox, 2), 1, 3);
+        var userOpacity = Math.Clamp(FloatingOpacitySlider.Value, 0d, 0.95d);
+        var displayMode = SelectedFloatingDisplayMode();
+        var theme = SelectedFloatingTheme();
+
+        DropShadowEffect textShadow;
+        switch (theme)
+        {
+            case SubtitleOverlayTheme.HighContrast:
+                PreviewChromeBackgroundBrush.Color = Color.FromRgb(0x09, 0x0B, 0x0F);
+                PreviewChromeBackgroundBrush.Opacity = Math.Max(userOpacity, 0.86d);
+                PreviewChromeBorderTopStop.Color = Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF);
+                PreviewChromeBorderBottomStop.Color = Color.FromArgb(0x2E, 0xFF, 0xFF, 0xFF);
+                PreviewChromeShadowEffect.Opacity = 0.62d;
+                PreviewChromeShadowEffect.BlurRadius = 18d;
+                textShadow = CreatePreviewTextShadow(6d, 1.5d, 0.95d);
+                break;
+
+            case SubtitleOverlayTheme.MinimalFloating:
+                PreviewChromeBackgroundBrush.Color = Color.FromRgb(0x0B, 0x10, 0x17);
+                PreviewChromeBackgroundBrush.Opacity = Math.Min(userOpacity, 0.22d);
+                PreviewChromeBorderTopStop.Color = Color.FromArgb(0x18, 0xFF, 0xFF, 0xFF);
+                PreviewChromeBorderBottomStop.Color = Color.FromArgb(0x08, 0xFF, 0xFF, 0xFF);
+                PreviewChromeShadowEffect.Opacity = PreviewChromeBackgroundBrush.Opacity > 0.04d ? 0.22d : 0d;
+                PreviewChromeShadowEffect.BlurRadius = 10d;
+                textShadow = CreatePreviewTextShadow(7d, 1.5d, 1.0d);
+                break;
+
+            default:
+                PreviewChromeBackgroundBrush.Color = Color.FromRgb(0x0F, 0x14, 0x1B);
+                PreviewChromeBackgroundBrush.Opacity = userOpacity;
+                PreviewChromeBorderTopStop.Color = Color.FromArgb(0x3D, 0xFF, 0xFF, 0xFF);
+                PreviewChromeBorderBottomStop.Color = Color.FromArgb(0x14, 0xFF, 0xFF, 0xFF);
+                PreviewChromeShadowEffect.Opacity = userOpacity > 0.05d ? 0.46d : 0d;
+                PreviewChromeShadowEffect.BlurRadius = 16d;
+                textShadow = CreatePreviewTextShadow(5d, 1d, 0.88d);
+                break;
+        }
+
+        PreviewEntryOldest.Visibility = maxItems >= 3 ? Visibility.Visible : Visibility.Collapsed;
+        PreviewEntryPrevious.Visibility = maxItems >= 2 ? Visibility.Visible : Visibility.Collapsed;
+        PreviewEntryLatest.Visibility = Visibility.Visible;
+
+        // 按舞台尺寸等比例缩放预览字号，既真实反馈调大/调小变化又不撑爆预览容器
+        var previewPrimarySize = Math.Clamp(fontSize * 0.74d, 11d, 24d);
+        var previewSecondarySize = Math.Max(10d, previewPrimarySize * 0.84d);
+        var whiteBrush = CreateFrozenBrush(Color.FromRgb(0xFF, 0xFF, 0xFF));
+        var warmBrush = CreateFrozenBrush(Color.FromRgb(0xFF, 0xF3, 0xC8));
+        var softSourceBrush = CreateFrozenBrush(Color.FromArgb(0xB8, 0xE6, 0xEE, 0xF8));
+        var softTranslationBrush = CreateFrozenBrush(Color.FromArgb(0xDC, 0xF0, 0xF4, 0xFA));
+
+        ApplyPreviewRowPresentation(
+            PreviewOldestPrimaryText,
+            PreviewOldestSecondaryText,
+            "Let's review the acoustic pipeline first.",
+            "我们先快速回顾一下声学识别链路。",
+            displayMode,
+            previewPrimarySize,
+            previewSecondarySize,
+            whiteBrush,
+            warmBrush,
+            softSourceBrush,
+            softTranslationBrush,
+            textShadow);
+        ApplyPreviewRowPresentation(
+            PreviewPrevPrimaryText,
+            PreviewPrevSecondaryText,
+            "Adaptive VAD trims pauses automatically.",
+            "自适应断句会根据语速动态调整停顿窗口。",
+            displayMode,
+            previewPrimarySize,
+            previewSecondarySize,
+            whiteBrush,
+            warmBrush,
+            softSourceBrush,
+            softTranslationBrush,
+            textShadow);
+        ApplyPreviewRowPresentation(
+            PreviewLatestPrimaryText,
+            PreviewLatestSecondaryText,
+            "Real-time bilingual captions stay clear on any screen.",
+            "双语实时字幕在明暗画面下都能清晰易读。",
+            displayMode,
+            previewPrimarySize,
+            previewSecondarySize,
+            whiteBrush,
+            warmBrush,
+            softSourceBrush,
+            softTranslationBrush,
+            textShadow);
+    }
+
+    private static void ApplyPreviewRowPresentation(
+        TextBlock primaryText,
+        TextBlock secondaryText,
+        string source,
+        string translation,
+        SubtitleDisplayMode mode,
+        double primarySize,
+        double secondarySize,
+        Brush whiteBrush,
+        Brush warmBrush,
+        Brush softSourceBrush,
+        Brush softTranslationBrush,
+        DropShadowEffect shadow)
+    {
+        primaryText.Effect = shadow;
+        secondaryText.Effect = shadow;
+
+        switch (mode)
+        {
+            case SubtitleDisplayMode.BilingualTranslationFirst:
+                primaryText.Text = translation;
+                primaryText.FontSize = primarySize;
+                primaryText.FontWeight = FontWeights.SemiBold;
+                primaryText.Foreground = warmBrush;
+                primaryText.Visibility = Visibility.Visible;
+
+                secondaryText.Text = source;
+                secondaryText.FontSize = secondarySize;
+                secondaryText.FontWeight = FontWeights.Normal;
+                secondaryText.Foreground = softSourceBrush;
+                secondaryText.Visibility = Visibility.Visible;
+                break;
+
+            case SubtitleDisplayMode.TranslationOnly:
+                primaryText.Text = translation;
+                primaryText.FontSize = primarySize;
+                primaryText.FontWeight = FontWeights.SemiBold;
+                primaryText.Foreground = warmBrush;
+                primaryText.Visibility = Visibility.Visible;
+                secondaryText.Visibility = Visibility.Collapsed;
+                break;
+
+            case SubtitleDisplayMode.SourceOnly:
+                primaryText.Text = source;
+                primaryText.FontSize = primarySize;
+                primaryText.FontWeight = FontWeights.SemiBold;
+                primaryText.Foreground = whiteBrush;
+                primaryText.Visibility = Visibility.Visible;
+                secondaryText.Visibility = Visibility.Collapsed;
+                break;
+
+            default:
+                primaryText.Text = source;
+                primaryText.FontSize = primarySize;
+                primaryText.FontWeight = FontWeights.SemiBold;
+                primaryText.Foreground = whiteBrush;
+                primaryText.Visibility = Visibility.Visible;
+
+                secondaryText.Text = translation;
+                secondaryText.FontSize = secondarySize;
+                secondaryText.FontWeight = FontWeights.Normal;
+                secondaryText.Foreground = softTranslationBrush;
+                secondaryText.Visibility = Visibility.Visible;
+                break;
+        }
+    }
+
+    private static DropShadowEffect CreatePreviewTextShadow(double blurRadius, double shadowDepth, double opacity)
+    {
+        var effect = new DropShadowEffect
+        {
+            Color = Colors.Black,
+            BlurRadius = blurRadius,
+            ShadowDepth = shadowDepth,
+            Direction = 270,
+            Opacity = opacity
+        };
+        effect.Freeze();
+        return effect;
     }
 
     private SubtitleDisplayMode SelectedFloatingDisplayMode()
@@ -1996,8 +2397,7 @@ public partial class MainWindow : FluentWindow
 
     private void OnGoToSettingsClick(object sender, RoutedEventArgs e)
     {
-        ShowPage(SettingsPage);
-        SetActiveNavigationItem("SettingsPage");
+        OpenSettingsTab("Services");
     }
 
     private void OnAsrCredentialLostFocus(object sender, RoutedEventArgs e)
@@ -2026,10 +2426,152 @@ public partial class MainWindow : FluentWindow
         AsrProviderInfoText.Visibility = isCustom ? Visibility.Collapsed : Visibility.Visible;
 
         LoadAsrSlotToUi(provider);
+        if (AsrTestResultText is not null)
+        {
+            AsrTestResultText.Text = "";
+            AsrTestResultText.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush");
+        }
         UpdateAsrValidationHint();
         UpdateApiKeyGuidance();
         UpdateHomeServiceSummary();
         ScheduleSettingsSave();
+    }
+
+    private async void OnTestAsrConnectionClick(object sender, RoutedEventArgs e)
+    {
+        if (_testingAsrConnection)
+        {
+            return;
+        }
+
+        UpdateAsrValidationHint();
+        var provider = GetSelectedAsrProvider();
+        var candidateAsr = BuildCurrentAsrSettings();
+        var errors = new List<string>();
+        if (string.IsNullOrWhiteSpace(candidateAsr.ActiveApiKey))
+        {
+            errors.Add("请先填写 API Key。");
+        }
+
+        if (provider == "Custom")
+        {
+            if (!Uri.TryCreate(candidateAsr.Custom.BaseUrl, UriKind.Absolute, out var uri) ||
+                uri.Scheme is not ("http" or "https"))
+            {
+                errors.Add("自定义 Base URL 必须是有效的 HTTP(S) 地址。");
+            }
+
+            if (string.IsNullOrWhiteSpace(candidateAsr.Custom.Model))
+            {
+                errors.Add("自定义模型名不能为空。");
+            }
+        }
+
+        if (errors.Count > 0)
+        {
+            AsrTestResultText.Text = string.Join(" ", errors);
+            AsrTestResultText.SetResourceReference(TextBlock.ForegroundProperty, "AcousticPeakBrush");
+            return;
+        }
+
+        _testingAsrConnection = true;
+        TestAsrConnectionButton.IsEnabled = false;
+        AsrTestProgressRing.Visibility = Visibility.Visible;
+        AsrTestResultText.Text = "正在发送测试音频探测连接...";
+        AsrTestResultText.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush");
+
+        var started = Stopwatch.StartNew();
+        try
+        {
+            var probeTimeoutMs = Math.Min(candidateAsr.TimeoutMs, 15000);
+            await using var client = AsrWorkerClientFactory.Create(
+                AppContext.BaseDirectory,
+                _dataDirectory,
+                candidateAsr,
+                overrideTimeoutMs: probeTimeoutMs);
+            await client.StartAsync();
+
+            var audioBase64 = AsrWorkerClientFactory.CreateConnectionTestAudioBase64();
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(probeTimeoutMs));
+            var response = await client.TranscribeAsync(
+                WorkerRequest.Transcribe(
+                    $"asr-test-{Guid.NewGuid():N}",
+                    0,
+                    0,
+                    480,
+                    16000,
+                    "auto",
+                    audioBase64),
+                cts.Token);
+            await client.ShutdownAsync();
+            started.Stop();
+
+            var outcome = AsrResultClassifier.Classify(response);
+            if (outcome is SubtitleStatus.Final or SubtitleStatus.NoSpeech)
+            {
+                var providerLabel = provider switch
+                {
+                    "Zhipu" => "GLM-ASR-2512",
+                    "DeepSeek" => "DeepSeek ASR",
+                    "Custom" => candidateAsr.Custom.Model.Trim(),
+                    _ => "MiMo ASR"
+                };
+                AsrTestResultText.Text = $"连接成功 · {started.ElapsedMilliseconds} ms · {providerLabel} 服务响应正常";
+                AsrTestResultText.SetResourceReference(TextBlock.ForegroundProperty, "AcousticLiveBrush");
+                ScheduleSettingsSave();
+            }
+            else
+            {
+                AsrTestResultText.Text =
+                    $"失败 · {response.ErrorKind ?? response.ErrorCode ?? "unknown"} · {response.ErrorMessage}";
+                AsrTestResultText.SetResourceReference(TextBlock.ForegroundProperty, "AcousticPeakBrush");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            AsrTestResultText.Text = "失败 · timeout · 连接测试超时，请检查网络或接口地址。";
+            AsrTestResultText.SetResourceReference(TextBlock.ForegroundProperty, "AcousticPeakBrush");
+        }
+        catch (Exception ex)
+        {
+            AsrTestResultText.Text = $"失败 · connection · {ex.Message}";
+            AsrTestResultText.SetResourceReference(TextBlock.ForegroundProperty, "AcousticPeakBrush");
+        }
+        finally
+        {
+            _testingAsrConnection = false;
+            AsrTestProgressRing.Visibility = Visibility.Collapsed;
+            TestAsrConnectionButton.IsEnabled = true;
+        }
+    }
+
+    private AsrSettings BuildCurrentAsrSettings()
+    {
+        var provider = GetSelectedAsrProvider();
+        return _settings.Asr with
+        {
+            ActiveProvider = provider,
+            Mimo = provider == "Mimo"
+                ? _settings.Asr.Mimo with { ApiKey = AsrApiKeyBox.Password }
+                : _settings.Asr.Mimo,
+            Zhipu = provider == "Zhipu"
+                ? _settings.Asr.Zhipu with { ApiKey = AsrApiKeyBox.Password }
+                : _settings.Asr.Zhipu,
+            DeepSeek = provider == "DeepSeek"
+                ? _settings.Asr.DeepSeek with { ApiKey = AsrApiKeyBox.Password }
+                : _settings.Asr.DeepSeek,
+            Custom = provider == "Custom"
+                ? _settings.Asr.Custom with
+                {
+                    ApiKey = AsrApiKeyBox.Password,
+                    BaseUrl = AsrCustomBaseUrlBox.Text.Trim(),
+                    Model = AsrCustomModelBox.Text.Trim()
+                }
+                : _settings.Asr.Custom,
+            Language = "auto",
+            TimeoutMs = (int)NumberValue(TimeoutBox, 30000),
+            MaxConcurrency = (int)NumberValue(MaxConcurrencyBox, 2)
+        };
     }
 
     private void LoadAsrSlotToUi(string provider)
@@ -2132,6 +2674,8 @@ public partial class MainWindow : FluentWindow
         SelectFloatingDisplayMode(settings.SubtitleWindow.DisplayMode);
         SelectFloatingTheme(settings.SubtitleWindow.Theme);
         HotkeysEnabledSwitch.IsChecked = settings.Hotkeys.Enabled;
+        CloseToTraySwitch.IsChecked = settings.Tray.CloseToTray;
+        MinimizeToTraySwitch.IsChecked = settings.Tray.MinimizeToTray;
         LanguageBox.Text = "自动检测 (auto)";
         SelectThemeMode(settings.Appearance.Theme);
         _syncingQuickControls = true;
@@ -2147,6 +2691,7 @@ public partial class MainWindow : FluentWindow
         SelectTranslationTargetLanguage(settings.Translation.TargetLanguage);
         SentenceAccumulationLimitBox.Value = settings.Translation.SentenceAccumulationLimit;
         RefreshTranslationProfileList(settings.Translation.ActiveProfileId);
+        UpdateFloatingPreviewStage();
     }
 
     private async Task SaveSettingsAsync()
@@ -2232,6 +2777,11 @@ public partial class MainWindow : FluentWindow
             Appearance = _settings.Appearance with
             {
                 Theme = SelectedThemeMode()
+            },
+            Tray = _settings.Tray with
+            {
+                CloseToTray = CloseToTraySwitch.IsChecked == true,
+                MinimizeToTray = MinimizeToTraySwitch.IsChecked == true
             }
             };
 
@@ -2275,8 +2825,7 @@ public partial class MainWindow : FluentWindow
             };
         }
 
-        ShowPage(SettingsPage);
-        SetActiveNavigationItem("SettingsPage");
+        OpenSettingsTab("Services");
         return null;
     }
 
@@ -2412,10 +2961,24 @@ public partial class MainWindow : FluentWindow
     private async void OnEditTranslationProfileClick(object sender, RoutedEventArgs e)
     {
         var selected = SelectedTranslationProfile();
-        if (selected is null)
+        if (selected is not null)
         {
-            return;
+            await EditTranslationProfileAsync(selected);
         }
+    }
+
+    private async void OnInlineEditTranslationProfileClick(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        if (ResolveProfileFromSender(sender) is { } profile)
+        {
+            SelectTranslationProfileById(profile.Id);
+            await EditTranslationProfileAsync(profile);
+        }
+    }
+
+    private async Task EditTranslationProfileAsync(TranslationProfile selected)
+    {
         var edited = await ShowTranslationProfileEditorAsync(selected);
         if (edited is null)
         {
@@ -2458,10 +3021,23 @@ public partial class MainWindow : FluentWindow
     private async void OnDeleteTranslationProfileClick(object sender, RoutedEventArgs e)
     {
         var selected = SelectedTranslationProfile();
-        if (selected is null)
+        if (selected is not null)
         {
-            return;
+            await DeleteTranslationProfileAsync(selected);
         }
+    }
+
+    private async void OnInlineDeleteTranslationProfileClick(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        if (ResolveProfileFromSender(sender) is { } profile)
+        {
+            await DeleteTranslationProfileAsync(profile);
+        }
+    }
+
+    private async Task DeleteTranslationProfileAsync(TranslationProfile selected)
+    {
         var confirmed = await ShowConfirmDialogAsync(
             "删除翻译配置",
             $"确定删除模型配置“{selected.Name}”吗？",
@@ -2474,25 +3050,64 @@ public partial class MainWindow : FluentWindow
             return;
         }
         var profiles = _settings.Translation.Profiles.Where(profile => profile.Id != selected.Id).ToList();
+        var nextActiveId = _settings.Translation.ActiveProfileId == selected.Id
+            ? null
+            : _settings.Translation.ActiveProfileId;
         _settings = _settings with
         {
             Translation = _settings.Translation with
             {
                 Profiles = profiles,
-                ActiveProfileId = null
+                ActiveProfileId = nextActiveId
             }
         };
-        RefreshTranslationProfileList(null);
+        RefreshTranslationProfileList(nextActiveId);
         await SaveSettingsAsync();
     }
 
     private async void OnTestTranslationProfileClick(object sender, RoutedEventArgs e)
     {
         var profile = SelectedTranslationProfile();
-        if (profile is null)
+        if (profile is not null)
         {
-            return;
+            await TestTranslationProfileAsync(profile);
         }
+    }
+
+    private async void OnInlineTestTranslationProfileClick(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        if (ResolveProfileFromSender(sender) is { } profile)
+        {
+            SelectTranslationProfileById(profile.Id);
+            await TestTranslationProfileAsync(profile);
+        }
+    }
+
+    private TranslationProfile? ResolveProfileFromSender(object sender)
+    {
+        if (sender is FrameworkElement { Tag: Guid id })
+        {
+            return _settings.Translation.Profiles.FirstOrDefault(profile => profile.Id == id);
+        }
+
+        return null;
+    }
+
+    private void SelectTranslationProfileById(Guid id)
+    {
+        if (TranslationProfileList.ItemsSource is IEnumerable<TranslationProfileDisplayItem> items)
+        {
+            var match = items.FirstOrDefault(item => item.Id == id);
+            if (match is not null)
+            {
+                TranslationProfileList.SelectedItem = match;
+            }
+        }
+    }
+
+    private async Task TestTranslationProfileAsync(TranslationProfile profile)
+    {
         var errors = TranslationProfileRules.Validate(profile);
         if (errors.Count > 0)
         {
@@ -2561,22 +3176,72 @@ public partial class MainWindow : FluentWindow
 
     private async Task<TranslationProfile?> ShowTranslationProfileEditorAsync(TranslationProfile? existing)
     {
-        var nameBox = new TextBox { Text = existing?.Name ?? "", Height = 34 };
-        var baseUrlBox = new TextBox { Text = existing?.BaseUrl ?? "", Height = 34 };
-        var endpointPreview = new TextBlock
+        var nameBox = new Wpf.Ui.Controls.TextBox
         {
-            Foreground = FindResource("TextFillColorSecondaryBrush") as System.Windows.Media.Brush,
-            FontSize = 11,
-            TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 4, 0, 0)
+            Text = existing?.Name ?? "",
+            PlaceholderText = "例如：DeepSeek / 本地 Ollama",
+            ClearButtonEnabled = true
         };
-        var modelBox = new TextBox { Text = existing?.Model ?? "", Height = 34 };
-        var apiKeyBox = new PasswordBox { Password = existing?.ApiKey ?? "", Height = 34 };
-        var locationBox = new ComboBox { Height = 34 };
+        var locationBox = new ComboBox
+        {
+            VerticalContentAlignment = VerticalAlignment.Center
+        };
         locationBox.Items.Add(new ComboBoxItem { Content = "本地服务", Tag = TranslationServiceLocation.Local });
         locationBox.Items.Add(new ComboBoxItem { Content = "远程服务", Tag = TranslationServiceLocation.Remote });
         locationBox.SelectedIndex = existing?.Location == TranslationServiceLocation.Local ? 0 : 1;
-        var compatibilityBox = new ComboBox { Height = 34 };
+
+        var baseUrlBox = new Wpf.Ui.Controls.TextBox
+        {
+            Text = existing?.BaseUrl ?? "",
+            PlaceholderText = "https://api.deepseek.com/v1 或 http://127.0.0.1:11434/v1",
+            ClearButtonEnabled = true
+        };
+        var endpointDot = new System.Windows.Shapes.Ellipse
+        {
+            Width = 6,
+            Height = 6,
+            Margin = new Thickness(0, 0, 7, 0),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var endpointPreview = new TextBlock
+        {
+            FontFamily = new FontFamily("Cascadia Mono, Consolas, Segoe UI"),
+            FontSize = 11.5,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        endpointPreview.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush");
+        var endpointPreviewPanel = new DockPanel();
+        DockPanel.SetDock(endpointDot, Dock.Left);
+        endpointPreviewPanel.Children.Add(endpointDot);
+        endpointPreviewPanel.Children.Add(endpointPreview);
+        var endpointChip = new Border
+        {
+            CornerRadius = new CornerRadius(6),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(10, 6, 10, 6),
+            Margin = new Thickness(0, 6, 0, 0),
+            Child = endpointPreviewPanel
+        };
+        endpointChip.SetResourceReference(Border.BackgroundProperty, "SubtleFillColorSecondaryBrush");
+        endpointChip.SetResourceReference(Border.BorderBrushProperty, "CardStrokeColorDefaultBrush");
+
+        var modelBox = new Wpf.Ui.Controls.TextBox
+        {
+            Text = existing?.Model ?? "",
+            PlaceholderText = "例如：deepseek-chat / qwen2.5",
+            ClearButtonEnabled = true
+        };
+        var apiKeyBox = new Wpf.Ui.Controls.PasswordBox
+        {
+            Password = existing?.ApiKey ?? "",
+            PlaceholderText = "本地服务如无需鉴权可留空"
+        };
+
+        var compatibilityBox = new ComboBox
+        {
+            VerticalContentAlignment = VerticalAlignment.Center
+        };
         foreach (var compatibility in Enum.GetValues<TranslationRequestCompatibility>())
         {
             compatibilityBox.Items.Add(new ComboBoxItem { Content = CompatibilityLabel(compatibility), Tag = compatibility });
@@ -2584,6 +3249,7 @@ public partial class MainWindow : FluentWindow
         compatibilityBox.SelectedIndex = Math.Max(0, Array.IndexOf(
             Enum.GetValues<TranslationRequestCompatibility>(),
             existing?.RequestCompatibility ?? TranslationRequestCompatibility.Standard));
+
         var timeoutBox = new NumberBox
         {
             Value = existing?.TimeoutMs ?? 10000,
@@ -2598,34 +3264,54 @@ public partial class MainWindow : FluentWindow
             Maximum = 4,
             SmallChange = 1
         };
-        var customExtraBodyBox = new TextBox
+        var customExtraBodyBox = new Wpf.Ui.Controls.TextBox
         {
             Text = existing?.CustomExtraBody.GetRawText() ?? "{}",
             AcceptsReturn = true,
             TextWrapping = TextWrapping.Wrap,
+            FontFamily = new FontFamily("Cascadia Mono, Consolas"),
+            FontSize = 12,
             MinHeight = 72,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto
         };
+
         var validationText = new TextBlock
         {
-            Foreground = TryFindResource("SystemFillColorCriticalBrush") as System.Windows.Media.Brush
-                ?? System.Windows.Media.Brushes.IndianRed,
             TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 8, 0, 0)
+            FontSize = 12
         };
+        validationText.SetResourceReference(TextBlock.ForegroundProperty, "AcousticPeakBrush");
+        var validationBanner = new Border
+        {
+            CornerRadius = new CornerRadius(6),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(12, 8, 12, 8),
+            Margin = new Thickness(0, 10, 0, 0),
+            Visibility = Visibility.Collapsed,
+            Child = validationText
+        };
+        validationBanner.SetResourceReference(Border.BackgroundProperty, "AcousticPeakSoftBrush");
+        validationBanner.SetResourceReference(Border.BorderBrushProperty, "AcousticPeakBrush");
+
+        void ShowValidationError(string message)
+        {
+            validationText.Text = message;
+            validationBanner.Visibility = Visibility.Visible;
+        }
+
         var advancedPanel = new StackPanel();
         advancedPanel.Children.Add(CreateField("请求兼容", compatibilityBox));
         var limits = new Grid();
         limits.ColumnDefinitions.Add(new ColumnDefinition());
-        limits.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+        limits.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(14) });
         limits.ColumnDefinitions.Add(new ColumnDefinition());
-        var timeoutField = CreateField("超时 ms", timeoutBox);
+        var timeoutField = CreateField("超时 (ms)", timeoutBox);
         var concurrencyField = CreateField("最大并发", concurrencyBox);
         Grid.SetColumn(concurrencyField, 2);
         limits.Children.Add(timeoutField);
         limits.Children.Add(concurrencyField);
         advancedPanel.Children.Add(limits);
-        var customField = CreateField("Custom extraBody", customExtraBodyBox);
+        var customField = CreateField("Custom extraBody (JSON)", customExtraBodyBox);
         advancedPanel.Children.Add(customField);
 
         void UpdateCompatibilityVisibility()
@@ -2640,13 +3326,18 @@ public partial class MainWindow : FluentWindow
 
         void UpdateEndpointPreview()
         {
-            try
+            // 使用无异常分支解析，避免逐字输入时每次按键抛异常造成卡顿
+            if (TranslationProfileRules.TryBuildFinalEndpoint(baseUrlBox.Text, out var finalEndpoint))
             {
-                endpointPreview.Text = $"最终请求: {TranslationProfileRules.BuildFinalEndpoint(baseUrlBox.Text)}";
+                endpointPreview.Text = $"最终请求  {finalEndpoint}";
+                endpointChip.ToolTip = finalEndpoint;
+                endpointDot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, "AcousticLiveBrush");
             }
-            catch
+            else
             {
-                endpointPreview.Text = "最终请求: 等待有效 Base URL";
+                endpointPreview.Text = "最终请求  等待输入有效的 HTTP(S) Base URL";
+                endpointChip.ToolTip = null;
+                endpointDot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, "AcousticIdleBrush");
             }
         }
         baseUrlBox.TextChanged += (_, _) => UpdateEndpointPreview();
@@ -2662,39 +3353,100 @@ public partial class MainWindow : FluentWindow
 
         var form = new StackPanel
         {
-            Width = 480,
-            Margin = new Thickness(0, 4, 0, 0)
+            Width = 512,
+            Margin = new Thickness(0, 2, 4, 2)
         };
+
+        // 顶部紧凑协议说明条（保留 TranslationProtocolNotice 契约）
+        var protocolIcon = new SymbolIcon(SymbolRegular.Info20)
+        {
+            FontSize = 14,
+            Margin = new Thickness(0, 0, 8, 0),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        protocolIcon.SetResourceReference(Control.ForegroundProperty, "AccentTextFillColorPrimaryBrush");
         var protocolNotice = new TextBlock
         {
             Text = "接口协议：兼容 OpenAI Chat Completions API",
-            Foreground = FindResource("TextFillColorSecondaryBrush") as System.Windows.Media.Brush,
             FontSize = 12,
-            Margin = new Thickness(0, 0, 0, 12)
+            VerticalAlignment = VerticalAlignment.Center
         };
+        protocolNotice.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush");
         AutomationProperties.SetAutomationId(protocolNotice, "TranslationProtocolNotice");
-        form.Children.Add(protocolNotice);
-        form.Children.Add(CreateField("配置名称", nameBox));
-        var baseUrlField = CreateField("Base URL", baseUrlBox);
-        baseUrlField.Children.Add(endpointPreview);
-        form.Children.Add(baseUrlField);
-        form.Children.Add(CreateField("模型名称", modelBox));
-        form.Children.Add(CreateField("API Key", apiKeyBox));
-        form.Children.Add(CreateField("服务位置", locationBox));
-        var advancedExpander = new Expander
+        var protocolRow = new StackPanel { Orientation = Orientation.Horizontal };
+        protocolRow.Children.Add(protocolIcon);
+        protocolRow.Children.Add(protocolNotice);
+        var protocolBanner = new Border
         {
-            Header = "高级设置",
+            CornerRadius = new CornerRadius(6),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(10, 7, 10, 7),
+            Margin = new Thickness(0, 0, 0, 14),
+            Child = protocolRow
+        };
+        protocolBanner.SetResourceReference(Border.BackgroundProperty, "SubtleFillColorSecondaryBrush");
+        protocolBanner.SetResourceReference(Border.BorderBrushProperty, "CardStrokeColorDefaultBrush");
+        form.Children.Add(protocolBanner);
+
+        // 第一排：配置名称 + 服务位置（双栏更紧凑清晰）
+        var topRow = new Grid();
+        topRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.45, GridUnitType.Star) });
+        topRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(14) });
+        topRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var nameField = CreateField("配置名称", nameBox);
+        var locationField = CreateField("服务位置", locationBox);
+        Grid.SetColumn(locationField, 2);
+        topRow.Children.Add(nameField);
+        topRow.Children.Add(locationField);
+        form.Children.Add(topRow);
+
+        // 第二排：Base URL + 实时端点预览条
+        var baseUrlField = CreateField("Base URL", baseUrlBox);
+        baseUrlField.Children.Add(endpointChip);
+        form.Children.Add(baseUrlField);
+
+        // 第三排：模型名称 + API Key（双栏）
+        var modelKeyRow = new Grid();
+        modelKeyRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        modelKeyRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(14) });
+        modelKeyRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var modelField = CreateField("模型名称", modelBox);
+        var apiKeyField = CreateField("API Key", apiKeyBox);
+        Grid.SetColumn(apiKeyField, 2);
+        modelKeyRow.Children.Add(modelField);
+        modelKeyRow.Children.Add(apiKeyField);
+        form.Children.Add(modelKeyRow);
+
+        // 第四排：Fluent CardExpander 高级设置（继承 Expander，兼容 ExpandCollapsePattern）
+        var advancedHeader = new StackPanel();
+        var advancedHeaderTitle = new TextBlock { Text = "高级设置", FontSize = 13, FontWeight = FontWeights.Medium };
+        advancedHeaderTitle.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorPrimaryBrush");
+        var advancedHeaderHint = new TextBlock
+        {
+            Text = "请求兼容模板、超时与最大并发",
+            FontSize = 11.5,
+            Margin = new Thickness(0, 1, 0, 0)
+        };
+        advancedHeaderHint.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush");
+        advancedHeader.Children.Add(advancedHeaderTitle);
+        advancedHeader.Children.Add(advancedHeaderHint);
+
+        var advancedExpander = new CardExpander
+        {
+            Header = advancedHeader,
+            Icon = new SymbolIcon(SymbolRegular.Options24),
+            ContentPadding = new Thickness(14, 12, 14, 4),
             Content = advancedPanel,
             Margin = new Thickness(0, 4, 0, 0)
         };
         AutomationProperties.SetAutomationId(advancedExpander, "TranslationAdvancedSettingsExpander");
         form.Children.Add(advancedExpander);
-        form.Children.Add(validationText);
+        form.Children.Add(validationBanner);
 
         TranslationProfile? candidate = null;
         var dialogScrollViewer = new ScrollViewer
         {
-            MaxHeight = 500,
+            MaxHeight = 420,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             CanContentScroll = false,
@@ -2712,10 +3464,9 @@ public partial class MainWindow : FluentWindow
                 return;
             }
 
-            var direction = args.Delta > 0 ? -1 : 1;
-            var step = Math.Max(24, dialogScrollViewer.ViewportHeight * 0.12);
+            var step = -(args.Delta / 120d) * 48d;
             dialogScrollViewer.ScrollToVerticalOffset(
-                Math.Clamp(dialogScrollViewer.VerticalOffset + direction * step, 0, dialogScrollViewer.ScrollableHeight));
+                Math.Clamp(dialogScrollViewer.VerticalOffset + step, 0, dialogScrollViewer.ScrollableHeight));
             args.Handled = true;
         };
         AutomationProperties.SetAutomationId(dialogScrollViewer, "TranslationProfileDialogScrollViewer");
@@ -2725,10 +3476,14 @@ public partial class MainWindow : FluentWindow
             Title = existing is null ? "添加翻译模型" : "编辑翻译模型",
             PrimaryButtonText = "保存",
             CloseButtonText = "取消",
-            DialogWidth = 560,
-            DialogMaxHeight = 680,
+            PrimaryButtonAppearance = ControlAppearance.Primary,
+            DialogWidth = 588,
+            DialogMaxHeight = 620,
             Content = dialogScrollViewer
         };
+        // 去掉 ContentDialog 模板包裹整块交互区的大面积 DropShadowEffect，
+        // 消除输入与滚动时每帧重算 600x600 模糊导致的卡顿。
+        dialog.Loaded += (_, _) => StripHeavyDialogEffects(dialog, dialogScrollViewer);
         // ContentDialog's template has its own ScrollViewer; only the editor content should scroll.
         ScrollViewer.SetVerticalScrollBarVisibility(dialog, ScrollBarVisibility.Disabled);
         ScrollViewer.SetHorizontalScrollBarVisibility(dialog, ScrollBarVisibility.Disabled);
@@ -2745,7 +3500,7 @@ public partial class MainWindow : FluentWindow
             }
             catch (JsonException ex)
             {
-                validationText.Text = $"extraBody JSON 错误: line {ex.LineNumber}, byte {ex.BytePositionInLine}";
+                ShowValidationError($"extraBody JSON 错误: line {ex.LineNumber}, byte {ex.BytePositionInLine}");
                 args.Cancel = true;
                 return;
             }
@@ -2766,7 +3521,7 @@ public partial class MainWindow : FluentWindow
             var errors = TranslationProfileRules.Validate(edited);
             if (errors.Count > 0)
             {
-                validationText.Text = string.Join(Environment.NewLine, errors);
+                ShowValidationError(string.Join(Environment.NewLine, errors));
                 args.Cancel = true;
                 return;
             }
@@ -2784,6 +3539,25 @@ public partial class MainWindow : FluentWindow
 
         var result = await dialog.ShowAsync();
         return result == ContentDialogResult.Primary ? candidate : null;
+    }
+
+    private static void StripHeavyDialogEffects(DependencyObject root, DependencyObject stopNode)
+    {
+        if (ReferenceEquals(root, stopNode))
+        {
+            return;
+        }
+
+        if (root is UIElement element && element.Effect is DropShadowEffect)
+        {
+            element.Effect = null;
+        }
+
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            StripHeavyDialogEffects(VisualTreeHelper.GetChild(root, i), stopNode);
+        }
     }
 
     private static ScrollViewer? FindScrollableAncestor(
@@ -2830,15 +3604,15 @@ public partial class MainWindow : FluentWindow
 
     private static StackPanel CreateField(string label, Control control)
     {
-        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 10) };
-        panel.Children.Add(new TextBlock
+        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 12) };
+        var labelText = new TextBlock
         {
             Text = label,
             FontSize = 12,
-            Foreground = Application.Current.TryFindResource("TextFillColorSecondaryBrush") as System.Windows.Media.Brush
-                ?? System.Windows.Media.Brushes.DimGray,
-            Margin = new Thickness(0, 0, 0, 4)
-        });
+            Margin = new Thickness(0, 0, 0, 5)
+        };
+        labelText.SetResourceReference(TextBlock.ForegroundProperty, "TextFillColorSecondaryBrush");
+        panel.Children.Add(labelText);
         panel.Children.Add(control);
         return panel;
     }
@@ -2846,11 +3620,16 @@ public partial class MainWindow : FluentWindow
     private void RefreshTranslationProfileList(Guid? selectedId)
     {
         var items = _settings.Translation.Profiles
-            .Select(profile => new TranslationProfileDisplayItem(
-                profile.Id,
-                profile.Name,
-                SafeFinalEndpoint(profile.BaseUrl),
-                TranslationProfileRules.IsValidated(profile) ? "已验证" : "未验证"))
+            .Select(profile =>
+            {
+                var validated = TranslationProfileRules.IsValidated(profile);
+                return new TranslationProfileDisplayItem(
+                    profile.Id,
+                    profile.Name,
+                    SafeFinalEndpoint(profile.BaseUrl),
+                    validated ? "已验证" : "未验证",
+                    validated);
+            })
             .ToArray();
         TranslationProfileList.ItemsSource = items;
         TranslationProfileList.SelectedItem = selectedId is { } id
@@ -2964,7 +3743,8 @@ public partial class MainWindow : FluentWindow
         Guid Id,
         string Name,
         string Endpoint,
-        string ValidationStatus);
+        string ValidationStatus,
+        bool IsValidated);
 
     private void SelectVadEndpointMode(VadEndpointMode mode)
     {
@@ -3003,7 +3783,8 @@ public partial class MainWindow : FluentWindow
 
         var mode = SelectedVadEndpointMode();
         EndSilenceBox.IsEnabled = mode == VadEndpointMode.Fixed;
-        var profile = VadEndpointProfiles.Get(mode, (int)NumberValue(EndSilenceBox, 400));
+        var fixedMs = Math.Clamp((int)NumberValue(EndSilenceBox, 400), 200, 800);
+        var profile = VadEndpointProfiles.Get(mode, fixedMs);
         var suffix = profile.IsAdaptive ? "自适应" : "固定";
         CurrentVadEndpointText.Text =
             $"当前断句等待：{profile.InitialEndSilenceMs}ms（{VadEndpointModeLabel(mode)}，{suffix}）";
@@ -3012,6 +3793,64 @@ public partial class MainWindow : FluentWindow
             HomeVadBadgeText.Text = $"{VadEndpointModeLabel(mode)} {profile.InitialEndSilenceMs}ms";
         }
         AdaptiveVadStatusText.Text = profile.IsAdaptive ? "等待运行" : "固定值模式，不参与自适应";
+        UpdateVadModeDetailCard(mode, fixedMs, profile);
+    }
+
+    private void UpdateVadModeDetailCard(VadEndpointMode mode, int fixedMs, VadEndpointProfile profile)
+    {
+        if (VadModeDetailTitleText is null ||
+            VadModeDetailRangeText is null ||
+            VadModeDetailDescriptionText is null ||
+            VadRangeLeftCol is null ||
+            VadRangeActiveCol is null ||
+            VadRangeRightCol is null)
+        {
+            return;
+        }
+
+        double minMs;
+        double maxMs;
+        switch (mode)
+        {
+            case VadEndpointMode.LowLatency:
+                VadModeDetailTitleText.Text = "低延迟";
+                VadModeDetailRangeText.Text = $"自适应区间 {profile.MinimumEndSilenceMs} – {profile.MaximumEndSilenceMs} ms";
+                VadModeDetailDescriptionText.Text = "响应最快，适合语速紧凑、少停顿的播报或游戏解说；若说话人习惯句中停顿，可能会将长句切得偏碎。";
+                minMs = profile.MinimumEndSilenceMs;
+                maxMs = profile.MaximumEndSilenceMs;
+                break;
+
+            case VadEndpointMode.SentenceComplete:
+                VadModeDetailTitleText.Text = "句子完整";
+                VadModeDetailRangeText.Text = $"自适应区间 {profile.MinimumEndSilenceMs} – {profile.MaximumEndSilenceMs} ms";
+                VadModeDetailDescriptionText.Text = "等待更长时间确认句子结束，减少半句提前切断，适合语速较慢的演讲、访谈或技术分享。";
+                minMs = profile.MinimumEndSilenceMs;
+                maxMs = profile.MaximumEndSilenceMs;
+                break;
+
+            case VadEndpointMode.Fixed:
+                VadModeDetailTitleText.Text = "固定值";
+                VadModeDetailRangeText.Text = $"固定等待 {fixedMs} ms（不自适应）";
+                VadModeDetailDescriptionText.Text = "严格按照下方指定的毫秒数切段，不随语速波动变化，适合节奏稳定、环境可控的音频流。";
+                minMs = Math.Max(200d, fixedMs - 14d);
+                maxMs = Math.Min(800d, fixedMs + 14d);
+                break;
+
+            default:
+                VadModeDetailTitleText.Text = "均衡（推荐）";
+                VadModeDetailRangeText.Text = $"自适应区间 {profile.MinimumEndSilenceMs} – {profile.MaximumEndSilenceMs} ms";
+                VadModeDetailDescriptionText.Text = "根据说话人的停顿习惯动态微调切段时机，在大多数直播、网课与会议中兼顾响应速度与语义完整。";
+                minMs = profile.MinimumEndSilenceMs;
+                maxMs = profile.MaximumEndSilenceMs;
+                break;
+        }
+
+        var left = Math.Max(0d, minMs - 200d);
+        var active = Math.Max(20d, maxMs - minMs);
+        var right = Math.Max(0d, 800d - (200d + left + active));
+        VadRangeLeftCol.Width = new GridLength(left, GridUnitType.Star);
+        VadRangeActiveCol.Width = new GridLength(active, GridUnitType.Star);
+        VadRangeRightCol.Width = new GridLength(right, GridUnitType.Star);
     }
 
     private static string FormatAdaptiveVadStatus(EndpointEvaluation? evaluation)
@@ -3132,6 +3971,7 @@ public partial class MainWindow : FluentWindow
         HomeFloatingWindowText.Text = buttonText;
         AutomationProperties.SetName(HomeFloatingWindowButton, buttonText);
         FloatingWindowIcon.Symbol = isVisible ? SymbolRegular.Dismiss24 : SymbolRegular.Window24;
+        SyncTrayMenuState();
     }
 
     private string GetSelectedLanguage()

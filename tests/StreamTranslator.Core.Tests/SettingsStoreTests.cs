@@ -8,7 +8,7 @@ public sealed class SettingsStoreTests
     [TestMethod]
     public async Task LoadAsync_CreatesDefaultSettingsWhenFileIsMissing()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-settings-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-settings-");
         var settingsPath = Path.Combine(directory.FullName, "settings.json");
         var store = new SettingsStore(settingsPath);
 
@@ -29,13 +29,37 @@ public sealed class SettingsStoreTests
         Assert.AreEqual(2, settings.SubtitleWindow.MaxSubtitleItems);
         Assert.AreEqual(SubtitleDisplayMode.BilingualSourceFirst, settings.SubtitleWindow.DisplayMode);
         Assert.AreEqual(SubtitleOverlayTheme.CinemaGlass, settings.SubtitleWindow.Theme);
+        Assert.IsFalse(settings.Tray.CloseToTray);
+        Assert.IsFalse(settings.Tray.MinimizeToTray);
         Assert.IsTrue(File.Exists(settingsPath));
+    }
+
+    [TestMethod]
+    public async Task SaveAndLoadAsync_PreservesTraySettings()
+    {
+        using var directory = TempDirectoryScope.Create("streamtranslator-settings-");
+        var settingsPath = Path.Combine(directory.FullName, "settings.json");
+        var store = new SettingsStore(settingsPath);
+        var original = new AppSettings
+        {
+            Tray = new TraySettings
+            {
+                CloseToTray = true,
+                MinimizeToTray = true
+            }
+        };
+
+        await store.SaveAsync(original);
+        var reloaded = await store.LoadAsync();
+
+        Assert.IsTrue(reloaded.Tray.CloseToTray);
+        Assert.IsTrue(reloaded.Tray.MinimizeToTray);
     }
 
     [TestMethod]
     public async Task SaveAndLoadAsync_PreservesSubtitleWindowDisplayModeAndTheme()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-settings-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-settings-");
         var settingsPath = Path.Combine(directory.FullName, "settings.json");
         var store = new SettingsStore(settingsPath);
         var original = new AppSettings
@@ -69,7 +93,7 @@ public sealed class SettingsStoreTests
     [TestMethod]
     public async Task LoadAsync_RecoversFromCorruptSettingsFile()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-settings-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-settings-");
         var settingsPath = Path.Combine(directory.FullName, "settings.json");
         await File.WriteAllTextAsync(settingsPath, """{"schemaVersion": 6, "vad": {"EndSil""");
         var store = new SettingsStore(settingsPath);
@@ -87,7 +111,7 @@ public sealed class SettingsStoreTests
     [TestMethod]
     public async Task SaveAsync_LeavesNoTemporaryFileBehind()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-settings-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-settings-");
         var settingsPath = Path.Combine(directory.FullName, "settings.json");
         var store = new SettingsStore(settingsPath);
 
@@ -101,7 +125,7 @@ public sealed class SettingsStoreTests
     [TestMethod]
     public async Task LoadAsync_ForcesLegacySettingsToBalancedAdaptiveMode()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-settings-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-settings-");
         var settingsPath = Path.Combine(directory.FullName, "settings.json");
         await File.WriteAllTextAsync(settingsPath, """
             {
@@ -133,7 +157,7 @@ public sealed class SettingsStoreTests
     [TestMethod]
     public async Task LoadAsync_MigratesSchemaV2SubtitleWindowAndPreservesExistingSettings()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-settings-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-settings-");
         var settingsPath = Path.Combine(directory.FullName, "settings.json");
         await File.WriteAllTextAsync(settingsPath, """
             {
@@ -163,7 +187,7 @@ public sealed class SettingsStoreTests
     [TestMethod]
     public async Task LoadAsync_NormalizesSchema4LanguageToAuto()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-settings-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-settings-");
         var settingsPath = Path.Combine(directory.FullName, "settings.json");
         await File.WriteAllTextAsync(settingsPath, """
             {
@@ -182,7 +206,7 @@ public sealed class SettingsStoreTests
     [TestMethod]
     public async Task LoadAsync_PreservesNestedAsrApiKeyWhenSchemaVersionIsFive()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-settings-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-settings-");
         var settingsPath = Path.Combine(directory.FullName, "settings.json");
         await File.WriteAllTextAsync(settingsPath, """
             {

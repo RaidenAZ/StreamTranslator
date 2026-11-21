@@ -911,31 +911,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
 
     private PythonWorkerClient CreateWorkerClient()
     {
-        var workerExe = Path.Combine(_baseDirectory, "worker", "asr_worker.exe");
-        var hasWorkerExe = File.Exists(workerExe);
-        var workerScript = hasWorkerExe ? "" : FindWorkerScriptPath();
-        var pythonExecutable = Environment.GetEnvironmentVariable("STREAMTRANSLATOR_PYTHON");
-        var executable = hasWorkerExe
-            ? workerExe
-            : string.IsNullOrWhiteSpace(pythonExecutable) ? "python" : pythonExecutable;
-        var arguments = hasWorkerExe ? "" : $"\"{workerScript}\"";
-        var timeoutSeconds = Math.Max(1, _settings.Asr.TimeoutMs / 1000);
-
-        var environment = new Dictionary<string, string>
-        {
-            ["ASR_API_KEY"]          = _settings.Asr.ActiveApiKey,
-            ["ASR_BASE_URL"]         = _settings.Asr.ActiveBaseUrl,
-            ["ASR_MODEL"]            = _settings.Asr.ActiveModel,
-            ["ASR_PROVIDER"]         = _settings.Asr.ActiveProviderType,
-            ["ASR_TIMEOUT_SECONDS"]  = timeoutSeconds.ToString(),
-            ["ASR_MAX_CONCURRENCY"]  = Math.Max(1, _settings.Asr.MaxConcurrency).ToString(),
-        };
-
-        return new PythonWorkerClient(
-            executable,
-            arguments,
-            environment,
-            Path.Combine(_dataDirectory, "logs", "worker.log"));
+        return AsrWorkerClientFactory.Create(_baseDirectory, _dataDirectory, _settings.Asr);
     }
 
     private async Task StartTranslationSessionAsync(CancellationToken cancellationToken)
@@ -1071,28 +1047,6 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         {
             // Metrics must not interrupt shutdown.
         }
-    }
-
-    private string FindWorkerScriptPath()
-    {
-        return FindWorkerScriptPath("asr_worker.py", "ASR");
-    }
-
-    private string FindWorkerScriptPath(string fileName, string workerName)
-    {
-        var directory = new DirectoryInfo(_baseDirectory);
-        while (directory is not null)
-        {
-            var candidate = Path.Combine(directory.FullName, "python", fileName);
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-
-            directory = directory.Parent;
-        }
-
-        throw new FileNotFoundException($"{workerName} worker executable and python/{fileName} were not found.");
     }
 
     private static double CalculateLevel(ReadOnlySpan<short> samples)
