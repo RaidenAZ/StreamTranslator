@@ -42,6 +42,9 @@ public partial class FloatingSubtitleWindow : Window
     private SubtitleDisplayMode _displayMode = SubtitleDisplayMode.BilingualSourceFirst;
     private SubtitleOverlayTheme _theme = SubtitleOverlayTheme.CinemaGlass;
     private SubtitleActivityState _activityState = SubtitleActivityState.Idle;
+    private double _lastActivityScale = 0.2d;
+    private bool _activityTrackShown;
+    private bool _hoverToolbarVisible;
 
     public FloatingSubtitleWindow()
     {
@@ -61,6 +64,22 @@ public partial class FloatingSubtitleWindow : Window
         Entries.Add(new FloatingSubtitleEntry("waiting", 1, "等待字幕...", "", false, _fontSize, _displayMode, isLatest: true));
         LocationChanged += OnWindowBoundsChanged;
         SizeChanged += OnWindowBoundsChanged;
+        IsVisibleChanged += OnWindowIsVisibleChanged;
+    }
+
+    private void OnWindowIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (!IsVisible)
+        {
+            _hoverHideTimer.Stop();
+            _hoverToolbarVisible = false;
+            HoverToolbar.BeginAnimation(OpacityProperty, null);
+            HoverToolbar.Opacity = 0;
+            HoverToolbar.Visibility = Visibility.Collapsed;
+            HoverToolbar.IsHitTestVisible = false;
+            HoverBridge.IsHitTestVisible = false;
+            UpdateActivity(new SubtitleActivitySnapshot(SubtitleActivityState.Idle, 0, 0));
+        }
     }
 
     public ObservableCollection<FloatingSubtitleEntry> Entries { get; } = [];
@@ -237,50 +256,89 @@ public partial class FloatingSubtitleWindow : Window
 
     public void UpdateActivity(SubtitleActivitySnapshot snapshot)
     {
+        if (!IsVisible)
+        {
+            if (_activityState != SubtitleActivityState.Idle || _activityTrackShown)
+            {
+                _activityState = SubtitleActivityState.Idle;
+                _activityTrackShown = false;
+                ActivityBar.BeginAnimation(OpacityProperty, null);
+                ActivityBarScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+                ActivityTrack.BeginAnimation(OpacityProperty, null);
+                ActivityTrack.Opacity = 0;
+                ActivityTrack.Visibility = Visibility.Collapsed;
+            }
+            return;
+        }
+
         var previousState = _activityState;
         _activityState = snapshot.State;
 
         switch (snapshot.State)
         {
             case SubtitleActivityState.ListeningSpeech:
-                ActivityBar.Background = ListeningActivityBrush;
-                ActivityGlow.Color = Color.FromRgb(0x2D, 0xD4, 0xA3);
-                ActivityBar.BeginAnimation(OpacityProperty, null);
-                ActivityBar.Opacity = 1;
-                var targetWidth = 28 + Math.Clamp(snapshot.AudioLevel, 0, 100) * 1.05;
-                ActivityBar.BeginAnimation(
-                    WidthProperty,
-                    new DoubleAnimation(targetWidth, TimeSpan.FromMilliseconds(110))
+                if (previousState != SubtitleActivityState.ListeningSpeech)
+                {
+                    ActivityBar.Background = ListeningActivityBrush;
+                    ActivityBar.BeginAnimation(OpacityProperty, null);
+                    ActivityBar.Opacity = 1;
+                }
+
+                var targetScale = Math.Clamp(0.2d + Math.Clamp(snapshot.AudioLevel, 0, 100) / 100d * 0.8d, 0.2d, 1.0d);
+                if (previousState != SubtitleActivityState.ListeningSpeech ||
+                    Math.Abs(targetScale - _lastActivityScale) >= 0.04d)
+                {
+                    _lastActivityScale = targetScale;
+                    var scaleAnim = new DoubleAnimation(targetScale, TimeSpan.FromMilliseconds(110))
                     {
                         EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
-                    });
-                AnimateTrackOpacity(0.95, 120);
+                    };
+                    Timeline.SetDesiredFrameRate(scaleAnim, 24);
+                    ActivityBarScale.BeginAnimation(ScaleTransform.ScaleXProperty, scaleAnim);
+                }
+
+                if (!_activityTrackShown)
+                {
+                    AnimateTrackVisibility(show: true, targetOpacity: 0.95, durationMs: 120);
+                }
                 break;
 
             case SubtitleActivityState.Processing:
-                ActivityBar.Background = ProcessingActivityBrush;
-                ActivityGlow.Color = Color.FromRgb(0xF5, 0xB0, 0x41);
                 if (previousState != SubtitleActivityState.Processing)
                 {
-                    ActivityBar.BeginAnimation(WidthProperty, null);
-                    ActivityBar.Width = 54;
+                    ActivityBar.Background = ProcessingActivityBrush;
+                    ActivityBarScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+                    ActivityBarScale.ScaleX = 0.42d;
+                    _lastActivityScale = 0.42d;
                     var pulse = new DoubleAnimation(0.35, 1.0, TimeSpan.FromMilliseconds(650))
                     {
                         AutoReverse = true,
                         RepeatBehavior = RepeatBehavior.Forever,
                         EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut }
                     };
+                    Timeline.SetDesiredFrameRate(pulse, 24);
                     ActivityBar.BeginAnimation(OpacityProperty, pulse);
                 }
-                AnimateTrackOpacity(0.9, 140);
+
+                if (!_activityTrackShown)
+                {
+                    AnimateTrackVisibility(show: true, targetOpacity: 0.9, durationMs: 140);
+                }
                 break;
 
             default:
+                // 静默状态下若已收起，直接返回，避免每 90ms 反复启动冗余动画
+                if (previousState == SubtitleActivityState.Idle && !_activityTrackShown)
+                {
+                    return;
+                }
+
                 ActivityBar.BeginAnimation(OpacityProperty, null);
-                ActivityBar.BeginAnimation(WidthProperty, null);
+                ActivityBarScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
                 ActivityBar.Opacity = 0.85;
-                ActivityBar.Width = 24;
-                AnimateTrackOpacity(0, 260);
+                ActivityBarScale.ScaleX = 0.2d;
+                _lastActivityScale = 0.2d;
+                AnimateTrackVisibility(show: false, targetOpacity: 0, durationMs: 240);
                 break;
         }
     }
@@ -290,14 +348,31 @@ public partial class FloatingSubtitleWindow : Window
         SetLocked(!_locked);
     }
 
-    private void AnimateTrackOpacity(double to, int durationMs)
+    private void AnimateTrackVisibility(bool show, double targetOpacity, int durationMs)
     {
-        ActivityTrack.BeginAnimation(
-            OpacityProperty,
-            new DoubleAnimation(to, TimeSpan.FromMilliseconds(durationMs))
+        _activityTrackShown = show;
+        if (show)
+        {
+            ActivityTrack.Visibility = Visibility.Visible;
+        }
+
+        var animation = new DoubleAnimation(targetOpacity, TimeSpan.FromMilliseconds(durationMs))
+        {
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+        };
+        Timeline.SetDesiredFrameRate(animation, 24);
+        if (!show)
+        {
+            animation.Completed += (_, _) =>
             {
-                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
-            });
+                if (!_activityTrackShown)
+                {
+                    ActivityTrack.Visibility = Visibility.Collapsed;
+                }
+            };
+        }
+
+        ActivityTrack.BeginAnimation(OpacityProperty, animation);
     }
 
     private void ApplyVisualTheme(SubtitleOverlayTheme theme, double userOpacity)
@@ -515,14 +590,36 @@ public partial class FloatingSubtitleWindow : Window
     private void SetHoverToolbarVisible(bool visible)
     {
         var shouldShow = visible && !_locked;
+        if (shouldShow == _hoverToolbarVisible)
+        {
+            return;
+        }
+
+        _hoverToolbarVisible = shouldShow;
         HoverToolbar.IsHitTestVisible = shouldShow;
         HoverBridge.IsHitTestVisible = shouldShow;
+        if (shouldShow)
+        {
+            HoverToolbar.Visibility = Visibility.Visible;
+        }
+
         var animation = new DoubleAnimation
         {
             To = shouldShow ? 1 : 0,
             Duration = TimeSpan.FromMilliseconds(shouldShow ? 160 : 220),
             EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
         };
+        if (!shouldShow)
+        {
+            animation.Completed += (_, _) =>
+            {
+                if (!_hoverToolbarVisible)
+                {
+                    HoverToolbar.Visibility = Visibility.Collapsed;
+                }
+            };
+        }
+
         HoverToolbar.BeginAnimation(OpacityProperty, animation);
     }
 

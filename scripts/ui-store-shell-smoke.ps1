@@ -24,8 +24,12 @@ if (Test-Path $mainWindowXaml) {
         throw "Main shell root should be transparent so the Mica backdrop remains visible."
     }
 
-    if ($mainWindowMarkup -notmatch '<Border x:Name="HomeIssuesCard"[\s\S]*AutomationProperties\.AutomationId="HomeIssuesPanel"') {
-        throw "Home issues should be presented in its own card, outside the overview panel."
+    if ($mainWindowMarkup -notmatch '<Border x:Name="HomeIssuesCard"[\s\S]*Visibility="Collapsed"[\s\S]*AutomationProperties\.AutomationId="HomeIssuesPanel"') {
+        throw "Home issues should be presented in its own card, collapsed by default outside the overview panel."
+    }
+
+    if ($mainWindowMarkup -notmatch '<controls:SegmentedLevelMeter x:Name="AudioLevelMeter"') {
+        throw "Home workbench should present audio input using the segmented LED level meter."
     }
 
     if ($mainWindowMarkup -notmatch '<ListBox x:Name="SubtitleList"[\s\S]*?AutomationProperties\.AutomationId="SubtitleHistoryList"') {
@@ -370,6 +374,10 @@ try {
     $removedTitleBarAppIcon = Find-ByAutomationId "TitleBarAppIcon"
     $startButton = Find-ByAutomationId "StartStopButton"
     $floatingButton = Find-ByAutomationId "HomeFloatingWindowButton"
+    $floatingLockButton = Find-ByAutomationId "HomeFloatingLockButton"
+    $homeAudioDeviceComboBox = Find-ByAutomationId "HomeAudioDeviceComboBox"
+    $homeTranslationSwitch = Find-ByAutomationId "HomeTranslationEnabledSwitch"
+    $homeTranslationLanguageBox = Find-ByAutomationId "HomeTranslationTargetLanguageBox"
     $removedTitleBarFloatingButton = Find-ByAutomationId "ShowFloatingWindowButton"
     $removedSearchBox = Find-ByAutomationId "ShellSearchBox"
     $homeNav = Find-ByAutomationId "NavHomePage"
@@ -401,6 +409,10 @@ try {
     if ($null -ne $removedTitleBarAppIcon) { throw "Title-bar app icon should not exist." }
     if ($null -eq $startButton) { throw "Home start/stop button was not found." }
     if ($null -eq $floatingButton) { throw "Home floating window button was not found." }
+    if ($null -eq $floatingLockButton) { throw "Home floating lock button was not found." }
+    if ($null -eq $homeAudioDeviceComboBox) { throw "Home quick audio-device selector was not found." }
+    if ($null -eq $homeTranslationSwitch) { throw "Home quick translation toggle was not found." }
+    if ($null -eq $homeTranslationLanguageBox) { throw "Home quick translation target-language selector was not found." }
     if ($null -ne $removedTitleBarFloatingButton) { throw "Title-bar floating window button should not exist." }
     if ($null -ne $removedSearchBox) { throw "Title bar search/status box should not exist." }
     if ($null -eq $homeNav) { throw "Home navigation item was not found." }
@@ -422,7 +434,7 @@ try {
     if ($null -eq $subtitleOutputStatus) { throw "Subtitle output status was not found in the overview panel." }
     if ($null -eq $homeDeviceText) { throw "Home audio device text was not found." }
     if ($null -eq $homeAudioLevel) { throw "Home audio level bar was not found." }
-    if ($null -eq $homeIssuesPanel) { throw "Home issues panel should be a separate card." }
+    if ($null -ne $homeIssuesPanel) { throw "Home issues banner should stay collapsed when there are no errors." }
     if ($null -eq $minimizeButton) { throw "Title bar minimize button was not found." }
     if ($null -eq $maximizeButton) { throw "Title bar maximize button was not found." }
     if ($null -eq $closeButton) { throw "Title bar close button was not found." }

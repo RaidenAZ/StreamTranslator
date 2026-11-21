@@ -258,7 +258,7 @@
                 Background="#01000000"
                 IsHitTestVisible="False" />
 
-        <!-- 悬停微控胶囊栏（仅未锁定且鼠标移入时淡入） -->
+        <!-- 悬停微控胶囊栏（仅未锁定且鼠标移入时显示并淡入，隐藏时 Collapsed 释放阴影离屏缓冲） -->
         <Border x:Name="HoverToolbar"
                 Grid.Row="0"
                 HorizontalAlignment="Center"
@@ -270,6 +270,7 @@
                 BorderThickness="1"
                 Padding="6,1"
                 Opacity="0"
+                Visibility="Collapsed"
                 IsHitTestVisible="False">
             <Border.Effect>
                 <DropShadowEffect Color="#000000" BlurRadius="12" ShadowDepth="2" Opacity="0.45" />
@@ -331,31 +332,36 @@
             </StackPanel>
         </Border>
 
-        <!-- 主字幕面板 -->
-        <Border x:Name="Chrome"
-                Grid.Row="1"
-                CornerRadius="12"
-                BorderThickness="1"
-                Padding="22,13,22,14">
-            <Border.Background>
-                <SolidColorBrush x:Name="ChromeBackgroundBrush" Color="#0F141B" Opacity="0.72" />
-            </Border.Background>
-            <Border.BorderBrush>
-                <LinearGradientBrush x:Name="ChromeBorderBrush" StartPoint="0,0" EndPoint="0,1">
-                    <GradientStop x:Name="ChromeBorderTopStop" Color="#3DFFFFFF" Offset="0" />
-                    <GradientStop x:Name="ChromeBorderBottomStop" Color="#14FFFFFF" Offset="1" />
-                </LinearGradientBrush>
-            </Border.BorderBrush>
-            <Border.Effect>
-                <DropShadowEffect x:Name="ChromeShadowEffect"
-                                  Color="#000000"
-                                  BlurRadius="20"
-                                  ShadowDepth="4"
-                                  Direction="270"
-                                  Opacity="0.46" />
-            </Border.Effect>
+        <!-- 主字幕面板：将底板阴影层与文字/呼吸条内容层分离，避免文字更新或呼吸动画触发整窗 20px 模糊重算 -->
+        <Grid Grid.Row="1">
+            <Border x:Name="ChromeBackdrop"
+                    CornerRadius="12"
+                    BorderThickness="1"
+                    IsHitTestVisible="False">
+                <Border.Background>
+                    <SolidColorBrush x:Name="ChromeBackgroundBrush" Color="#0F141B" Opacity="0.72" />
+                </Border.Background>
+                <Border.BorderBrush>
+                    <LinearGradientBrush x:Name="ChromeBorderBrush" StartPoint="0,0" EndPoint="0,1">
+                        <GradientStop x:Name="ChromeBorderTopStop" Color="#3DFFFFFF" Offset="0" />
+                        <GradientStop x:Name="ChromeBorderBottomStop" Color="#14FFFFFF" Offset="1" />
+                    </LinearGradientBrush>
+                </Border.BorderBrush>
+                <Border.Effect>
+                    <DropShadowEffect x:Name="ChromeShadowEffect"
+                                      Color="#000000"
+                                      BlurRadius="20"
+                                      ShadowDepth="4"
+                                      Direction="270"
+                                      Opacity="0.46" />
+                </Border.Effect>
+            </Border>
 
-            <Grid>
+            <Border x:Name="Chrome"
+                    CornerRadius="12"
+                    Background="Transparent"
+                    Padding="22,13,22,14">
+                <Grid>
                 <!-- 字幕条目列表 -->
                 <ItemsControl x:Name="SubtitleGroups"
                               ItemsSource="{Binding Entries, RelativeSource={RelativeSource AncestorType=Window}}"
@@ -431,7 +437,7 @@
                                FontSize="12" />
                 </Border>
 
-                <!-- 底部 2px 声学 / 识别微光呼吸条（消除 VAD 停顿等待期的“是否卡死”焦虑） -->
+                <!-- 底部 2.5px 声学 / 识别微光呼吸条（使用 ScaleTransform + 24fps，无布局重算与嵌套模糊开销） -->
                 <Border x:Name="ActivityTrack"
                         HorizontalAlignment="Center"
                         VerticalAlignment="Bottom"
@@ -441,24 +447,23 @@
                         CornerRadius="1.25"
                         Background="#18FFFFFF"
                         Opacity="0"
+                        Visibility="Collapsed"
                         IsHitTestVisible="False">
                     <Border x:Name="ActivityBar"
                             HorizontalAlignment="Center"
                             Height="2.5"
-                            Width="36"
+                            Width="136"
                             CornerRadius="1.25"
-                            Background="#FF2DD4A3">
-                        <Border.Effect>
-                            <DropShadowEffect x:Name="ActivityGlow"
-                                              Color="#2DD4A3"
-                                              BlurRadius="8"
-                                              ShadowDepth="0"
-                                              Opacity="0.8" />
-                        </Border.Effect>
+                            Background="#FF2DD4A3"
+                            RenderTransformOrigin="0.5,0.5">
+                        <Border.RenderTransform>
+                            <ScaleTransform x:Name="ActivityBarScale" ScaleX="0.2" />
+                        </Border.RenderTransform>
                     </Border>
                 </Border>
             </Grid>
-        </Border>
+            </Border>
+        </Grid>
 
         <!-- 左右隐形边缘缩放手柄，替代违和的 Win32 ResizeGrip 灰点 -->
         <Thumb x:Name="LeftResizeThumb"

@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
@@ -53,16 +54,38 @@ public partial class MainWindow : FluentWindow
     // 抑制期内不调度自动保存，避免用默认值覆盖磁盘上的设置。
     private bool _suppressSettingChanges = true;
     private Snackbar? _copyFailureSnackbar;
+    private Snackbar? _copySuccessSnackbar;
     private DispatcherTimer? _settingsSaveTimer;
     private DispatcherTimer? _copyStatusTimer;
     private readonly SemaphoreSlim _settingsSaveLock = new(1, 1);
     private FloatingWindowBounds? _floatingWindowBounds;
     private readonly TranslationIssueTracker _translationIssueTracker = new();
     private TranslationRuntimeStatus _translationRuntimeStatus = new("已关闭", "已关闭", 0, 0);
+    private readonly ObservableCollection<SubtitleItem> _homeLiveMonitorItems = [];
+    private const int MaxHomeMonitorItems = 4;
+    private bool _syncingQuickControls;
+    private bool _hasRuntimeError;
+    private bool _hasTranslationIssue;
+    private readonly object _activitySnapshotLock = new();
+    private SubtitleActivitySnapshot _latestActivitySnapshot = new(SubtitleActivityState.Idle, 0, 0);
+    private volatile bool _canRenderHomeLiveMetrics = true;
+    private volatile bool _isFloatingWindowVisible;
+    private double _pendingAudioLevel;
+    private int _audioLevelUpdatePending;
+    private long _lastAudioLevelDispatchTick;
+    private int _lastDisplayedAudioPercent = -1;
+    private string? _lastVoiceActivityBadgeKey;
+    private readonly Dictionary<Border, PipelineNodeVisualState> _pipelineNodeStates = new();
+    private readonly Action _applyPendingAudioLevelAction;
 
     public MainWindow()
     {
         InitializeComponent();
+        _applyPendingAudioLevelAction = ApplyPendingAudioLevel;
+        HomeLiveMonitorList.ItemsSource = _homeLiveMonitorItems;
+        ApplicationThemeManager.Changed += OnApplicationThemeChanged;
+        StateChanged += OnWindowVisibilityOrStateChanged;
+        IsVisibleChanged += OnWindowVisibilityOrStateChanged;
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -89,11 +112,14 @@ public partial class MainWindow : FluentWindow
         catch (Exception ex)
         {
             AppendAppLog($"启动初始化失败: {ex.Message}");
-            LastErrorText.Text = ex.Message;
+            SetRuntimeError(ex.Message);
         }
         finally
         {
             _suppressSettingChanges = false;
+            UpdateHomeQuickControlsEnabledState();
+            UpdateHomeServiceSummary();
+            RefreshPipelineVisualStates();
         }
     }
 
@@ -148,6 +174,9 @@ public partial class MainWindow : FluentWindow
             AppendAppLog($"关闭时停止 runtime 失败: {ex.Message}");
         }
 
+        ApplicationThemeManager.Changed -= OnApplicationThemeChanged;
+        StateChanged -= OnWindowVisibilityOrStateChanged;
+        IsVisibleChanged -= OnWindowVisibilityOrStateChanged;
         _floatingWindow?.Close();
         _readyToClose = true;
         Close();
@@ -207,6 +236,7 @@ public partial class MainWindow : FluentWindow
         StartStopIcon.Visibility = Visibility.Collapsed;
         StartStopText.Text = starting ? "启动中…" : "停止中…";
         StartStopButton.IsEnabled = false;
+        UpdateHomeQuickControlsEnabledState();
     }
 
     private void ClearStartStopBusy()
@@ -216,6 +246,7 @@ public partial class MainWindow : FluentWindow
         StartStopText.Text = _isRunning ? "停止字幕" : "开始字幕";
         StartStopIcon.Symbol = _isRunning ? SymbolRegular.Stop24 : SymbolRegular.Play24;
         StartStopButton.IsEnabled = true;
+        UpdateHomeQuickControlsEnabledState();
     }
 
     private async Task StartRuntimeAsync()
@@ -280,7 +311,7 @@ public partial class MainWindow : FluentWindow
                 StartStopButton.IsEnabled = true;
                 await StopRuntimeAsync();
                 AppendAppLog($"原文模式启动失败: {sourceOnlyException.Message}");
-                LastErrorText.Text = sourceOnlyException.Message;
+                SetRuntimeError(sourceOnlyException.Message);
             }
         }
         catch (Exception ex)
@@ -288,12 +319,13 @@ public partial class MainWindow : FluentWindow
             StartStopButton.IsEnabled = true;
             await StopRuntimeAsync();
             AppendAppLog($"字幕 runtime 启动失败: {ex.Message}");
-            LastErrorText.Text = ex.Message;
+            SetRuntimeError(ex.Message);
         }
     }
 
     private async Task StartRuntimeCoreAsync(AppSettings runtimeSettings)
     {
+        ClearRuntimeError();
         _sessionTranslationEnabled = runtimeSettings.Translation.IsEffectivelyEnabled;
         _translationIssueTracker.MarkSuccess();
         _translationRuntimeStatus = new TranslationRuntimeStatus(
@@ -323,6 +355,8 @@ public partial class MainWindow : FluentWindow
         TranslationApiStatusText.Text = _sessionTranslationEnabled ? "等待请求" : "已关闭";
         HomeRuntimeSummaryText.Text = "启动中，正在连接音频与识别服务";
         SetStateBadge("启动中");
+        UpdateVoiceActivityBadge(new SubtitleActivitySnapshot(SubtitleActivityState.Idle, 0, 0), isStarting: true);
+        RefreshPipelineVisualStates();
         StartStopButton.IsEnabled = false;
 
         await _runtime.StartAsync();
@@ -331,11 +365,15 @@ public partial class MainWindow : FluentWindow
         TranslationSettingsPanel.IsEnabled = false;
         HardMaxSegmentBox.IsEnabled = false;
         ClearHistoryButton.IsEnabled = false;
+        UpdateHomeQuickControlsEnabledState();
         StartStopText.Text = "停止字幕";
         StartStopIcon.Symbol = SymbolRegular.Stop24;
         StartStopButton.IsEnabled = true;
         HomeRuntimeSummaryText.Text = "运行中，正在监听系统输出声音";
         SetStateBadge("运行中");
+        UpdateHomeServiceSummary();
+        UpdateVoiceActivityBadge(new SubtitleActivitySnapshot(SubtitleActivityState.Idle, 0, 0));
+        RefreshPipelineVisualStates();
         AppendAppLog("字幕 runtime 已启动");
         TryShowFloatingWindow();
         _floatingWindow?.SetCaption("等待字幕...");
@@ -376,16 +414,23 @@ public partial class MainWindow : FluentWindow
         SubtitleOutputStatusText.Text = "等待字幕";
         TranslationWorkerStatusText.Text = _settings.Translation.IsEffectivelyEnabled ? "未启动" : "已关闭";
         TranslationApiStatusText.Text = _settings.Translation.IsEffectivelyEnabled ? "未测试" : "已关闭";
-        AudioLevelBar.Value = 0;
-        HomeAudioLevelText.Text = "0%";
+        ResetHomeAudioMeterUi();
+        lock (_activitySnapshotLock)
+        {
+            _latestActivitySnapshot = new SubtitleActivitySnapshot(SubtitleActivityState.Idle, 0, 0);
+        }
         HomeRuntimeSummaryText.Text = "未启动，等待开始";
         SetStateBadge("就绪");
+        UpdateVoiceActivityBadge(new SubtitleActivitySnapshot(SubtitleActivityState.Idle, 0, 0));
         StartStopText.Text = "开始字幕";
         StartStopIcon.Symbol = SymbolRegular.Play24;
         StartStopButton.IsEnabled = true;
         TranslationSettingsPanel.IsEnabled = true;
         HardMaxSegmentBox.IsEnabled = true;
         ClearHistoryButton.IsEnabled = true;
+        UpdateHomeQuickControlsEnabledState();
+        UpdateHomeServiceSummary();
+        RefreshPipelineVisualStates();
         AdaptiveVadStatusText.Text = "等待运行";
         UpdateVadEndpointModeUi();
         AppendAppLog("字幕 runtime 已停止");
@@ -399,7 +444,7 @@ public partial class MainWindow : FluentWindow
         }
         catch (Exception ex)
         {
-            LastErrorText.Text = ex.Message;
+            SetRuntimeError(ex.Message);
             AppendAppLog($"悬浮窗操作失败: {ex}");
         }
     }
@@ -413,7 +458,7 @@ public partial class MainWindow : FluentWindow
         }
         catch (Exception ex)
         {
-            LastErrorText.Text = ex.Message;
+            SetRuntimeError(ex.Message);
             AppendAppLog($"悬浮窗操作失败: {ex}");
         }
     }
@@ -466,6 +511,8 @@ public partial class MainWindow : FluentWindow
         }
 
         SubtitleList.Items.Clear();
+        _homeLiveMonitorItems.Clear();
+        UpdateHomeLiveMonitorEmptyState();
         var historyPath = Path.Combine(_dataDirectory, "subtitles", $"{DateTime.Now:yyyy-MM-dd}.jsonl");
         if (File.Exists(historyPath))
         {
@@ -578,6 +625,10 @@ public partial class MainWindow : FluentWindow
         if (result.Succeeded)
         {
             ShowCopyStatus("已复制", TimeSpan.FromSeconds(3));
+            if (SubtitleHistoryPage.Visibility != Visibility.Visible)
+            {
+                ShowCopySuccessToast(operation);
+            }
             return;
         }
 
@@ -606,6 +657,22 @@ public partial class MainWindow : FluentWindow
         _copyStatusTimer.Start();
     }
 
+    private void ShowCopySuccessToast(string operation)
+    {
+        _copySuccessSnackbar ??= new Snackbar(RootSnackbarPresenter)
+        {
+            Title = "已复制到剪贴板",
+            Appearance = ControlAppearance.Success,
+            Icon = new SymbolIcon(SymbolRegular.CheckmarkCircle24),
+            Timeout = TimeSpan.FromSeconds(2.5),
+            IsCloseButtonEnabled = false
+        };
+        _copySuccessSnackbar.Content = string.IsNullOrWhiteSpace(operation)
+            ? "内容已复制到剪贴板。"
+            : $"已复制{operation}。";
+        _copySuccessSnackbar.Show();
+    }
+
     private void ShowCopyFailureToast()
     {
         _copyFailureSnackbar ??= new Snackbar(RootSnackbarPresenter)
@@ -629,6 +696,7 @@ public partial class MainWindow : FluentWindow
         SettingsPage.Visibility = Visibility.Collapsed;
         AboutPage.Visibility = Visibility.Collapsed;
         selectedPage.Visibility = Visibility.Visible;
+        UpdateHomeLiveMetricsVisibility();
         if (!alreadyVisible)
         {
             PlayPageTransition(selectedPage);
@@ -694,6 +762,7 @@ public partial class MainWindow : FluentWindow
                     break;
             }
 
+            RefreshPipelineVisualStates();
             AppendAppLog(update.Message);
         });
     }
@@ -733,7 +802,9 @@ public partial class MainWindow : FluentWindow
                     SubtitleList.Items.Insert(0, unit);
                 }
 
+                SyncHomeLiveMonitorFromHistory();
                 SubtitleOutputStatusText.Text = "输出中";
+                RefreshPipelineVisualStates();
             }
         });
     }
@@ -753,9 +824,11 @@ public partial class MainWindow : FluentWindow
             {
                 var translated = match.item with { TranslatedText = update.TranslatedText };
                 SubtitleList.Items[match.index] = translated;
+                SyncHomeLiveMonitorFromHistory();
             }
             _floatingWindow?.ApplyTranslation(update);
             SubtitleOutputStatusText.Text = "双语输出中";
+            RefreshPipelineVisualStates();
         });
     }
 
@@ -768,6 +841,7 @@ public partial class MainWindow : FluentWindow
             TranslationApiStatusText.Text = status.QueueLength > 0
                 ? $"{status.ServiceStatus} · 队列 {status.QueueLength}"
                 : status.ServiceStatus;
+            RefreshPipelineVisualStates();
         });
     }
 
@@ -778,26 +852,476 @@ public partial class MainWindow : FluentWindow
         {
             UpdateTranslationIssueUi(issue);
             _floatingWindow?.ClearTranslationPending(status);
+            RefreshPipelineVisualStates();
         });
     }
 
     private void SetStateBadge(string text)
     {
         HomeStateBadgeText.Text = text;
-        var foregroundKey = text switch
+        var (foregroundKey, dotKey) = text switch
         {
-            "运行中" => "SystemFillColorSuccessBrush",
-            "启动中" => "SystemFillColorCautionBrush",
-            "错误" => "SystemFillColorCriticalBrush",
-            _ => "AccentTextFillColorPrimaryBrush"
+            "运行中" => ("AcousticLiveBrush", "AcousticLiveBrush"),
+            "启动中" => ("AcousticWarmBrush", "AcousticWarmBrush"),
+            "错误" => ("AcousticPeakBrush", "AcousticPeakBrush"),
+            _ => ("AccentTextFillColorPrimaryBrush", "AcousticIdleBrush")
         };
         HomeStateBadgeText.SetResourceReference(TextBlock.ForegroundProperty, foregroundKey);
+        HomeStateDot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, dotKey);
     }
 
     private void UpdateTranslationIssueUi(TranslationIssueState state)
     {
+        _hasTranslationIssue = state.HasIssue;
         TranslationIssueText.Text = state.Summary;
         TranslationIssueText.Visibility = state.HasIssue ? Visibility.Visible : Visibility.Collapsed;
+        UpdateHomeIssuesCardVisibility();
+    }
+
+    private void SetRuntimeError(string message)
+    {
+        _hasRuntimeError = !string.IsNullOrWhiteSpace(message) && !string.Equals(message.Trim(), "无", StringComparison.Ordinal);
+        LastErrorText.Text = _hasRuntimeError ? message : "无";
+        LastErrorText.Visibility = _hasRuntimeError ? Visibility.Visible : Visibility.Collapsed;
+        UpdateHomeIssuesCardVisibility();
+    }
+
+    private void ClearRuntimeError()
+    {
+        _hasRuntimeError = false;
+        LastErrorText.Text = "无";
+        LastErrorText.Visibility = Visibility.Collapsed;
+        UpdateHomeIssuesCardVisibility();
+    }
+
+    private void UpdateHomeIssuesCardVisibility()
+    {
+        var show = _hasRuntimeError || _hasTranslationIssue;
+        HomeIssuesCard.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        if (!show)
+        {
+            return;
+        }
+
+        if (_hasRuntimeError)
+        {
+            HomeIssuesTitleText.Text = "运行异常";
+            HomeIssuesIcon.Symbol = SymbolRegular.ErrorCircle24;
+            HomeIssuesIcon.SetResourceReference(Control.ForegroundProperty, "AcousticPeakBrush");
+            HomeIssuesCard.SetResourceReference(Border.BackgroundProperty, "AcousticPeakSoftBrush");
+            HomeIssuesCard.SetResourceReference(Border.BorderBrushProperty, "AcousticPeakBrush");
+        }
+        else
+        {
+            HomeIssuesTitleText.Text = "翻译服务提醒";
+            HomeIssuesIcon.Symbol = SymbolRegular.Warning24;
+            HomeIssuesIcon.SetResourceReference(Control.ForegroundProperty, "AcousticWarmBrush");
+            HomeIssuesCard.SetResourceReference(Border.BackgroundProperty, "AcousticWarmSoftBrush");
+            HomeIssuesCard.SetResourceReference(Border.BorderBrushProperty, "AcousticWarmBrush");
+        }
+    }
+
+    private void OnDismissHomeIssueClick(object sender, RoutedEventArgs e)
+    {
+        ClearRuntimeError();
+        if (_hasTranslationIssue)
+        {
+            UpdateTranslationIssueUi(_translationIssueTracker.MarkSuccess());
+        }
+
+        if (!_isRunning && !_isTransitioning)
+        {
+            SetStateBadge("就绪");
+            HomeRuntimeSummaryText.Text = "未启动，等待开始";
+        }
+
+        RefreshPipelineVisualStates();
+    }
+
+    private void OnGoToHistoryClick(object sender, RoutedEventArgs e)
+    {
+        ShowPage(SubtitleHistoryPage);
+        SetActiveNavigationItem("SubtitleHistoryPage");
+    }
+
+    private async void OnCopyHomeMonitorItemClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: SubtitleItem item })
+        {
+            e.Handled = true;
+            await TryCopyTextAsync(FormatSubtitleForCopy(item), "此条字幕");
+        }
+    }
+
+    private async void OnCopyHomeMonitorRowMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: SubtitleItem item })
+        {
+            await TryCopyTextAsync(FormatSubtitleForCopy(item), "此条字幕");
+        }
+    }
+
+    private void SyncHomeLiveMonitorFromHistory()
+    {
+        _homeLiveMonitorItems.Clear();
+        foreach (var item in SubtitleList.Items.OfType<SubtitleItem>().Take(MaxHomeMonitorItems))
+        {
+            _homeLiveMonitorItems.Add(item);
+        }
+
+        UpdateHomeLiveMonitorEmptyState();
+    }
+
+    private void UpdateHomeLiveMonitorEmptyState()
+    {
+        var hasItems = _homeLiveMonitorItems.Count > 0;
+        HomeLiveMonitorEmptyState.Visibility = hasItems ? Visibility.Collapsed : Visibility.Visible;
+        HomeLiveMonitorList.Visibility = hasItems ? Visibility.Visible : Visibility.Collapsed;
+        var total = SubtitleList.Items.Count;
+        HomeMonitorCountText.Text = total == 0
+            ? "等待字幕"
+            : total <= MaxHomeMonitorItems
+                ? $"共 {total} 条"
+                : $"显示最新 {MaxHomeMonitorItems} / 共 {total} 条";
+    }
+
+    private void UpdateHomeQuickControlsEnabledState()
+    {
+        if (HomeAudioDeviceComboBox is null ||
+            HomeRefreshAudioDevicesButton is null ||
+            HomeTranslationEnabledSwitch is null ||
+            HomeTranslationTargetLanguageBox is null ||
+            HomeTranslationQuickBar is null)
+        {
+            return;
+        }
+
+        var editable = !_isRunning && !_isTransitioning;
+        HomeAudioDeviceComboBox.IsEnabled = editable;
+        HomeRefreshAudioDevicesButton.IsEnabled = editable;
+        HomeTranslationEnabledSwitch.IsEnabled = editable;
+        HomeTranslationTargetLanguageBox.IsEnabled = editable;
+
+        HomeAudioDeviceComboBox.ToolTip = editable
+            ? "选择要监听的系统音频输出设备"
+            : "运行中暂不可切换输出设备，停止字幕后可调整";
+        HomeTranslationQuickBar.ToolTip = editable
+            ? "快速开关字幕翻译或切换目标语言"
+            : "运行中暂不可变更翻译开关或目标语言，停止字幕后可调整";
+    }
+
+    private void UpdateHomeServiceSummary()
+    {
+        if (HomeActiveServiceSummaryText is null || AsrProviderBox is null || TranslationEnabledSwitch is null)
+        {
+            return;
+        }
+
+        var asrName = GetSelectedAsrProvider() switch
+        {
+            "Zhipu" => "GLM-ASR-2512",
+            "DeepSeek" => "DeepSeek ASR",
+            "Custom" => string.IsNullOrWhiteSpace(AsrCustomModelBox?.Text)
+                ? "自定义 ASR"
+                : AsrCustomModelBox.Text.Trim(),
+            _ => "MiMo ASR"
+        };
+
+        var targetLanguageLabel = TargetLanguageLabel(GetSelectedTranslationTargetLanguage());
+        var activeProfile = SelectedTranslationProfile() ?? _settings.Translation.ActiveProfile;
+        var translationSwitchOn = TranslationEnabledSwitch.IsChecked == true;
+
+        string translationSummary;
+        if (_isRunning)
+        {
+            translationSummary = _sessionTranslationEnabled
+                ? $"翻译：{activeProfile?.Name ?? "已启用"} → {targetLanguageLabel}"
+                : translationSwitchOn ? "翻译：仅原文" : "翻译：已关闭";
+        }
+        else if (!translationSwitchOn)
+        {
+            translationSummary = "翻译：已关闭";
+        }
+        else if (activeProfile is null)
+        {
+            translationSummary = "翻译：待选择模型";
+        }
+        else if (!TranslationProfileRules.IsValidated(activeProfile))
+        {
+            translationSummary = $"翻译：{activeProfile.Name}（未测试）→ {targetLanguageLabel}";
+        }
+        else
+        {
+            translationSummary = $"翻译：{activeProfile.Name} → {targetLanguageLabel}";
+        }
+
+        HomeActiveServiceSummaryText.Text = $"识别：{asrName} · {translationSummary}";
+
+        if (!_isRunning && !_isTransitioning &&
+            TranslationWorkerStatusText is not null &&
+            TranslationApiStatusText is not null)
+        {
+            var hasProfile = activeProfile is not null;
+            TranslationWorkerStatusText.Text = !translationSwitchOn
+                ? "已关闭"
+                : hasProfile ? "未启动" : "待配置";
+            TranslationApiStatusText.Text = !translationSwitchOn
+                ? "已关闭"
+                : hasProfile ? "未测试" : "请选择模型";
+        }
+    }
+
+    private static string TargetLanguageLabel(string targetLanguage) => targetLanguage.ToLowerInvariant() switch
+    {
+        "zh-hans" => "中文",
+        "en" => "英语",
+        "de" => "德语",
+        "fr" => "法语",
+        "ja" => "日语",
+        _ => targetLanguage
+    };
+
+    private void UpdateVoiceActivityBadge(SubtitleActivitySnapshot snapshot, bool isStarting = false)
+    {
+        if (HomeVoiceActivityBadge is null || HomeVoiceActivityDot is null || HomeVoiceActivityText is null)
+        {
+            return;
+        }
+
+        string text;
+        string dotKey;
+        string foregroundKey;
+        string backgroundKey;
+        string borderKey;
+
+        if (isStarting)
+        {
+            text = "启动中";
+            dotKey = "AcousticWarmBrush";
+            foregroundKey = "AcousticWarmBrush";
+            backgroundKey = "AcousticWarmSoftBrush";
+            borderKey = "AcousticWarmBrush";
+        }
+        else if (!_isRunning)
+        {
+            text = "未监听";
+            dotKey = "AcousticIdleBrush";
+            foregroundKey = "TextFillColorSecondaryBrush";
+            backgroundKey = "SubtleFillColorSecondaryBrush";
+            borderKey = "CardStrokeColorDefaultBrush";
+        }
+        else if (snapshot.State == SubtitleActivityState.ListeningSpeech)
+        {
+            text = "检测到人声";
+            dotKey = "AcousticLiveBrush";
+            foregroundKey = "AcousticLiveBrush";
+            backgroundKey = "AcousticLiveSoftBrush";
+            borderKey = "AcousticLiveBrush";
+        }
+        else if (snapshot.State == SubtitleActivityState.Processing)
+        {
+            text = snapshot.ActiveAsrRequests > 1
+                ? $"识别中 ({snapshot.ActiveAsrRequests})"
+                : "识别中";
+            dotKey = "AcousticWarmBrush";
+            foregroundKey = "AcousticWarmBrush";
+            backgroundKey = "AcousticWarmSoftBrush";
+            borderKey = "AcousticWarmBrush";
+        }
+        else
+        {
+            text = "静音待机";
+            dotKey = "AcousticIdleBrush";
+            foregroundKey = "TextFillColorSecondaryBrush";
+            backgroundKey = "SubtleFillColorSecondaryBrush";
+            borderKey = "CardStrokeColorDefaultBrush";
+        }
+
+        var badgeKey = $"{text}|{dotKey}";
+        if (string.Equals(_lastVoiceActivityBadgeKey, badgeKey, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _lastVoiceActivityBadgeKey = badgeKey;
+        HomeVoiceActivityText.Text = text;
+        HomeVoiceActivityDot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, dotKey);
+        HomeVoiceActivityText.SetResourceReference(TextBlock.ForegroundProperty, foregroundKey);
+        HomeVoiceActivityBadge.SetResourceReference(Border.BackgroundProperty, backgroundKey);
+        HomeVoiceActivityBadge.SetResourceReference(Border.BorderBrushProperty, borderKey);
+    }
+
+    private enum PipelineNodeVisualState
+    {
+        Idle,
+        Active,
+        BusyOrWarn,
+        Error
+    }
+
+    private void RefreshPipelineVisualStates()
+    {
+        if (PipelineNodeAudio is null ||
+            PipelineNodeVad is null ||
+            PipelineNodeAsr is null ||
+            PipelineNodeTranslation is null ||
+            PipelineNodeOutput is null)
+        {
+            return;
+        }
+
+        ApplyPipelineNodeState(PipelineNodeAudio, PipelineDotAudio, ClassifyAudioNodeState(AudioStatusText.Text));
+        ApplyPipelineNodeState(PipelineNodeVad, PipelineDotVad, ClassifyVadNodeState(VadStatusText.Text));
+        ApplyPipelineNodeState(PipelineNodeAsr, PipelineDotAsr, ClassifyAsrNodeState(WorkerStatusText.Text, ApiStatusText.Text));
+        ApplyPipelineNodeState(
+            PipelineNodeTranslation,
+            PipelineDotTranslation,
+            ClassifyTranslationNodeState(TranslationWorkerStatusText.Text, TranslationApiStatusText.Text));
+        ApplyPipelineNodeState(PipelineNodeOutput, PipelineDotOutput, ClassifyOutputNodeState(SubtitleOutputStatusText.Text));
+    }
+
+    private static PipelineNodeVisualState ClassifyAudioNodeState(string status)
+    {
+        if (ContainsAny(status, "错误", "失败", "异常"))
+        {
+            return PipelineNodeVisualState.Error;
+        }
+
+        if (ContainsAny(status, "等待", "中断", "切换"))
+        {
+            return PipelineNodeVisualState.BusyOrWarn;
+        }
+
+        return ContainsAny(status, "已启动", "已恢复")
+            ? PipelineNodeVisualState.Active
+            : PipelineNodeVisualState.Idle;
+    }
+
+    private static PipelineNodeVisualState ClassifyVadNodeState(string status)
+    {
+        if (ContainsAny(status, "错误", "失败", "异常"))
+        {
+            return PipelineNodeVisualState.Error;
+        }
+
+        if (ContainsAny(status, "加载中"))
+        {
+            return PipelineNodeVisualState.BusyOrWarn;
+        }
+
+        return ContainsAny(status, "已加载")
+            ? PipelineNodeVisualState.Active
+            : PipelineNodeVisualState.Idle;
+    }
+
+    private static PipelineNodeVisualState ClassifyAsrNodeState(string workerStatus, string apiStatus)
+    {
+        if (ContainsAny(workerStatus, "错误", "失败", "异常") ||
+            ContainsAny(apiStatus, "错误", "失败", "异常"))
+        {
+            return PipelineNodeVisualState.Error;
+        }
+
+        if (ContainsAny(workerStatus, "启动中", "重启中"))
+        {
+            return PipelineNodeVisualState.BusyOrWarn;
+        }
+
+        return ContainsAny(workerStatus, "已启动", "已重启")
+            ? PipelineNodeVisualState.Active
+            : PipelineNodeVisualState.Idle;
+    }
+
+    private PipelineNodeVisualState ClassifyTranslationNodeState(string workerStatus, string apiStatus)
+    {
+        if (!_isRunning && !_isTransitioning)
+        {
+            return string.Equals(workerStatus, "待配置", StringComparison.Ordinal)
+                ? PipelineNodeVisualState.BusyOrWarn
+                : PipelineNodeVisualState.Idle;
+        }
+
+        if (!_sessionTranslationEnabled && string.Equals(workerStatus, "已关闭", StringComparison.Ordinal))
+        {
+            return PipelineNodeVisualState.Idle;
+        }
+
+        if (ContainsAny(workerStatus, "异常", "错误", "失败") ||
+            ContainsAny(apiStatus, "错误", "失败", "停用"))
+        {
+            return PipelineNodeVisualState.Error;
+        }
+
+        if (_hasTranslationIssue ||
+            _translationRuntimeStatus.QueueLength > 0 ||
+            ContainsAny(workerStatus, "启动中", "重启中") ||
+            ContainsAny(apiStatus, "熔断", "冷却"))
+        {
+            return PipelineNodeVisualState.BusyOrWarn;
+        }
+
+        return ContainsAny(workerStatus, "已启动", "已重启")
+            ? PipelineNodeVisualState.Active
+            : PipelineNodeVisualState.Idle;
+    }
+
+    private PipelineNodeVisualState ClassifyOutputNodeState(string status)
+    {
+        if (ContainsAny(status, "错误", "失败", "异常"))
+        {
+            return PipelineNodeVisualState.Error;
+        }
+
+        if (_isRunning && ContainsAny(status, "输出中"))
+        {
+            return PipelineNodeVisualState.Active;
+        }
+
+        return _isTransitioning
+            ? PipelineNodeVisualState.BusyOrWarn
+            : PipelineNodeVisualState.Idle;
+    }
+
+    private static bool ContainsAny(string? text, params string[] terms)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return false;
+        }
+
+        foreach (var term in terms)
+        {
+            if (text.Contains(term, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void ApplyPipelineNodeState(
+        Border node,
+        System.Windows.Shapes.Ellipse dot,
+        PipelineNodeVisualState state)
+    {
+        if (_pipelineNodeStates.TryGetValue(node, out var previous) && previous == state)
+        {
+            return;
+        }
+
+        _pipelineNodeStates[node] = state;
+        var (dotKey, backgroundKey, borderKey) = state switch
+        {
+            PipelineNodeVisualState.Active => ("AcousticLiveBrush", "AcousticLiveSoftBrush", "CardStrokeColorDefaultBrush"),
+            PipelineNodeVisualState.BusyOrWarn => ("AcousticWarmBrush", "AcousticWarmSoftBrush", "AcousticWarmBrush"),
+            PipelineNodeVisualState.Error => ("AcousticPeakBrush", "AcousticPeakSoftBrush", "AcousticPeakBrush"),
+            _ => ("AcousticIdleBrush", "SubtleFillColorTransparentBrush", "CardStrokeColorDefaultBrush")
+        };
+
+        dot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, dotKey);
+        node.SetResourceReference(Border.BackgroundProperty, backgroundKey);
+        node.SetResourceReference(Border.BorderBrushProperty, borderKey);
     }
 
     private void ApplySubtitleRevision(SubtitleItem revision)
@@ -832,41 +1356,156 @@ public partial class MainWindow : FluentWindow
         {
             SubtitleList.Items.Insert(0, item);
         }
+
+        SyncHomeLiveMonitorFromHistory();
     }
 
     private void OnRuntimeError(object? sender, Exception ex)
     {
         Dispatcher.BeginInvoke(async () =>
         {
-            LastErrorText.Text = ex.Message;
+            SetRuntimeError(ex.Message);
             SetStateBadge("错误");
             HomeRuntimeSummaryText.Text = "运行异常，请查看问题信息";
+            RefreshPipelineVisualStates();
             AppendAppLog($"错误: {ex.GetType().Name}: {ex.Message}");
 
             if (ex is RuntimeFatalException && _isRunning)
             {
                 await StopRuntimeAsync();
-                LastErrorText.Text = ex.Message;
+                SetRuntimeError(ex.Message);
                 SetStateBadge("错误");
                 HomeRuntimeSummaryText.Text = "字幕已停止，请处理问题后重新开始";
+                RefreshPipelineVisualStates();
             }
         });
     }
 
     private void OnAudioLevelChanged(object? sender, double level)
     {
-        Dispatcher.BeginInvoke(() =>
+        Volatile.Write(ref _pendingAudioLevel, level);
+        if (!_canRenderHomeLiveMetrics)
         {
-            AudioLevelBar.Value = level;
-            HomeAudioLevelText.Text = $"{Math.Round(level)}%";
-        });
+            return;
+        }
+
+        // 静默归零后不再重复向 UI 线程派发 0% 刷新
+        if (level <= 0.5d && Volatile.Read(ref _lastDisplayedAudioPercent) == 0)
+        {
+            return;
+        }
+
+        // 节流至 ~20fps 且合并在途任务，避免低配置机器上音频线程堆满 UI Dispatcher 队列
+        var now = Environment.TickCount64;
+        if (level > 0.5d && now - Volatile.Read(ref _lastAudioLevelDispatchTick) < 50)
+        {
+            return;
+        }
+
+        if (Interlocked.CompareExchange(ref _audioLevelUpdatePending, 1, 0) != 0)
+        {
+            return;
+        }
+
+        Volatile.Write(ref _lastAudioLevelDispatchTick, now);
+        Dispatcher.BeginInvoke(DispatcherPriority.Render, _applyPendingAudioLevelAction);
+    }
+
+    private void ApplyPendingAudioLevel()
+    {
+        Interlocked.Exchange(ref _audioLevelUpdatePending, 0);
+        if (!_canRenderHomeLiveMetrics || !_isRunning)
+        {
+            return;
+        }
+
+        var level = Volatile.Read(ref _pendingAudioLevel);
+        AudioLevelMeter.Level = level;
+        var percent = level <= 0.5d ? 0 : (int)Math.Round(Math.Clamp(level, 0d, 100d));
+        if (percent != Volatile.Read(ref _lastDisplayedAudioPercent))
+        {
+            Volatile.Write(ref _lastDisplayedAudioPercent, percent);
+            AudioLevelBar.Value = percent;
+            HomeAudioLevelText.Text = $"{percent}%";
+        }
+    }
+
+    private void ResetHomeAudioMeterUi()
+    {
+        Volatile.Write(ref _pendingAudioLevel, 0d);
+        Interlocked.Exchange(ref _audioLevelUpdatePending, 0);
+        Volatile.Write(ref _lastDisplayedAudioPercent, 0);
+        AudioLevelBar.Value = 0;
+        AudioLevelMeter.Level = 0;
+        AudioLevelMeter.IsSpeechActive = false;
+        AudioLevelMeter.ResetPeak();
+        HomeAudioLevelText.Text = "0%";
+    }
+
+    private void OnWindowVisibilityOrStateChanged(object? sender, EventArgs e)
+    {
+        UpdateHomeLiveMetricsVisibility();
+    }
+
+    private void OnWindowVisibilityOrStateChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        UpdateHomeLiveMetricsVisibility();
+    }
+
+    private void UpdateHomeLiveMetricsVisibility()
+    {
+        var canRender = IsVisible &&
+                        WindowState != WindowState.Minimized &&
+                        HomePage?.Visibility == Visibility.Visible;
+        var becameVisible = canRender && !_canRenderHomeLiveMetrics;
+        _canRenderHomeLiveMetrics = canRender;
+
+        if (!becameVisible)
+        {
+            return;
+        }
+
+        if (!_isRunning)
+        {
+            ResetHomeAudioMeterUi();
+            return;
+        }
+
+        SubtitleActivitySnapshot latest;
+        lock (_activitySnapshotLock)
+        {
+            latest = _latestActivitySnapshot;
+        }
+
+        AudioLevelMeter.IsSpeechActive = latest.State == SubtitleActivityState.ListeningSpeech;
+        UpdateVoiceActivityBadge(latest);
+        ApplyPendingAudioLevel();
     }
 
     private void OnRuntimeActivityChanged(object? sender, SubtitleActivitySnapshot snapshot)
     {
+        lock (_activitySnapshotLock)
+        {
+            _latestActivitySnapshot = snapshot;
+        }
+
+        if (!_canRenderHomeLiveMetrics && !_isFloatingWindowVisible)
+        {
+            return;
+        }
+
         Dispatcher.BeginInvoke(() =>
         {
-            _floatingWindow?.UpdateActivity(snapshot);
+            if (_canRenderHomeLiveMetrics)
+            {
+                AudioLevelMeter.IsSpeechActive = snapshot.State == SubtitleActivityState.ListeningSpeech;
+                UpdateVoiceActivityBadge(snapshot);
+            }
+
+            if (_floatingWindow is { IsVisible: true })
+            {
+                _floatingWindow.UpdateActivity(snapshot);
+            }
         });
     }
 
@@ -877,6 +1516,7 @@ public partial class MainWindow : FluentWindow
             var label = VadEndpointModeLabel(status.Mode);
             var suffix = status.IsAdaptive ? "自适应" : "固定";
             CurrentVadEndpointText.Text = $"当前断句等待：{status.EffectiveEndSilenceMs}ms（{label}，{suffix}）";
+            HomeVadBadgeText.Text = $"{label} {status.EffectiveEndSilenceMs}ms";
             AdaptiveVadStatusText.Text = status.IsAdaptive
                 ? FormatAdaptiveVadStatus(status.Evaluation)
                 : "固定值模式，不参与自适应";
@@ -1011,17 +1651,19 @@ public partial class MainWindow : FluentWindow
         }
         catch (Exception ex)
         {
-            LastErrorText.Text = ex.Message;
+            SetRuntimeError(ex.Message);
             AppendAppLog($"悬浮窗显示失败: {ex}");
         }
     }
 
     private void LoadAudioDevices(string selectedDeviceId)
     {
-        _audioDevices.Clear();
-        AudioDeviceComboBox.Items.Clear();
+        _syncingQuickControls = true;
         try
         {
+            _audioDevices.Clear();
+            AudioDeviceComboBox.Items.Clear();
+            HomeAudioDeviceComboBox.Items.Clear();
             var devices = _audioDeviceService.GetOutputDevices();
             var selectedIndex = -1;
             var defaultIndex = -1;
@@ -1030,7 +1672,9 @@ public partial class MainWindow : FluentWindow
             {
                 var index = _audioDevices.Count;
                 _audioDevices.Add(device);
-                AudioDeviceComboBox.Items.Add($"{device.Name}{(device.IsDefault ? " (默认)" : "")}");
+                var label = $"{device.Name}{(device.IsDefault ? " (默认)" : "")}";
+                AudioDeviceComboBox.Items.Add(label);
+                HomeAudioDeviceComboBox.Items.Add(label);
 
                 if (device.IsDefault)
                 {
@@ -1045,20 +1689,79 @@ public partial class MainWindow : FluentWindow
 
             if (AudioDeviceComboBox.Items.Count > 0)
             {
-                AudioDeviceComboBox.SelectedIndex = selectedIndex >= 0 ? selectedIndex : Math.Max(defaultIndex, 0);
+                var targetIndex = selectedIndex >= 0 ? selectedIndex : Math.Max(defaultIndex, 0);
+                AudioDeviceComboBox.SelectedIndex = targetIndex;
+                HomeAudioDeviceComboBox.SelectedIndex = targetIndex;
             }
 
             UpdateCurrentAudioDeviceText();
         }
         catch (Exception ex)
         {
-            LastErrorText.Text = $"音频设备加载失败: {ex.Message}";
+            SetRuntimeError($"音频设备加载失败: {ex.Message}");
             CurrentAudioDeviceText.Text = "加载失败";
+        }
+        finally
+        {
+            _syncingQuickControls = false;
         }
     }
 
     private void OnAudioDeviceSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (_syncingQuickControls)
+        {
+            return;
+        }
+
+        var index = AudioDeviceComboBox.SelectedIndex;
+        _syncingQuickControls = true;
+        try
+        {
+            if (index >= 0 && index < HomeAudioDeviceComboBox.Items.Count)
+            {
+                HomeAudioDeviceComboBox.SelectedIndex = index;
+            }
+        }
+        finally
+        {
+            _syncingQuickControls = false;
+        }
+
+        UpdateCurrentAudioDeviceText();
+        ScheduleSettingsSave();
+    }
+
+    private void OnHomeAudioDeviceSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingQuickControls)
+        {
+            return;
+        }
+
+        var index = HomeAudioDeviceComboBox.SelectedIndex;
+        _syncingQuickControls = true;
+        try
+        {
+            if (index >= 0 && index < AudioDeviceComboBox.Items.Count)
+            {
+                AudioDeviceComboBox.SelectedIndex = index;
+            }
+        }
+        finally
+        {
+            _syncingQuickControls = false;
+        }
+
+        // 在主页主动切到非默认输出设备时，自动关闭“跟随系统默认设备”，避免保存时仍回落到默认设备。
+        if (!_suppressSettingChanges &&
+            index >= 0 && index < _audioDevices.Count &&
+            !_audioDevices[index].IsDefault &&
+            FollowDefaultDeviceSwitch.IsChecked == true)
+        {
+            FollowDefaultDeviceSwitch.IsChecked = false;
+        }
+
         UpdateCurrentAudioDeviceText();
         ScheduleSettingsSave();
     }
@@ -1236,6 +1939,39 @@ public partial class MainWindow : FluentWindow
                 SystemThemeWatcher.Watch(this);
                 break;
         }
+
+        ApplyAcousticThemeResources(ApplicationThemeManager.GetAppTheme());
+    }
+
+    private void OnApplicationThemeChanged(ApplicationTheme currentApplicationTheme, Color systemAccent)
+    {
+        Dispatcher.BeginInvoke(() => ApplyAcousticThemeResources(currentApplicationTheme));
+    }
+
+    private static void ApplyAcousticThemeResources(ApplicationTheme theme)
+    {
+        var resources = Application.Current?.Resources;
+        if (resources is null)
+        {
+            return;
+        }
+
+        var isDark = theme == ApplicationTheme.Dark;
+        resources["AcousticLiveBrush"] = CreateFrozenBrush(isDark ? Color.FromRgb(0x2D, 0xD4, 0xA3) : Color.FromRgb(0x0F, 0x9D, 0x76));
+        resources["AcousticLiveSoftBrush"] = CreateFrozenBrush(isDark ? Color.FromArgb(0x22, 0x2D, 0xD4, 0xA3) : Color.FromArgb(0x18, 0x0F, 0x9D, 0x76));
+        resources["AcousticWarmBrush"] = CreateFrozenBrush(isDark ? Color.FromRgb(0xF5, 0xB0, 0x41) : Color.FromRgb(0xD9, 0x77, 0x06));
+        resources["AcousticWarmSoftBrush"] = CreateFrozenBrush(isDark ? Color.FromArgb(0x24, 0xF5, 0xB0, 0x41) : Color.FromArgb(0x1A, 0xD9, 0x77, 0x06));
+        resources["AcousticPeakBrush"] = CreateFrozenBrush(isDark ? Color.FromRgb(0xF8, 0x71, 0x71) : Color.FromRgb(0xC4, 0x2B, 0x1C));
+        resources["AcousticPeakSoftBrush"] = CreateFrozenBrush(isDark ? Color.FromArgb(0x24, 0xF8, 0x71, 0x71) : Color.FromArgb(0x18, 0xC4, 0x2B, 0x1C));
+        resources["AcousticIdleBrush"] = CreateFrozenBrush(isDark ? Color.FromRgb(0x7A, 0x86, 0x99) : Color.FromRgb(0x88, 0x92, 0xA0));
+        resources["AcousticMeterTrackBrush"] = CreateFrozenBrush(isDark ? Color.FromArgb(0x33, 0x94, 0xA3, 0xB8) : Color.FromArgb(0x26, 0x80, 0x88, 0x94));
+    }
+
+    private static SolidColorBrush CreateFrozenBrush(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
     }
 
     private AppThemeMode SelectedThemeMode()
@@ -1268,6 +2004,7 @@ public partial class MainWindow : FluentWindow
     {
         UpdateAsrValidationHint();
         UpdateApiKeyGuidance();
+        UpdateHomeServiceSummary();
         ScheduleSettingsSave();
     }
 
@@ -1291,6 +2028,7 @@ public partial class MainWindow : FluentWindow
         LoadAsrSlotToUi(provider);
         UpdateAsrValidationHint();
         UpdateApiKeyGuidance();
+        UpdateHomeServiceSummary();
         ScheduleSettingsSave();
     }
 
@@ -1396,7 +2134,16 @@ public partial class MainWindow : FluentWindow
         HotkeysEnabledSwitch.IsChecked = settings.Hotkeys.Enabled;
         LanguageBox.Text = "自动检测 (auto)";
         SelectThemeMode(settings.Appearance.Theme);
-        TranslationEnabledSwitch.IsChecked = settings.Translation.Enabled;
+        _syncingQuickControls = true;
+        try
+        {
+            TranslationEnabledSwitch.IsChecked = settings.Translation.Enabled;
+            HomeTranslationEnabledSwitch.IsChecked = settings.Translation.Enabled;
+        }
+        finally
+        {
+            _syncingQuickControls = false;
+        }
         SelectTranslationTargetLanguage(settings.Translation.TargetLanguage);
         SentenceAccumulationLimitBox.Value = settings.Translation.SentenceAccumulationLimit;
         RefreshTranslationProfileList(settings.Translation.ActiveProfileId);
@@ -1535,11 +2282,97 @@ public partial class MainWindow : FluentWindow
 
     private void OnTranslationSettingChanged(object sender, RoutedEventArgs e)
     {
+        if (_syncingQuickControls)
+        {
+            return;
+        }
+
+        _syncingQuickControls = true;
+        try
+        {
+            if (HomeTranslationEnabledSwitch is not null && TranslationEnabledSwitch is not null)
+            {
+                HomeTranslationEnabledSwitch.IsChecked = TranslationEnabledSwitch.IsChecked;
+            }
+
+            if (HomeTranslationTargetLanguageBox is not null && TranslationTargetLanguageBox is not null)
+            {
+                SelectComboBoxItemByTag(HomeTranslationTargetLanguageBox, GetSelectedTranslationTargetLanguage());
+            }
+        }
+        finally
+        {
+            _syncingQuickControls = false;
+        }
+
         if (TranslationSelectionSummaryText is not null)
         {
             UpdateTranslationProfileSelectionUi();
         }
+        else
+        {
+            UpdateHomeServiceSummary();
+            RefreshPipelineVisualStates();
+        }
 
+        ScheduleSettingsSave();
+    }
+
+    private void OnHomeTranslationEnabledChanged(object sender, RoutedEventArgs e)
+    {
+        if (_syncingQuickControls)
+        {
+            return;
+        }
+
+        _syncingQuickControls = true;
+        try
+        {
+            if (TranslationEnabledSwitch is not null)
+            {
+                TranslationEnabledSwitch.IsChecked = HomeTranslationEnabledSwitch.IsChecked;
+            }
+        }
+        finally
+        {
+            _syncingQuickControls = false;
+        }
+
+        if (TranslationSelectionSummaryText is not null)
+        {
+            UpdateTranslationProfileSelectionUi();
+        }
+        else
+        {
+            UpdateHomeServiceSummary();
+            RefreshPipelineVisualStates();
+        }
+
+        ScheduleSettingsSave();
+    }
+
+    private void OnHomeTranslationTargetLanguageChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingQuickControls)
+        {
+            return;
+        }
+
+        var targetLanguage = (HomeTranslationTargetLanguageBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "zh-Hans";
+        _syncingQuickControls = true;
+        try
+        {
+            if (TranslationTargetLanguageBox is not null)
+            {
+                SelectComboBoxItemByTag(TranslationTargetLanguageBox, targetLanguage);
+            }
+        }
+        finally
+        {
+            _syncingQuickControls = false;
+        }
+
+        UpdateHomeServiceSummary();
         ScheduleSettingsSave();
     }
 
@@ -2040,6 +2873,8 @@ public partial class MainWindow : FluentWindow
         TranslationRemoteNoticeText.Visibility = profile?.Location == TranslationServiceLocation.Remote
             ? Visibility.Visible
             : Visibility.Collapsed;
+        UpdateHomeServiceSummary();
+        RefreshPipelineVisualStates();
     }
 
     private TranslationProfile? SelectedTranslationProfile()
@@ -2068,12 +2903,29 @@ public partial class MainWindow : FluentWindow
 
     private void SelectTranslationTargetLanguage(string targetLanguage)
     {
-        TranslationTargetLanguageBox.SelectedItem = TranslationTargetLanguageBox.Items
-            .OfType<ComboBoxItem>()
-            .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), targetLanguage, StringComparison.OrdinalIgnoreCase));
-        if (TranslationTargetLanguageBox.SelectedIndex < 0)
+        _syncingQuickControls = true;
+        try
         {
-            TranslationTargetLanguageBox.SelectedIndex = 0;
+            SelectComboBoxItemByTag(TranslationTargetLanguageBox, targetLanguage);
+            if (HomeTranslationTargetLanguageBox is not null)
+            {
+                SelectComboBoxItemByTag(HomeTranslationTargetLanguageBox, targetLanguage);
+            }
+        }
+        finally
+        {
+            _syncingQuickControls = false;
+        }
+    }
+
+    private static void SelectComboBoxItemByTag(ComboBox comboBox, string tag)
+    {
+        comboBox.SelectedItem = comboBox.Items
+            .OfType<ComboBoxItem>()
+            .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), tag, StringComparison.OrdinalIgnoreCase));
+        if (comboBox.SelectedIndex < 0 && comboBox.Items.Count > 0)
+        {
+            comboBox.SelectedIndex = 0;
         }
     }
 
@@ -2155,6 +3007,10 @@ public partial class MainWindow : FluentWindow
         var suffix = profile.IsAdaptive ? "自适应" : "固定";
         CurrentVadEndpointText.Text =
             $"当前断句等待：{profile.InitialEndSilenceMs}ms（{VadEndpointModeLabel(mode)}，{suffix}）";
+        if (HomeVadBadgeText is not null)
+        {
+            HomeVadBadgeText.Text = $"{VadEndpointModeLabel(mode)} {profile.InitialEndSilenceMs}ms";
+        }
         AdaptiveVadStatusText.Text = profile.IsAdaptive ? "等待运行" : "固定值模式，不参与自适应";
     }
 
@@ -2269,6 +3125,7 @@ public partial class MainWindow : FluentWindow
     private void UpdateFloatingWindowButtonState()
     {
         var isVisible = _floatingWindow?.IsVisible == true;
+        _isFloatingWindowVisible = isVisible;
         var buttonText = isVisible ? "隐藏悬浮窗" : "显示悬浮窗";
 
         HomeFloatingWindowButton.ToolTip = buttonText;
@@ -2306,7 +3163,7 @@ public partial class MainWindow : FluentWindow
         catch (Exception ex)
         {
             StartStopButton.IsEnabled = false;
-            LastErrorText.Text = $"数据目录不可写：{_dataDirectory}";
+            SetRuntimeError($"数据目录不可写：{_dataDirectory}");
             throw new InvalidOperationException(
                 $"数据目录不可写，请把程序解压到可写位置（{_dataDirectory}）。", ex);
         }

@@ -10,6 +10,16 @@
                 <ui:ControlsDictionary />
             </ResourceDictionary.MergedDictionaries>
 
+            <!-- 演播控台声学语义色（亮/暗主题通过 MainWindow.ApplyAcousticThemeResources 同步） -->
+            <SolidColorBrush x:Key="AcousticLiveBrush" Color="#0F9D76" />
+            <SolidColorBrush x:Key="AcousticLiveSoftBrush" Color="#180F9D76" />
+            <SolidColorBrush x:Key="AcousticWarmBrush" Color="#D97706" />
+            <SolidColorBrush x:Key="AcousticWarmSoftBrush" Color="#1AD97706" />
+            <SolidColorBrush x:Key="AcousticPeakBrush" Color="#C42B1C" />
+            <SolidColorBrush x:Key="AcousticPeakSoftBrush" Color="#18C42B1C" />
+            <SolidColorBrush x:Key="AcousticIdleBrush" Color="#8892A0" />
+            <SolidColorBrush x:Key="AcousticMeterTrackBrush" Color="#26808894" />
+
             <!-- Fluent type ramp: Title 28 SemiBold / BodyStrong 14 SemiBold / Body 14 / Caption 12 -->
             <Style x:Key="PageTitleText" TargetType="TextBlock">
                 <Setter Property="FontSize" Value="28" />
@@ -48,6 +58,25 @@
                 <Setter Property="CornerRadius" Value="8" />
                 <Setter Property="Padding" Value="24" />
                 <Setter Property="Margin" Value="0,0,0,16" />
+            </Style>
+
+            <!-- 主页演播控制带 Hero 容器：更沉稳的边框与略大圆角，和普通监控卡区分层级 -->
+            <Style x:Key="HeroPanelBorder" TargetType="Border">
+                <Setter Property="Background" Value="{DynamicResource CardBackgroundFillColorDefaultBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource CardStrokeColorDefaultBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="10" />
+                <Setter Property="Padding" Value="22,20" />
+                <Setter Property="Margin" Value="0,0,0,16" />
+            </Style>
+
+            <!-- 5 节点运行链路单个节点容器 -->
+            <Style x:Key="PipelineNodeBorder" TargetType="Border">
+                <Setter Property="Background" Value="{DynamicResource SubtleFillColorTransparentBrush}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource CardStrokeColorDefaultBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="8" />
+                <Setter Property="Padding" Value="10,10" />
             </Style>
 
             <Style x:Key="TitleBarTitleText" TargetType="TextBlock">

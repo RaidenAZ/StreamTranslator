@@ -2,6 +2,7 @@
                  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                  xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+                 xmlns:controls="clr-namespace:StreamTranslator.App.Controls"
                  Title="StreamTranslator"
                  Width="1120"
                  Height="760"
@@ -98,6 +99,7 @@
                     <Grid x:Name="HomePage">
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
                             <StackPanel Margin="32,24,32,32">
+                                <!-- 页头：标题 + 实时状态与断句策略摘要徽章 -->
                                 <DockPanel Margin="0,0,0,16">
                                     <TextBlock Text="实时字幕"
                                                Style="{StaticResource PageTitleText}"
@@ -109,13 +111,33 @@
                                             Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
                                             BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                                             BorderThickness="1"
-                                            CornerRadius="12"
+                                            CornerRadius="14"
                                             Padding="12,5">
-                                        <TextBlock x:Name="HomeStateBadgeText"
-                                                   Text="就绪"
-                                                   Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}"
-                                                   FontSize="12"
-                                                   FontWeight="SemiBold" />
+                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                            <Ellipse x:Name="HomeStateDot"
+                                                     Width="8"
+                                                     Height="8"
+                                                     Fill="{DynamicResource AcousticIdleBrush}"
+                                                     Margin="0,0,8,0"
+                                                     VerticalAlignment="Center" />
+                                            <TextBlock x:Name="HomeStateBadgeText"
+                                                       Text="就绪"
+                                                       Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}"
+                                                       FontSize="12"
+                                                       FontWeight="SemiBold"
+                                                       VerticalAlignment="Center" />
+                                            <Border Width="1"
+                                                    Height="11"
+                                                    Background="{DynamicResource DividerStrokeColorDefaultBrush}"
+                                                    Margin="8,0"
+                                                    VerticalAlignment="Center" />
+                                            <TextBlock x:Name="HomeVadBadgeText"
+                                                       Text="均衡 400ms"
+                                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                       FontSize="12"
+                                                       Typography.NumeralAlignment="Tabular"
+                                                       VerticalAlignment="Center" />
+                                        </StackPanel>
                                     </Border>
                                 </DockPanel>
 
@@ -156,24 +178,23 @@
                                     </DockPanel>
                                 </Border>
 
+                                <!-- 层级一：演播控制带 (Hero Stage) -->
                                 <Border x:Name="HomeControlBar"
-                                        Style="{StaticResource PanelBorder}">
+                                        Style="{StaticResource HeroPanelBorder}">
                                     <StackPanel>
-                                        <DockPanel Margin="0,0,0,20">
-                                            <TextBlock Text="字幕概览"
-                                                       AutomationProperties.AutomationId="HomeOverviewPanel"
-                                                       Style="{StaticResource SectionTitleText}"
-                                                       Margin="0"
-                                                       VerticalAlignment="Center" />
-                                            <StackPanel DockPanel.Dock="Right"
+                                        <!-- 第一排：主操作按钮 + 运行状态摘要 -->
+                                        <DockPanel Margin="0,0,0,18">
+                                            <StackPanel DockPanel.Dock="Left"
                                                         Orientation="Horizontal"
-                                                        HorizontalAlignment="Right">
+                                                        VerticalAlignment="Center">
                                                 <ui:Button x:Name="StartStopButton"
                                                            AutomationProperties.AutomationId="StartStopButton"
                                                            Appearance="Primary"
                                                            Click="OnStartStopClick"
-                                                           MinWidth="116"
-                                                           Margin="0,0,8,0">
+                                                           Height="38"
+                                                           MinWidth="132"
+                                                           Padding="16,0"
+                                                           Margin="0,0,10,0">
                                                     <StackPanel Orientation="Horizontal">
                                                         <ui:ProgressRing x:Name="StartStopProgressRing"
                                                                          IsIndeterminate="True"
@@ -182,14 +203,15 @@
                                                                          Margin="0,0,8,0"
                                                                          Visibility="Collapsed" />
                                                         <ui:SymbolIcon x:Name="StartStopIcon" Symbol="Play24" Margin="0,0,8,0" />
-                                                        <TextBlock x:Name="StartStopText" Text="开始字幕" />
+                                                        <TextBlock x:Name="StartStopText" Text="开始字幕" FontWeight="SemiBold" />
                                                     </StackPanel>
                                                 </ui:Button>
                                                 <ui:Button x:Name="HomeFloatingWindowButton"
                                                            AutomationProperties.AutomationId="HomeFloatingWindowButton"
                                                            AutomationProperties.Name="显示悬浮窗"
                                                            Click="OnShowFloatingWindowClick"
-                                                           MinWidth="112"
+                                                           Height="38"
+                                                           MinWidth="116"
                                                            Margin="0,0,8,0">
                                                     <StackPanel Orientation="Horizontal">
                                                         <ui:SymbolIcon x:Name="FloatingWindowIcon" Symbol="Window24" Margin="0,0,8,0" />
@@ -200,152 +222,615 @@
                                                            AutomationProperties.AutomationId="HomeFloatingLockButton"
                                                            ToolTip="锁定或解锁悬浮窗（Ctrl+Alt+L）"
                                                            Click="OnToggleFloatingLockClick"
-                                                           MinWidth="96">
+                                                           Height="38"
+                                                           MinWidth="92">
                                                     <StackPanel Orientation="Horizontal">
                                                         <ui:SymbolIcon x:Name="HomeFloatingLockIcon" Symbol="LockClosed24" Margin="0,0,6,0" />
                                                         <TextBlock x:Name="HomeFloatingLockText" Text="锁定" />
                                                     </StackPanel>
                                                 </ui:Button>
                                             </StackPanel>
-                                        </DockPanel>
 
-                                        <Grid Margin="0,0,0,24">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="24" />
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="24" />
-                                                <ColumnDefinition Width="300" />
-                                            </Grid.ColumnDefinitions>
-
-                                            <StackPanel Grid.Column="0">
-                                                <TextBlock Text="当前状态" Style="{StaticResource FieldLabelText}" />
+                                            <StackPanel DockPanel.Dock="Right"
+                                                        HorizontalAlignment="Right"
+                                                        VerticalAlignment="Center"
+                                                        Margin="16,0,0,0">
                                                 <TextBlock x:Name="HomeRuntimeSummaryText"
                                                            AutomationProperties.AutomationId="HomeControlBar"
                                                            Text="未启动，等待开始"
-                                                           Style="{StaticResource FieldValueText}" />
-                                            </StackPanel>
-                                            <StackPanel Grid.Column="2">
-                                                <TextBlock Text="输出设备" Style="{StaticResource FieldLabelText}" />
-                                                <TextBlock x:Name="CurrentAudioDeviceText"
-                                                           AutomationProperties.AutomationId="HomeAudioDeviceText"
-                                                           Text="默认设备"
-                                                           FontSize="14"
+                                                           FontSize="13"
+                                                           FontWeight="Medium"
                                                            Foreground="{DynamicResource TextFillColorPrimaryBrush}"
-                                                           TextTrimming="CharacterEllipsis" />
+                                                           HorizontalAlignment="Right"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                                                <TextBlock x:Name="HomeActiveServiceSummaryText"
+                                                           Text="识别：MiMo ASR · 翻译：已关闭"
+                                                           Style="{StaticResource CaptionText}"
+                                                           HorizontalAlignment="Right"
+                                                           Margin="0,2,0,0"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                                             </StackPanel>
-                                            <StackPanel Grid.Column="4">
-                                                <DockPanel Margin="0,0,0,8">
-                                                    <TextBlock Text="输入电平" Style="{StaticResource FieldLabelText}" Margin="0" />
-                                                    <TextBlock x:Name="HomeAudioLevelText"
+                                        </DockPanel>
+
+                                        <!-- 第二排：高频快捷切换带（输出设备 + 翻译开关与目标语言） -->
+                                        <Border Background="{DynamicResource SubtleFillColorSecondaryBrush}"
+                                                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="8"
+                                                Padding="14,10"
+                                                Margin="0,0,0,18">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="14" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="14" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+
+                                                <!-- 输出设备快捷选择 -->
+                                                <DockPanel Grid.Column="0" VerticalAlignment="Center">
+                                                    <TextBlock DockPanel.Dock="Left"
+                                                               Text="输出设备"
+                                                               FontSize="12"
+                                                               FontWeight="Medium"
+                                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                               VerticalAlignment="Center"
+                                                               Margin="0,0,10,0" />
+                                                    <ui:Button x:Name="HomeRefreshAudioDevicesButton"
                                                                DockPanel.Dock="Right"
-                                                               Text="0%"
-                                                               Style="{StaticResource CaptionText}"
-                                                               HorizontalAlignment="Right" />
+                                                               ToolTip="刷新音频输出设备列表"
+                                                               Width="{Binding ActualHeight, ElementName=HomeAudioDeviceComboBox}"
+                                                               Height="{Binding ActualHeight, ElementName=HomeAudioDeviceComboBox}"
+                                                               MinWidth="34"
+                                                               MinHeight="34"
+                                                               Padding="0"
+                                                               Margin="6,0,0,0"
+                                                               VerticalAlignment="Center"
+                                                               Click="OnRefreshAudioDevicesClick">
+                                                        <ui:SymbolIcon Symbol="ArrowClockwise24" FontSize="14" />
+                                                    </ui:Button>
+                                                    <ComboBox x:Name="HomeAudioDeviceComboBox"
+                                                              AutomationProperties.AutomationId="HomeAudioDeviceComboBox"
+                                                              VerticalAlignment="Center"
+                                                              VerticalContentAlignment="Center"
+                                                              SelectionChanged="OnHomeAudioDeviceSelectionChanged" />
                                                 </DockPanel>
+
+                                                <Border Grid.Column="2"
+                                                        Width="1"
+                                                        Height="22"
+                                                        Background="{DynamicResource DividerStrokeColorDefaultBrush}"
+                                                        VerticalAlignment="Center" />
+
+                                                <!-- 翻译快速开关与目标语言 -->
+                                                <DockPanel x:Name="HomeTranslationQuickBar"
+                                                           Grid.Column="4"
+                                                           VerticalAlignment="Center">
+                                                    <TextBlock DockPanel.Dock="Left"
+                                                               Text="字幕翻译"
+                                                               FontSize="12"
+                                                               FontWeight="Medium"
+                                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                               VerticalAlignment="Center"
+                                                               Margin="0,0,8,0" />
+                                                    <ui:ToggleSwitch x:Name="HomeTranslationEnabledSwitch"
+                                                                     AutomationProperties.AutomationId="HomeTranslationEnabledSwitch"
+                                                                     DockPanel.Dock="Left"
+                                                                     OffContent="关"
+                                                                     OnContent="开"
+                                                                     Margin="0,0,8,0"
+                                                                     VerticalAlignment="Center"
+                                                                     Checked="OnHomeTranslationEnabledChanged"
+                                                                     Unchecked="OnHomeTranslationEnabledChanged" />
+                                                    <ComboBox x:Name="HomeTranslationTargetLanguageBox"
+                                                              AutomationProperties.AutomationId="HomeTranslationTargetLanguageBox"
+                                                              MinWidth="122"
+                                                              VerticalAlignment="Center"
+                                                              VerticalContentAlignment="Center"
+                                                              SelectionChanged="OnHomeTranslationTargetLanguageChanged">
+                                                        <ComboBoxItem Content="译为 中文" Tag="zh-Hans" />
+                                                        <ComboBoxItem Content="译为 英语" Tag="en" />
+                                                        <ComboBoxItem Content="译为 德语" Tag="de" />
+                                                        <ComboBoxItem Content="译为 法语" Tag="fr" />
+                                                        <ComboBoxItem Content="译为 日语" Tag="ja" />
+                                                    </ComboBox>
+                                                </DockPanel>
+                                            </Grid>
+                                        </Border>
+
+                                        <!-- 保留 CurrentAudioDeviceText 供现有逻辑与 UIA 自动化兼容 -->
+                                        <TextBlock x:Name="CurrentAudioDeviceText"
+                                                   AutomationProperties.AutomationId="HomeAudioDeviceText"
+                                                   Text="默认设备"
+                                                   Height="0"
+                                                   Opacity="0"
+                                                   IsHitTestVisible="False" />
+
+                                        <!-- 第三排：分段 LED 声学电平仪 + 实时人声/识别状态灯 -->
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+
+                                            <TextBlock Grid.Column="0"
+                                                       Text="输入电平"
+                                                       FontSize="12"
+                                                       FontWeight="Medium"
+                                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                       VerticalAlignment="Center"
+                                                       Margin="0,0,12,0" />
+
+                                            <Grid Grid.Column="1" VerticalAlignment="Center">
+                                                <controls:SegmentedLevelMeter x:Name="AudioLevelMeter"
+                                                                              Height="14"
+                                                                              SegmentCount="32"
+                                                                              InactiveBrush="{DynamicResource AcousticMeterTrackBrush}"
+                                                                              NormalBrush="{DynamicResource AcousticLiveBrush}"
+                                                                              WarmBrush="{DynamicResource AcousticWarmBrush}"
+                                                                              PeakBrush="{DynamicResource AcousticPeakBrush}" />
+                                                <!-- 保留 ProgressBar 隐藏于底层，保持 HomeAudioLevelBar 的 UIA 契约 -->
                                                 <ProgressBar x:Name="AudioLevelBar"
                                                              AutomationProperties.AutomationId="HomeAudioLevelBar"
                                                              AutomationProperties.Name="输入电平"
                                                              Minimum="0"
                                                              Maximum="100"
-                                                             Height="8" />
-                                            </StackPanel>
+                                                             Height="1"
+                                                             Opacity="0"
+                                                             IsHitTestVisible="False" />
+                                            </Grid>
+
+                                            <TextBlock x:Name="HomeAudioLevelText"
+                                                       Grid.Column="2"
+                                                       Text="0%"
+                                                       Width="40"
+                                                       TextAlignment="Right"
+                                                       FontSize="12"
+                                                       FontWeight="SemiBold"
+                                                       Typography.NumeralAlignment="Tabular"
+                                                       Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                                                       VerticalAlignment="Center"
+                                                       Margin="10,0,12,0" />
+
+                                            <Border x:Name="HomeVoiceActivityBadge"
+                                                    Grid.Column="3"
+                                                    Background="{DynamicResource SubtleFillColorSecondaryBrush}"
+                                                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="10"
+                                                    Padding="9,3"
+                                                    VerticalAlignment="Center">
+                                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                    <Ellipse x:Name="HomeVoiceActivityDot"
+                                                             Width="7"
+                                                             Height="7"
+                                                             Fill="{DynamicResource AcousticIdleBrush}"
+                                                             Margin="0,0,6,0"
+                                                             VerticalAlignment="Center" />
+                                                    <TextBlock x:Name="HomeVoiceActivityText"
+                                                               Text="未监听"
+                                                               FontSize="11.5"
+                                                               FontWeight="Medium"
+                                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                               VerticalAlignment="Center" />
+                                                </StackPanel>
+                                            </Border>
                                         </Grid>
-
-                                        <Border Height="1"
-                                                Background="{DynamicResource DividerStrokeColorDefaultBrush}"
-                                                Margin="0,0,0,20" />
-
-                                        <TextBlock Text="运行链路"
-                                                   FontSize="12"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                                   Margin="0,0,0,12" />
-                                        <Grid Margin="0,0,0,4">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="*" />
-                                            </Grid.ColumnDefinitions>
-                                            <Grid.RowDefinitions>
-                                                <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="20" />
-                                                <RowDefinition Height="Auto" />
-                                            </Grid.RowDefinitions>
-
-                                            <StackPanel Grid.Row="0" Grid.Column="0">
-                                                <TextBlock Text="音频输入" Style="{StaticResource FieldLabelText}" />
-                                                <TextBlock x:Name="AudioStatusText"
-                                                           AutomationProperties.AutomationId="OverviewAudioInputStatus"
-                                                           Text="未启动"
-                                                           Style="{StaticResource FieldValueText}" />
-                                            </StackPanel>
-                                            <StackPanel Grid.Row="0" Grid.Column="1">
-                                                <TextBlock Text="语音检测" Style="{StaticResource FieldLabelText}" />
-                                                <TextBlock x:Name="VadStatusText"
-                                                           AutomationProperties.AutomationId="OverviewSpeechDetectionStatus"
-                                                           Text="等待模型"
-                                                           Style="{StaticResource FieldValueText}" />
-                                            </StackPanel>
-                                            <StackPanel Grid.Row="0" Grid.Column="2">
-                                                <TextBlock Text="识别进程" Style="{StaticResource FieldLabelText}" />
-                                                <TextBlock x:Name="WorkerStatusText"
-                                                           AutomationProperties.AutomationId="OverviewRecognitionWorkerStatus"
-                                                           Text="未启动"
-                                                           Style="{StaticResource FieldValueText}" />
-                                            </StackPanel>
-                                            <StackPanel Grid.Row="0" Grid.Column="3">
-                                                <TextBlock Text="识别接口" Style="{StaticResource FieldLabelText}" />
-                                                <TextBlock x:Name="ApiStatusText"
-                                                           AutomationProperties.AutomationId="OverviewRecognitionApiStatus"
-                                                           Text="未测试"
-                                                           Style="{StaticResource FieldValueText}" />
-                                            </StackPanel>
-                                            <StackPanel Grid.Row="2" Grid.Column="0">
-                                                <TextBlock Text="翻译进程" Style="{StaticResource FieldLabelText}" />
-                                                <TextBlock x:Name="TranslationWorkerStatusText"
-                                                           AutomationProperties.AutomationId="OverviewTranslationWorkerStatus"
-                                                           Text="已关闭"
-                                                           Style="{StaticResource FieldValueText}" />
-                                            </StackPanel>
-                                            <StackPanel Grid.Row="2" Grid.Column="1">
-                                                <TextBlock Text="翻译接口" Style="{StaticResource FieldLabelText}" />
-                                                <TextBlock x:Name="TranslationApiStatusText"
-                                                           AutomationProperties.AutomationId="OverviewTranslationApiStatus"
-                                                           Text="已关闭"
-                                                           Style="{StaticResource FieldValueText}" />
-                                            </StackPanel>
-                                            <StackPanel Grid.Row="2" Grid.Column="2">
-                                                <TextBlock Text="字幕输出" Style="{StaticResource FieldLabelText}" />
-                                                <TextBlock x:Name="SubtitleOutputStatusText"
-                                                           AutomationProperties.AutomationId="OverviewSubtitleOutputStatus"
-                                                           Text="等待字幕"
-                                                           Style="{StaticResource FieldValueText}" />
-                                            </StackPanel>
-                                        </Grid>
-
                                     </StackPanel>
                                 </Border>
 
-                                <Border x:Name="HomeIssuesCard"
-                                        Style="{StaticResource PanelBorder}">
+                                <!-- 层级二：5 节点横向运行链路条 (Pipeline Strip) -->
+                                <Border Style="{StaticResource PanelBorder}" Padding="20,16">
                                     <StackPanel>
-                                        <TextBlock Text="问题"
-                                                   AutomationProperties.AutomationId="HomeIssuesPanel"
-                                                   Style="{StaticResource SectionTitleText}" />
-                                        <TextBlock x:Name="LastErrorText"
-                                                   Text="无"
-                                                   TextWrapping="Wrap"
-                                                   FontSize="14"
-                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
-                                        <TextBlock x:Name="TranslationIssueText"
-                                                   AutomationProperties.AutomationId="HomeTranslationIssueText"
-                                                   Visibility="Collapsed"
-                                                   TextWrapping="Wrap"
-                                                   FontSize="14"
-                                                   Foreground="{DynamicResource SystemFillColorCautionBrush}"
-                                                   Margin="0,12,0,0" />
+                                        <DockPanel Margin="0,0,0,12">
+                                            <TextBlock Text="运行链路"
+                                                       AutomationProperties.AutomationId="HomeOverviewPanel"
+                                                       Style="{StaticResource SectionTitleText}"
+                                                       Margin="0"
+                                                       VerticalAlignment="Center" />
+                                            <TextBlock x:Name="HomePipelineHintText"
+                                                       DockPanel.Dock="Right"
+                                                       Text="音频捕获 → VAD 断句 → 语音识别 → 字幕翻译 → 字幕输出"
+                                                       Style="{StaticResource CaptionText}"
+                                                       HorizontalAlignment="Right"
+                                                       VerticalAlignment="Center" />
+                                        </DockPanel>
+
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="16" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="16" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="16" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="16" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+
+                                            <!-- 节点 1：音频捕获 -->
+                                            <Border x:Name="PipelineNodeAudio"
+                                                    Grid.Column="0"
+                                                    Style="{StaticResource PipelineNodeBorder}">
+                                                <StackPanel>
+                                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                                        <Ellipse x:Name="PipelineDotAudio"
+                                                                 Width="7"
+                                                                 Height="7"
+                                                                 Fill="{DynamicResource AcousticIdleBrush}"
+                                                                 Margin="0,0,6,0"
+                                                                 VerticalAlignment="Center" />
+                                                        <TextBlock Text="音频捕获"
+                                                                   FontSize="12"
+                                                                   FontWeight="SemiBold"
+                                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                                    </StackPanel>
+                                                    <TextBlock x:Name="AudioStatusText"
+                                                               AutomationProperties.AutomationId="OverviewAudioInputStatus"
+                                                               Text="未启动"
+                                                               FontSize="12"
+                                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                                                </StackPanel>
+                                            </Border>
+
+                                            <ui:SymbolIcon Grid.Column="1"
+                                                           Symbol="ChevronRight16"
+                                                           FontSize="12"
+                                                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                           HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center" />
+
+                                            <!-- 节点 2：VAD 断句 -->
+                                            <Border x:Name="PipelineNodeVad"
+                                                    Grid.Column="2"
+                                                    Style="{StaticResource PipelineNodeBorder}">
+                                                <StackPanel>
+                                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                                        <Ellipse x:Name="PipelineDotVad"
+                                                                 Width="7"
+                                                                 Height="7"
+                                                                 Fill="{DynamicResource AcousticIdleBrush}"
+                                                                 Margin="0,0,6,0"
+                                                                 VerticalAlignment="Center" />
+                                                        <TextBlock Text="VAD 断句"
+                                                                   FontSize="12"
+                                                                   FontWeight="SemiBold"
+                                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                                    </StackPanel>
+                                                    <TextBlock x:Name="VadStatusText"
+                                                               AutomationProperties.AutomationId="OverviewSpeechDetectionStatus"
+                                                               Text="等待模型"
+                                                               FontSize="12"
+                                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                                                </StackPanel>
+                                            </Border>
+
+                                            <ui:SymbolIcon Grid.Column="3"
+                                                           Symbol="ChevronRight16"
+                                                           FontSize="12"
+                                                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                           HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center" />
+
+                                            <!-- 节点 3：语音识别 (进程 + 接口合并呈现，保留两个独立 AutomationId) -->
+                                            <Border x:Name="PipelineNodeAsr"
+                                                    Grid.Column="4"
+                                                    Style="{StaticResource PipelineNodeBorder}">
+                                                <StackPanel>
+                                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                                        <Ellipse x:Name="PipelineDotAsr"
+                                                                 Width="7"
+                                                                 Height="7"
+                                                                 Fill="{DynamicResource AcousticIdleBrush}"
+                                                                 Margin="0,0,6,0"
+                                                                 VerticalAlignment="Center" />
+                                                        <TextBlock Text="语音识别"
+                                                                   FontSize="12"
+                                                                   FontWeight="SemiBold"
+                                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                                    </StackPanel>
+                                                    <TextBlock x:Name="WorkerStatusText"
+                                                               AutomationProperties.AutomationId="OverviewRecognitionWorkerStatus"
+                                                               Text="未启动"
+                                                               FontSize="12"
+                                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                                                    <TextBlock x:Name="ApiStatusText"
+                                                               AutomationProperties.AutomationId="OverviewRecognitionApiStatus"
+                                                               Text="未测试"
+                                                               FontSize="11"
+                                                               Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               Margin="0,2,0,0"
+                                                               ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                                                </StackPanel>
+                                            </Border>
+
+                                            <ui:SymbolIcon Grid.Column="5"
+                                                           Symbol="ChevronRight16"
+                                                           FontSize="12"
+                                                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                           HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center" />
+
+                                            <!-- 节点 4：字幕翻译 (进程 + 接口合并呈现，保留两个独立 AutomationId) -->
+                                            <Border x:Name="PipelineNodeTranslation"
+                                                    Grid.Column="6"
+                                                    Style="{StaticResource PipelineNodeBorder}">
+                                                <StackPanel>
+                                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                                        <Ellipse x:Name="PipelineDotTranslation"
+                                                                 Width="7"
+                                                                 Height="7"
+                                                                 Fill="{DynamicResource AcousticIdleBrush}"
+                                                                 Margin="0,0,6,0"
+                                                                 VerticalAlignment="Center" />
+                                                        <TextBlock Text="字幕翻译"
+                                                                   FontSize="12"
+                                                                   FontWeight="SemiBold"
+                                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                                    </StackPanel>
+                                                    <TextBlock x:Name="TranslationWorkerStatusText"
+                                                               AutomationProperties.AutomationId="OverviewTranslationWorkerStatus"
+                                                               Text="已关闭"
+                                                               FontSize="12"
+                                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                                                    <TextBlock x:Name="TranslationApiStatusText"
+                                                               AutomationProperties.AutomationId="OverviewTranslationApiStatus"
+                                                               Text="已关闭"
+                                                               FontSize="11"
+                                                               Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               Margin="0,2,0,0"
+                                                               Typography.NumeralAlignment="Tabular"
+                                                               ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                                                </StackPanel>
+                                            </Border>
+
+                                            <ui:SymbolIcon Grid.Column="7"
+                                                           Symbol="ChevronRight16"
+                                                           FontSize="12"
+                                                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                           HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center" />
+
+                                            <!-- 节点 5：字幕输出 -->
+                                            <Border x:Name="PipelineNodeOutput"
+                                                    Grid.Column="8"
+                                                    Style="{StaticResource PipelineNodeBorder}">
+                                                <StackPanel>
+                                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                                        <Ellipse x:Name="PipelineDotOutput"
+                                                                 Width="7"
+                                                                 Height="7"
+                                                                 Fill="{DynamicResource AcousticIdleBrush}"
+                                                                 Margin="0,0,6,0"
+                                                                 VerticalAlignment="Center" />
+                                                        <TextBlock Text="字幕输出"
+                                                                   FontSize="12"
+                                                                   FontWeight="SemiBold"
+                                                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                                    </StackPanel>
+                                                    <TextBlock x:Name="SubtitleOutputStatusText"
+                                                               AutomationProperties.AutomationId="OverviewSubtitleOutputStatus"
+                                                               Text="等待字幕"
+                                                               FontSize="12"
+                                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                                                </StackPanel>
+                                            </Border>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- 按需显隐的问题告警横幅（正常运行时完全折叠，仅在错误或翻译降级时滑出） -->
+                                <Border x:Name="HomeIssuesCard"
+                                        Background="{DynamicResource AcousticPeakSoftBrush}"
+                                        BorderBrush="{DynamicResource AcousticPeakBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="8"
+                                        Padding="16,12"
+                                        Margin="0,0,0,16"
+                                        Visibility="Collapsed">
+                                    <DockPanel>
+                                        <ui:SymbolIcon x:Name="HomeIssuesIcon"
+                                                       Symbol="ErrorCircle24"
+                                                       DockPanel.Dock="Left"
+                                                       Foreground="{DynamicResource AcousticPeakBrush}"
+                                                       Margin="0,2,12,0"
+                                                       VerticalAlignment="Top" />
+                                        <StackPanel DockPanel.Dock="Right"
+                                                    Orientation="Horizontal"
+                                                    VerticalAlignment="Center"
+                                                    Margin="16,0,0,0">
+                                            <ui:Button Content="前往设置"
+                                                       Click="OnGoToSettingsClick"
+                                                       Height="30"
+                                                       Padding="10,0"
+                                                       Margin="0,0,8,0" />
+                                            <ui:Button Content="复制诊断"
+                                                       Click="OnCopyDiagnosticsClick"
+                                                       Height="30"
+                                                       Padding="10,0"
+                                                       Margin="0,0,8,0" />
+                                            <ui:Button ToolTip="清除错误提示"
+                                                       Click="OnDismissHomeIssueClick"
+                                                       Width="30"
+                                                       Height="30"
+                                                       Padding="0"
+                                                       Appearance="Transparent">
+                                                <ui:SymbolIcon Symbol="Dismiss20" FontSize="13" />
+                                            </ui:Button>
+                                        </StackPanel>
+                                        <StackPanel VerticalAlignment="Center">
+                                            <TextBlock x:Name="HomeIssuesTitleText"
+                                                       Text="运行异常"
+                                                       AutomationProperties.AutomationId="HomeIssuesPanel"
+                                                       FontSize="13"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                            <TextBlock x:Name="LastErrorText"
+                                                       Text="无"
+                                                       TextWrapping="Wrap"
+                                                       FontSize="13"
+                                                       Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                                                       Margin="0,3,0,0" />
+                                            <TextBlock x:Name="TranslationIssueText"
+                                                       AutomationProperties.AutomationId="HomeTranslationIssueText"
+                                                       Visibility="Collapsed"
+                                                       TextWrapping="Wrap"
+                                                       FontSize="13"
+                                                       Foreground="{DynamicResource AcousticWarmBrush}"
+                                                       Margin="0,4,0,0" />
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
+
+                                <!-- 层级三：实时字幕监视器（最近 4 条，单条点击直接复制，无需切页即可核对识别与翻译质量） -->
+                                <Border Style="{StaticResource PanelBorder}" Padding="20,16" Margin="0">
+                                    <StackPanel>
+                                        <DockPanel Margin="0,0,0,12">
+                                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                <TextBlock Text="实时字幕监视"
+                                                           Style="{StaticResource SectionTitleText}"
+                                                           Margin="0"
+                                                           VerticalAlignment="Center" />
+                                                <TextBlock x:Name="HomeMonitorCountText"
+                                                           Text="最近 4 条"
+                                                           Style="{StaticResource CaptionText}"
+                                                           Margin="10,0,0,0"
+                                                           VerticalAlignment="Center" />
+                                            </StackPanel>
+                                            <ui:Button DockPanel.Dock="Right"
+                                                       Content="查看全部历史"
+                                                       Appearance="Transparent"
+                                                       BorderThickness="0"
+                                                       Padding="8,4"
+                                                       FontSize="12"
+                                                       HorizontalAlignment="Right"
+                                                       Click="OnGoToHistoryClick">
+                                                <ui:Button.Icon>
+                                                    <ui:SymbolIcon Symbol="History20" FontSize="14" />
+                                                </ui:Button.Icon>
+                                            </ui:Button>
+                                        </DockPanel>
+
+                                        <Grid MinHeight="124">
+                                            <StackPanel x:Name="HomeLiveMonitorEmptyState"
+                                                        VerticalAlignment="Center"
+                                                        HorizontalAlignment="Center"
+                                                        Margin="0,18">
+                                                <TextBlock Text="等待实时字幕流"
+                                                           FontSize="14"
+                                                           FontWeight="Medium"
+                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           HorizontalAlignment="Center" />
+                                                <TextBlock Text="点击上方“开始字幕”后，最新识别与翻译的 4 条字幕会实时同步在这里；点击任意条目可直接复制。"
+                                                           Style="{StaticResource CaptionText}"
+                                                           TextAlignment="Center"
+                                                           TextWrapping="Wrap"
+                                                           MaxWidth="520"
+                                                           Margin="0,4,0,0" />
+                                            </StackPanel>
+
+                                            <ItemsControl x:Name="HomeLiveMonitorList"
+                                                          AutomationProperties.AutomationId="HomeLiveMonitorList"
+                                                          Visibility="Collapsed">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border BorderBrush="{DynamicResource DividerStrokeColorDefaultBrush}"
+                                                                BorderThickness="0,0,0,1"
+                                                                CornerRadius="6"
+                                                                Padding="8,9"
+                                                                Cursor="Hand"
+                                                                Tag="{Binding}"
+                                                                ToolTip="点击复制此条字幕"
+                                                                MouseLeftButtonUp="OnCopyHomeMonitorRowMouseLeftButtonUp">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Setter Property="Background" Value="{DynamicResource SubtleFillColorTransparentBrush}" />
+                                                                    <Style.Triggers>
+                                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                            <Setter Property="Background" Value="{DynamicResource SubtleFillColorSecondaryBrush}" />
+                                                                        </Trigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="64" />
+                                                                    <ColumnDefinition Width="12" />
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Grid.Column="0"
+                                                                           Text="{Binding GeneratedTimeText}"
+                                                                           FontFamily="Cascadia Mono, Consolas"
+                                                                           FontSize="12"
+                                                                           Typography.NumeralAlignment="Tabular"
+                                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                                           Margin="0,2,0,0"
+                                                                           VerticalAlignment="Top" />
+                                                                <StackPanel Grid.Column="2">
+                                                                    <TextBlock Text="{Binding SourceText}"
+                                                                               TextWrapping="Wrap"
+                                                                               FontSize="13.5"
+                                                                               LineHeight="20"
+                                                                               Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                                                    <TextBlock Text="{Binding TranslatedText}"
+                                                                               TextWrapping="Wrap"
+                                                                               FontSize="13.5"
+                                                                               LineHeight="20"
+                                                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                                               Margin="0,2,0,0">
+                                                                        <TextBlock.Style>
+                                                                            <Style TargetType="TextBlock">
+                                                                                <Setter Property="Visibility" Value="Visible" />
+                                                                                <Style.Triggers>
+                                                                                    <DataTrigger Binding="{Binding TranslatedText}" Value="{x:Null}">
+                                                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                                                    </DataTrigger>
+                                                                                    <DataTrigger Binding="{Binding TranslatedText}" Value="">
+                                                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                                                    </DataTrigger>
+                                                                                </Style.Triggers>
+                                                                            </Style>
+                                                                        </TextBlock.Style>
+                                                                    </TextBlock>
+                                                                </StackPanel>
+                                                                <ui:Button Grid.Column="3"
+                                                                           ToolTip="复制此条字幕"
+                                                                           Tag="{Binding}"
+                                                                           Click="OnCopyHomeMonitorItemClick"
+                                                                           Appearance="Transparent"
+                                                                           BorderThickness="0"
+                                                                           Width="30"
+                                                                           Height="30"
+                                                                           Padding="0"
+                                                                           Margin="8,0,0,0"
+                                                                           VerticalAlignment="Top">
+                                                                    <ui:SymbolIcon Symbol="Copy20" FontSize="14" />
+                                                                </ui:Button>
+                                                            </Grid>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </Grid>
                                     </StackPanel>
                                 </Border>
                             </StackPanel>
