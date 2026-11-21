@@ -44,6 +44,12 @@ if (Test-Path $mainWindowXaml) {
         throw "Subtitle history should not expose a horizontal scrollbar."
     }
 
+    if ($mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="HistoryDateComboBox"' -or
+        $mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="HistorySearchBox"' -or
+        $mainWindowMarkup -notmatch 'AutomationProperties\.AutomationId="ExportSubtitlesButton"') {
+        throw "Subtitle history page should expose date switcher, search box, and export action."
+    }
+
     if ($mainWindowMarkup -notmatch 'Text="\{Binding GeneratedTimeText\}"') {
         throw "Subtitle history rows should display the recorded system time."
     }
@@ -650,7 +656,13 @@ try {
 
     Click-Element $subtitleHistoryNav "Subtitle history navigation item"
     Start-Sleep -Milliseconds 500
+    $historyDateComboBox = Find-ByAutomationId "HistoryDateComboBox"
+    $historySearchBox = Find-ByAutomationId "HistorySearchBox"
+    $exportSubtitlesButton = Find-ByAutomationId "ExportSubtitlesButton"
     $clearHistoryButton = Find-ByAutomationId "ClearHistoryButton"
+    if ($null -eq $historyDateComboBox) { throw "History date switcher was not found." }
+    if ($null -eq $historySearchBox) { throw "History search box was not found." }
+    if ($null -eq $exportSubtitlesButton) { throw "History export button was not found." }
     if ($null -eq $clearHistoryButton) { throw "Clear history button was not found." }
 
     Invoke-Element $clearHistoryButton "Clear history button"

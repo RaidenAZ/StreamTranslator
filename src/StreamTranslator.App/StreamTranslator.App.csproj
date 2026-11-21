@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
     <ProjectReference Include="..\StreamTranslator.Core\StreamTranslator.Core.csproj" />
@@ -15,15 +15,20 @@
     <Using Remove="System.Drawing" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Resource Include="Assets\app.ico" />
+  </ItemGroup>
+
   <PropertyGroup>
     <AssemblyName>StreamTranslator</AssemblyName>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
-    <!-- 仅用于 System.Windows.Forms.Clipboard.SetDataObject 的可控重试重载 -->
+    <!-- 仅用于 System.Windows.Forms.Clipboard.SetDataObject 的可控重试重载与系统托盘图标 -->
     <UseWindowsForms>true</UseWindowsForms>
     <PlatformTarget>x64</PlatformTarget>
     <Version>0.2.4</Version>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>
 
 </Project>

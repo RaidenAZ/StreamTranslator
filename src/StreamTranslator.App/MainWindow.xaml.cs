@@ -64,6 +64,21 @@ public partial class MainWindow : FluentWindow
     private readonly TranslationIssueTracker _translationIssueTracker = new();
     private TranslationRuntimeStatus _translationRuntimeStatus = new("已关闭", "已关闭", 0, 0);
     private readonly ObservableCollection<SubtitleItem> _homeLiveMonitorItems = [];
+    private readonly List<SubtitleItem> _todayHistoryItems = [];
+    private readonly List<SubtitleItem> _selectedDateHistoryItems = [];
+    private readonly ObservableCollection<SubtitleItem> _visibleHistoryItems = [];
+    private readonly List<HistoryDateOption> _historyDateOptions = [];
+    private DateOnly _todayHistoryDate = DateOnly.FromDateTime(DateTime.Now);
+    private DateOnly _selectedHistoryDate = DateOnly.FromDateTime(DateTime.Now);
+    private bool _suppressHistoryDateChange;
+    private string _historySearchQuery = "";
+    private DispatcherTimer? _historySearchTimer;
+    private ScrollViewer? _subtitleListScrollViewer;
+    private bool _isHistoryScrollLocked;
+    private bool _pendingScrollCompensation;
+    private int _unreadHistoryWhileScrolled;
+    private int _unreadTodayWhileViewingPast;
+    private Snackbar? _exportResultSnackbar;
     private const int MaxHomeMonitorItems = 4;
     private bool _syncingQuickControls;
     private bool _hasRuntimeError;
@@ -89,6 +104,7 @@ public partial class MainWindow : FluentWindow
         InitializeComponent();
         _applyPendingAudioLevelAction = ApplyPendingAudioLevel;
         HomeLiveMonitorList.ItemsSource = _homeLiveMonitorItems;
+        SubtitleList.ItemsSource = _visibleHistoryItems;
         ApplicationThemeManager.Changed += OnApplicationThemeChanged;
         StateChanged += OnWindowVisibilityOrStateChanged;
         IsVisibleChanged += OnWindowVisibilityOrStateChanged;
@@ -111,9 +127,8 @@ public partial class MainWindow : FluentWindow
             AboutVersionText.Text = $"V{AppVersion()}";
             DataDirectoryText.Text = _dataDirectory;
             AboutLogsDirectoryText.Text = Path.Combine(_dataDirectory, "logs");
-            AboutRuntimeEnvText.Text =
-                $"OS       {RuntimeInformation.OSDescription.Trim()}{Environment.NewLine}" +
-                $"Runtime  {RuntimeInformation.FrameworkDescription} ({RuntimeInformation.ProcessArchitecture})";
+            AboutOsText.Text = RuntimeInformation.OSDescription.Trim();
+            AboutRuntimeText.Text = $"{RuntimeInformation.FrameworkDescription} ({RuntimeInformation.ProcessArchitecture})";
             UpdateApiKeyGuidance();
             ResetSubtitlePlaceholder();
             await LoadTodaySubtitleHistoryAsync();
@@ -163,6 +178,8 @@ public partial class MainWindow : FluentWindow
         // 覆盖层同时阻断输入并说明正在收尾，避免"窗口卡死"的观感。
         ClosingOverlay.Visibility = Visibility.Visible;
         _settingsSaveTimer?.Stop();
+        _copyStatusTimer?.Stop();
+        _historySearchTimer?.Stop();
 
         // Let an in-flight start/stop finish so we do not tear down a runtime
         // that is still wiring itself up. The transition is bounded by the worker
@@ -496,38 +513,171 @@ public partial class MainWindow : FluentWindow
         {
             await TryCopyTextAsync(FormatSubtitleForCopy(selected), "选中字幕");
         }
+        else
+        {
+            ShowCopyStatus("请先选择一条字幕", TimeSpan.FromSeconds(2.5));
+        }
+    }
+
+    private async void OnCopyHistoryItemClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: SubtitleItem item })
+        {
+            await TryCopyTextAsync(FormatSubtitleForCopy(item), "此条字幕");
+        }
     }
 
     private async void OnCopyAllClick(object sender, RoutedEventArgs e)
     {
+        if (_visibleHistoryItems.Count == 0)
+        {
+            ShowCopyStatus("当前列表暂无字幕", TimeSpan.FromSeconds(2.5));
+            return;
+        }
+
         var builder = new StringBuilder();
-        foreach (var item in SubtitleList.Items.OfType<SubtitleItem>().Reverse())
+        foreach (var item in _visibleHistoryItems.AsEnumerable().Reverse())
         {
             builder.AppendLine(FormatSubtitleForCopy(item));
             builder.AppendLine();
         }
 
-        await TryCopyTextAsync(builder.ToString(), "当天全部字幕");
+        var label = string.IsNullOrWhiteSpace(_historySearchQuery) ? "当前全部字幕" : "筛选结果字幕";
+        await TryCopyTextAsync(builder.ToString(), label);
     }
 
     private async void OnCopyRecentClick(object sender, RoutedEventArgs e)
     {
-        var recent = SubtitleList.Items
-            .OfType<SubtitleItem>()
+        var recent = _visibleHistoryItems
             .Where(static item => !string.IsNullOrWhiteSpace(item.SourceText))
             .Take(10)
             .Reverse()
-            .Select(FormatSubtitleForCopy);
+            .Select(FormatSubtitleForCopy)
+            .ToArray();
+        if (recent.Length == 0)
+        {
+            ShowCopyStatus("当前列表暂无字幕", TimeSpan.FromSeconds(2.5));
+            return;
+        }
+
         await TryCopyTextAsync(
             string.Join(Environment.NewLine + Environment.NewLine, recent),
             "最近字幕");
     }
 
+    private void OnExportSubtitlesClick(object sender, RoutedEventArgs e)
+    {
+        if (ExportSubtitlesButton.ContextMenu is not { } menu)
+        {
+            return;
+        }
+
+        menu.PlacementTarget = ExportSubtitlesButton;
+        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        menu.IsOpen = true;
+    }
+
+    private async void OnExportMenuItemClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.MenuItem { Tag: string tag })
+        {
+            return;
+        }
+
+        var chronological = _visibleHistoryItems
+            .Where(static item => !string.IsNullOrWhiteSpace(item.SourceText) || !string.IsNullOrWhiteSpace(item.TranslatedText))
+            .Reverse()
+            .ToArray();
+        if (chronological.Length == 0)
+        {
+            ShowCopyStatus("当前列表为空，无可导出字幕", TimeSpan.FromSeconds(3));
+            return;
+        }
+
+        var parts = tag.Split(':');
+        var format = parts.Length > 0 && string.Equals(parts[0], "srt", StringComparison.OrdinalIgnoreCase)
+            ? SubtitleExportFormat.Srt
+            : SubtitleExportFormat.Text;
+        var contentMode = parts.Length > 1
+            ? parts[1].ToLowerInvariant() switch
+            {
+                "source" => SubtitleExportContentMode.SourceOnly,
+                "translation" => SubtitleExportContentMode.TranslationOnly,
+                _ => SubtitleExportContentMode.Bilingual
+            }
+            : SubtitleExportContentMode.Bilingual;
+
+        var ext = format == SubtitleExportFormat.Srt ? "srt" : "txt";
+        var modeSuffix = contentMode switch
+        {
+            SubtitleExportContentMode.SourceOnly => "-source",
+            SubtitleExportContentMode.TranslationOnly => "-translation",
+            _ => ""
+        };
+        var searchSuffix = string.IsNullOrWhiteSpace(_historySearchQuery) ? "" : "-filtered";
+
+        var saveDialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = format == SubtitleExportFormat.Srt ? "导出 SRT 字幕文件" : "导出字幕文本文件",
+            Filter = format == SubtitleExportFormat.Srt
+                ? "SRT 字幕文件 (*.srt)|*.srt|所有文件 (*.*)|*.*"
+                : "文本文件 (*.txt)|*.txt|所有文件 (*.*)|*.*",
+            DefaultExt = $".{ext}",
+            AddExtension = true,
+            FileName = $"StreamTranslator-{_selectedHistoryDate:yyyy-MM-dd}{modeSuffix}{searchSuffix}.{ext}"
+        };
+
+        if (saveDialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        try
+        {
+            var exported = SubtitleExporter.Export(chronological, format, contentMode);
+            if (string.IsNullOrWhiteSpace(exported))
+            {
+                ShowCopyStatus("没有可导出的有效内容", TimeSpan.FromSeconds(3));
+                return;
+            }
+
+            await File.WriteAllTextAsync(saveDialog.FileName, exported, SubtitleExporter.Utf8WithBom);
+            var fileName = Path.GetFileName(saveDialog.FileName);
+            ShowCopyStatus($"已导出 {chronological.Length} 条", TimeSpan.FromSeconds(3.5));
+            ShowExportResultToast(
+                "导出成功",
+                $"已导出 {chronological.Length} 条字幕至 {fileName}。",
+                ControlAppearance.Success);
+        }
+        catch (Exception ex)
+        {
+            AppendAppLog($"导出字幕失败: {ex.Message}");
+            ShowCopyStatus("导出失败", TimeSpan.FromSeconds(4));
+            ShowExportResultToast("导出失败", ex.Message, ControlAppearance.Caution);
+        }
+    }
+
+    private void ShowExportResultToast(string title, string message, ControlAppearance appearance)
+    {
+        _exportResultSnackbar ??= new Snackbar(RootSnackbarPresenter)
+        {
+            Timeout = TimeSpan.FromSeconds(3.2),
+            IsCloseButtonEnabled = false
+        };
+        _exportResultSnackbar.Title = title;
+        _exportResultSnackbar.Content = message;
+        _exportResultSnackbar.Appearance = appearance;
+        _exportResultSnackbar.Icon = new SymbolIcon(
+            appearance == ControlAppearance.Success ? SymbolRegular.CheckmarkCircle24 : SymbolRegular.Warning24);
+        _exportResultSnackbar.Show();
+    }
+
     private async void OnClearHistoryClick(object sender, RoutedEventArgs e)
     {
+        var dateLabel = FormatHistoryDateDisplay(_selectedHistoryDate, DateOnly.FromDateTime(DateTime.Now));
         var confirmed = await ShowConfirmDialogAsync(
             "确认清空历史",
-            "清空后会删除当天字幕历史，无法从界面恢复。确定继续吗？",
+            $"清空后会删除 {dateLabel} 的字幕历史，无法从界面恢复。确定继续吗？",
             "清空",
             "取消",
             "ClearHistoryConfirmDialog",
@@ -537,10 +687,8 @@ public partial class MainWindow : FluentWindow
             return;
         }
 
-        SubtitleList.Items.Clear();
-        _homeLiveMonitorItems.Clear();
-        UpdateHomeLiveMonitorEmptyState();
-        var historyPath = Path.Combine(_dataDirectory, "subtitles", $"{DateTime.Now:yyyy-MM-dd}.jsonl");
+        var store = new SubtitleHistoryStore(Path.Combine(_dataDirectory, "subtitles"));
+        var historyPath = store.GetHistoryFilePath(_selectedHistoryDate);
         if (File.Exists(historyPath))
         {
             try
@@ -555,7 +703,20 @@ public partial class MainWindow : FluentWindow
             }
         }
 
-        ResetSubtitlePlaceholder();
+        _selectedDateHistoryItems.Clear();
+        _visibleHistoryItems.Clear();
+        _unreadHistoryWhileScrolled = 0;
+        _isHistoryScrollLocked = false;
+        UpdateHistoryJumpLatestPill();
+
+        if (IsViewingTodayHistory())
+        {
+            _todayHistoryItems.Clear();
+            _homeLiveMonitorItems.Clear();
+            UpdateHomeLiveMonitorEmptyState();
+        }
+
+        UpdateHistoryEmptyAndSummaryState();
     }
 
     /// <summary>统一的确认对话框，替代系统 MessageBox 以保持 Fluent 视觉一致。</summary>
@@ -594,8 +755,10 @@ public partial class MainWindow : FluentWindow
 
     private void ResetSubtitlePlaceholder()
     {
-        SubtitleList.Items.Clear();
-        SubtitlePlaceholderText.Visibility = Visibility.Visible;
+        _todayHistoryItems.Clear();
+        _selectedDateHistoryItems.Clear();
+        _visibleHistoryItems.Clear();
+        UpdateHistoryEmptyAndSummaryState();
     }
 
     private void RemoveSubtitlePlaceholder()
@@ -724,6 +887,10 @@ public partial class MainWindow : FluentWindow
         AboutPage.Visibility = Visibility.Collapsed;
         selectedPage.Visibility = Visibility.Visible;
         UpdateHomeLiveMetricsVisibility();
+        if (ReferenceEquals(selectedPage, SubtitleHistoryPage))
+        {
+            RefreshHistoryDateCatalog(preserveSelection: true);
+        }
         if (!alreadyVisible)
         {
             PlayPageTransition(selectedPage);
@@ -819,14 +986,47 @@ public partial class MainWindow : FluentWindow
             var text = unit.SourceText;
             if (!string.IsNullOrWhiteSpace(text))
             {
-                RemoveSubtitlePlaceholder();
-                if (string.Equals(unit.Type, "subtitle_revision", StringComparison.Ordinal))
+                EnsureTodayHistoryRollover();
+                var isRevision = string.Equals(unit.Type, "subtitle_revision", StringComparison.Ordinal);
+
+                if (isRevision)
                 {
-                    ApplySubtitleRevision(unit);
+                    ApplySubtitleRevisionToList(_todayHistoryItems, unit);
                 }
                 else
                 {
-                    SubtitleList.Items.Insert(0, unit);
+                    _todayHistoryItems.Insert(0, unit);
+                }
+
+                if (IsViewingTodayHistory())
+                {
+                    if (isRevision)
+                    {
+                        ApplySubtitleRevisionToList(_selectedDateHistoryItems, unit);
+                        ApplySubtitleRevisionToVisibleCollection(unit);
+                    }
+                    else
+                    {
+                        _selectedDateHistoryItems.Insert(0, unit);
+                        if (MatchesHistorySearch(unit, _historySearchQuery))
+                        {
+                            if (_isHistoryScrollLocked)
+                            {
+                                _pendingScrollCompensation = true;
+                                _unreadHistoryWhileScrolled++;
+                            }
+
+                            _visibleHistoryItems.Insert(0, unit);
+                            UpdateHistoryJumpLatestPill();
+                        }
+                    }
+
+                    UpdateHistoryEmptyAndSummaryState();
+                }
+                else if (!isRevision)
+                {
+                    _unreadTodayWhileViewingPast++;
+                    UpdateBackToTodayButtonState();
                 }
 
                 SyncHomeLiveMonitorFromHistory();
@@ -841,18 +1041,25 @@ public partial class MainWindow : FluentWindow
         Dispatcher.BeginInvoke(() =>
         {
             UpdateTranslationIssueUi(_translationIssueTracker.MarkSuccess());
-            var match = SubtitleList.Items
-                .OfType<SubtitleItem>()
-                .Select((item, index) => new { item, index })
-                .FirstOrDefault(entry =>
-                    string.Equals(entry.item.UtteranceGroupId, update.UtteranceGroupId, StringComparison.Ordinal) &&
-                    entry.item.Revision == update.SourceRevision);
-            if (match is not null)
+            ApplyTranslationUpdateToList(_todayHistoryItems, update);
+            if (IsViewingTodayHistory())
             {
-                var translated = match.item with { TranslatedText = update.TranslatedText };
-                SubtitleList.Items[match.index] = translated;
-                SyncHomeLiveMonitorFromHistory();
+                ApplyTranslationUpdateToList(_selectedDateHistoryItems, update);
+                var visibleIndex = FindMatchingItemIndex(_visibleHistoryItems, update);
+                if (visibleIndex >= 0)
+                {
+                    _visibleHistoryItems[visibleIndex] = _visibleHistoryItems[visibleIndex] with
+                    {
+                        TranslatedText = update.TranslatedText
+                    };
+                }
+                else if (!string.IsNullOrWhiteSpace(_historySearchQuery))
+                {
+                    RefreshVisibleHistoryItems();
+                }
             }
+
+            SyncHomeLiveMonitorFromHistory();
             _floatingWindow?.ApplyTranslation(update);
             SubtitleOutputStatusText.Text = "双语输出中";
             RefreshPipelineVisualStates();
@@ -992,7 +1199,7 @@ public partial class MainWindow : FluentWindow
     private void SyncHomeLiveMonitorFromHistory()
     {
         _homeLiveMonitorItems.Clear();
-        foreach (var item in SubtitleList.Items.OfType<SubtitleItem>().Take(MaxHomeMonitorItems))
+        foreach (var item in _todayHistoryItems.Take(MaxHomeMonitorItems))
         {
             _homeLiveMonitorItems.Add(item);
         }
@@ -1005,7 +1212,7 @@ public partial class MainWindow : FluentWindow
         var hasItems = _homeLiveMonitorItems.Count > 0;
         HomeLiveMonitorEmptyState.Visibility = hasItems ? Visibility.Collapsed : Visibility.Visible;
         HomeLiveMonitorList.Visibility = hasItems ? Visibility.Visible : Visibility.Collapsed;
-        var total = SubtitleList.Items.Count;
+        var total = _todayHistoryItems.Count;
         HomeMonitorCountText.Text = total == 0
             ? "等待字幕"
             : total <= MaxHomeMonitorItems
@@ -1352,41 +1559,392 @@ public partial class MainWindow : FluentWindow
         node.SetResourceReference(Border.BorderBrushProperty, borderKey);
     }
 
-    private void ApplySubtitleRevision(SubtitleItem revision)
+    private bool IsViewingTodayHistory()
     {
-        var indexes = SubtitleList.Items
-            .OfType<SubtitleItem>()
-            .Select((item, index) => new { item, index })
-            .Where(entry => SubtitleRevisionCoordinator.Replaces(revision, entry.item))
-            .Select(static entry => entry.index)
-            .ToArray();
-        // 列表为倒序显示（最新在顶部），未匹配到旧条目时插入到顶部
-        var insertIndex = indexes.Length == 0 ? 0 : indexes.Min();
-        for (var index = indexes.Length - 1; index >= 0; index--)
-        {
-            SubtitleList.Items.RemoveAt(indexes[index]);
-        }
-
-        SubtitleList.Items.Insert(insertIndex, revision);
+        return _selectedHistoryDate == _todayHistoryDate;
     }
 
-    private async Task LoadTodaySubtitleHistoryAsync()
+    private void EnsureTodayHistoryRollover()
     {
-        var store = new SubtitleHistoryStore(Path.Combine(_dataDirectory, "subtitles"));
-        var items = await store.LoadLatestAsync(DateOnly.FromDateTime(DateTime.Now));
-        if (items.Count == 0)
+        var actualToday = DateOnly.FromDateTime(DateTime.Now);
+        if (actualToday == _todayHistoryDate)
         {
             return;
         }
 
-        RemoveSubtitlePlaceholder();
-        foreach (var item in items)
+        var wasViewingToday = IsViewingTodayHistory();
+        _todayHistoryDate = actualToday;
+        _todayHistoryItems.Clear();
+        _unreadTodayWhileViewingPast = 0;
+
+        if (wasViewingToday)
         {
-            SubtitleList.Items.Insert(0, item);
+            _selectedHistoryDate = actualToday;
+            _selectedDateHistoryItems.Clear();
+            _visibleHistoryItems.Clear();
         }
 
+        RefreshHistoryDateCatalog(preserveSelection: !wasViewingToday);
+    }
+
+    private void RefreshHistoryDateCatalog(bool preserveSelection)
+    {
+        var today = DateOnly.FromDateTime(DateTime.Now);
+        _todayHistoryDate = today;
+
+        var store = new SubtitleHistoryStore(Path.Combine(_dataDirectory, "subtitles"));
+        var discovered = store.ListAvailableDates();
+        var dates = new List<DateOnly> { today };
+        foreach (var date in discovered)
+        {
+            if (!dates.Contains(date))
+            {
+                dates.Add(date);
+            }
+        }
+
+        var targetDate = preserveSelection && dates.Contains(_selectedHistoryDate)
+            ? _selectedHistoryDate
+            : today;
+        _selectedHistoryDate = targetDate;
+
+        _historyDateOptions.Clear();
+        foreach (var date in dates)
+        {
+            _historyDateOptions.Add(new HistoryDateOption(date, FormatHistoryDateDisplay(date, today)));
+        }
+
+        _suppressHistoryDateChange = true;
+        try
+        {
+            HistoryDateComboBox.ItemsSource = null;
+            HistoryDateComboBox.ItemsSource = _historyDateOptions;
+            var targetIndex = _historyDateOptions.FindIndex(option => option.Date == targetDate);
+            HistoryDateComboBox.SelectedIndex = targetIndex >= 0 ? targetIndex : 0;
+        }
+        finally
+        {
+            _suppressHistoryDateChange = false;
+        }
+
+        UpdateBackToTodayButtonState();
+    }
+
+    private static string FormatHistoryDateDisplay(DateOnly date, DateOnly today)
+    {
+        if (date == today)
+        {
+            return $"今天 · {date:yyyy-MM-dd}";
+        }
+
+        if (date == today.AddDays(-1))
+        {
+            return $"昨天 · {date:yyyy-MM-dd}";
+        }
+
+        return date.ToString("yyyy-MM-dd");
+    }
+
+    private async void OnHistoryDateSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressHistoryDateChange || HistoryDateComboBox.SelectedItem is not HistoryDateOption option)
+        {
+            return;
+        }
+
+        if (option.Date == _selectedHistoryDate)
+        {
+            return;
+        }
+
+        _selectedHistoryDate = option.Date;
+        await LoadSubtitleHistoryForSelectedDateAsync();
+    }
+
+    private async void OnHistoryBackToTodayClick(object sender, RoutedEventArgs e)
+    {
+        _selectedHistoryDate = _todayHistoryDate;
+        _unreadTodayWhileViewingPast = 0;
+        RefreshHistoryDateCatalog(preserveSelection: true);
+        await LoadSubtitleHistoryForSelectedDateAsync();
+    }
+
+    private void OnHistorySearchTextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_historySearchTimer is null)
+        {
+            _historySearchTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(120)
+            };
+            _historySearchTimer.Tick += (_, _) =>
+            {
+                _historySearchTimer!.Stop();
+                _historySearchQuery = (HistorySearchBox.Text ?? "").Trim();
+                RefreshVisibleHistoryItems();
+                ScrollHistoryToTop();
+            };
+        }
+
+        _historySearchTimer.Stop();
+        _historySearchTimer.Start();
+    }
+
+    private void OnSubtitleListScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (e.OriginalSource is not ScrollViewer scrollViewer)
+        {
+            return;
+        }
+
+        _subtitleListScrollViewer = scrollViewer;
+
+        if (_pendingScrollCompensation && e.ExtentHeightChange > 0 && _isHistoryScrollLocked)
+        {
+            _pendingScrollCompensation = false;
+            scrollViewer.ScrollToVerticalOffset(scrollViewer.VerticalOffset + e.ExtentHeightChange);
+        }
+        else if (e.ExtentHeightChange == 0)
+        {
+            _pendingScrollCompensation = false;
+        }
+
+        var locked = scrollViewer.VerticalOffset > 48d;
+        _isHistoryScrollLocked = locked;
+        if (!locked)
+        {
+            _unreadHistoryWhileScrolled = 0;
+        }
+
+        UpdateHistoryJumpLatestPill();
+    }
+
+    private void OnHistoryJumpLatestClick(object sender, RoutedEventArgs e)
+    {
+        ScrollHistoryToTop();
+    }
+
+    private void ScrollHistoryToTop()
+    {
+        _pendingScrollCompensation = false;
+        _unreadHistoryWhileScrolled = 0;
+        _isHistoryScrollLocked = false;
+        _subtitleListScrollViewer?.ScrollToTop();
+        UpdateHistoryJumpLatestPill();
+    }
+
+    private void UpdateHistoryJumpLatestPill()
+    {
+        if (HistoryJumpLatestButton is null)
+        {
+            return;
+        }
+
+        var offset = _subtitleListScrollViewer?.VerticalOffset ?? 0d;
+        if (_unreadHistoryWhileScrolled > 0)
+        {
+            HistoryJumpLatestButton.Content = $"有 {_unreadHistoryWhileScrolled} 条新字幕 · 回到最新";
+            HistoryJumpLatestButton.Visibility = Visibility.Visible;
+        }
+        else if (_isHistoryScrollLocked && offset > 180d && _visibleHistoryItems.Count > 0)
+        {
+            HistoryJumpLatestButton.Content = "回到最新";
+            HistoryJumpLatestButton.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            HistoryJumpLatestButton.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void UpdateBackToTodayButtonState()
+    {
+        if (HistoryBackToTodayButton is null)
+        {
+            return;
+        }
+
+        if (IsViewingTodayHistory())
+        {
+            _unreadTodayWhileViewingPast = 0;
+            HistoryBackToTodayButton.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        HistoryBackToTodayButton.Content = _unreadTodayWhileViewingPast > 0
+            ? $"回到今天 (+{_unreadTodayWhileViewingPast})"
+            : "回到今天";
+        HistoryBackToTodayButton.Visibility = Visibility.Visible;
+    }
+
+    private static bool MatchesHistorySearch(SubtitleItem item, string query)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return true;
+        }
+
+        return (!string.IsNullOrEmpty(item.SourceText) &&
+                item.SourceText.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
+               (!string.IsNullOrEmpty(item.TranslatedText) &&
+                item.TranslatedText.Contains(query, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void RefreshVisibleHistoryItems()
+    {
+        _visibleHistoryItems.Clear();
+        foreach (var item in _selectedDateHistoryItems)
+        {
+            if (MatchesHistorySearch(item, _historySearchQuery))
+            {
+                _visibleHistoryItems.Add(item);
+            }
+        }
+
+        UpdateHistoryEmptyAndSummaryState();
+        UpdateHistoryJumpLatestPill();
+    }
+
+    private void UpdateHistoryEmptyAndSummaryState()
+    {
+        var total = _selectedDateHistoryItems.Count;
+        var shown = _visibleHistoryItems.Count;
+        var hasSearch = !string.IsNullOrWhiteSpace(_historySearchQuery);
+
+        if (HistorySummaryCountText is not null)
+        {
+            HistorySummaryCountText.Text = total == 0
+                ? "暂无记录"
+                : hasSearch
+                    ? $"匹配 {shown} / {total} 条"
+                    : $"共 {total} 条";
+        }
+
+        if (shown == 0)
+        {
+            SubtitlePlaceholderText.Text = hasSearch
+                ? $"没有匹配“{_historySearchQuery}”的字幕。"
+                : IsViewingTodayHistory()
+                    ? "开始字幕后，这里会保存今天的字幕记录。"
+                    : $"{_selectedHistoryDate:yyyy-MM-dd} 暂无字幕记录。";
+            SubtitlePlaceholderText.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            SubtitlePlaceholderText.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private static void ApplySubtitleRevisionToList(List<SubtitleItem> items, SubtitleItem revision)
+    {
+        var indexes = items
+            .Select((item, index) => new { item, index })
+            .Where(entry => SubtitleRevisionCoordinator.Replaces(revision, entry.item))
+            .Select(static entry => entry.index)
+            .ToArray();
+        var insertIndex = indexes.Length == 0 ? 0 : indexes.Min();
+        for (var index = indexes.Length - 1; index >= 0; index--)
+        {
+            items.RemoveAt(indexes[index]);
+        }
+
+        items.Insert(insertIndex, revision);
+    }
+
+    private void ApplySubtitleRevisionToVisibleCollection(SubtitleItem revision)
+    {
+        var indexes = _visibleHistoryItems
+            .Select((item, index) => new { item, index })
+            .Where(entry => SubtitleRevisionCoordinator.Replaces(revision, entry.item))
+            .Select(static entry => entry.index)
+            .ToArray();
+        var insertIndex = indexes.Length == 0 ? 0 : indexes.Min();
+        for (var index = indexes.Length - 1; index >= 0; index--)
+        {
+            _visibleHistoryItems.RemoveAt(indexes[index]);
+        }
+
+        if (MatchesHistorySearch(revision, _historySearchQuery))
+        {
+            _visibleHistoryItems.Insert(Math.Min(insertIndex, _visibleHistoryItems.Count), revision);
+        }
+    }
+
+    private static void ApplyTranslationUpdateToList(List<SubtitleItem> items, TranslationResultUpdate update)
+    {
+        var index = FindMatchingItemIndex(items, update);
+        if (index >= 0)
+        {
+            items[index] = items[index] with { TranslatedText = update.TranslatedText };
+        }
+    }
+
+    private static int FindMatchingItemIndex(IReadOnlyList<SubtitleItem> items, TranslationResultUpdate update)
+    {
+        for (var index = 0; index < items.Count; index++)
+        {
+            var item = items[index];
+            if (string.Equals(item.UtteranceGroupId, update.UtteranceGroupId, StringComparison.Ordinal) &&
+                item.Revision == update.SourceRevision)
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private async Task LoadSubtitleHistoryForSelectedDateAsync()
+    {
+        var targetDate = _selectedHistoryDate;
+        _selectedDateHistoryItems.Clear();
+
+        if (targetDate == _todayHistoryDate)
+        {
+            _selectedDateHistoryItems.AddRange(_todayHistoryItems);
+            _unreadTodayWhileViewingPast = 0;
+        }
+        else
+        {
+            var store = new SubtitleHistoryStore(Path.Combine(_dataDirectory, "subtitles"));
+            var loaded = await store.LoadLatestAsync(targetDate);
+            if (_selectedHistoryDate != targetDate)
+            {
+                return;
+            }
+
+            for (var index = loaded.Count - 1; index >= 0; index--)
+            {
+                _selectedDateHistoryItems.Add(loaded[index]);
+            }
+        }
+
+        UpdateBackToTodayButtonState();
+        RefreshVisibleHistoryItems();
+        ScrollHistoryToTop();
+    }
+
+    private async Task LoadTodaySubtitleHistoryAsync()
+    {
+        _todayHistoryDate = DateOnly.FromDateTime(DateTime.Now);
+        _selectedHistoryDate = _todayHistoryDate;
+        RefreshHistoryDateCatalog(preserveSelection: false);
+
+        var store = new SubtitleHistoryStore(Path.Combine(_dataDirectory, "subtitles"));
+        var items = await store.LoadLatestAsync(_todayHistoryDate);
+        _todayHistoryItems.Clear();
+        _selectedDateHistoryItems.Clear();
+        for (var index = items.Count - 1; index >= 0; index--)
+        {
+            _todayHistoryItems.Add(items[index]);
+            _selectedDateHistoryItems.Add(items[index]);
+        }
+
+        RefreshVisibleHistoryItems();
         SyncHomeLiveMonitorFromHistory();
     }
+
+    private sealed record HistoryDateOption(DateOnly Date, string Label);
 
     private void OnRuntimeError(object? sender, Exception ex)
     {

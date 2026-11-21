@@ -20,6 +20,41 @@ public sealed class SubtitleHistoryStore
         _directory = directory;
     }
 
+    public string GetHistoryFilePath(DateOnly date)
+    {
+        return Path.Combine(_directory, $"{date:yyyy-MM-dd}.jsonl");
+    }
+
+    /// <summary>
+    /// Returns all available history dates discovered in the store directory,
+    /// sorted from newest to oldest. Empty files are still listed if present.
+    /// </summary>
+    public IReadOnlyList<DateOnly> ListAvailableDates()
+    {
+        if (!Directory.Exists(_directory))
+        {
+            return [];
+        }
+
+        var dates = new List<DateOnly>();
+        foreach (var file in Directory.EnumerateFiles(_directory, "*.jsonl", SearchOption.TopDirectoryOnly))
+        {
+            var stem = Path.GetFileNameWithoutExtension(file);
+            if (DateOnly.TryParseExact(
+                    stem,
+                    "yyyy-MM-dd",
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.None,
+                    out var parsed))
+            {
+                dates.Add(parsed);
+            }
+        }
+
+        dates.Sort(static (left, right) => right.CompareTo(left));
+        return dates;
+    }
+
     public async Task AppendAsync(
         SubtitleItem item,
         DateOnly date,

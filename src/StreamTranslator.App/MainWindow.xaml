@@ -4,6 +4,7 @@
                  xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
                  xmlns:controls="clr-namespace:StreamTranslator.App.Controls"
                  Title="StreamTranslator"
+                 Icon="pack://application:,,,/Assets/app.ico"
                  Width="1120"
                  Height="760"
                  MinWidth="960"
@@ -31,10 +32,19 @@
                      ShowClose="True"
                      ForceShutdown="False">
             <ui:TitleBar.Header>
-                <TextBlock Text="StreamTranslator"
-                           AutomationProperties.AutomationId="TitleBarAppTitle"
-                           Style="{StaticResource TitleBarTitleText}"
-                           Margin="16,0,0,0" />
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
+                    <Image Source="pack://application:,,,/Assets/app.ico"
+                           Width="18"
+                           Height="18"
+                           Margin="0,0,10,0"
+                           VerticalAlignment="Center"
+                           IsHitTestVisible="False"
+                           RenderOptions.BitmapScalingMode="HighQuality" />
+                    <TextBlock Text="StreamTranslator"
+                               AutomationProperties.AutomationId="TitleBarAppTitle"
+                               Style="{StaticResource TitleBarTitleText}"
+                               VerticalAlignment="Center" />
+                </StackPanel>
             </ui:TitleBar.Header>
         </ui:TitleBar>
 
@@ -844,13 +854,13 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
-                        <DockPanel Grid.Row="0" Margin="0,0,0,16">
-                            <StackPanel Orientation="Horizontal">
+                        <DockPanel Grid.Row="0" Margin="0,0,0,14">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                 <TextBlock Text="字幕历史" Style="{StaticResource PageTitleText}" />
                                 <TextBlock x:Name="SubtitleHistoryCopyStatusText"
                                            AutomationProperties.AutomationId="SubtitleHistoryCopyStatus"
                                            Text=""
-                                           Margin="12,0,0,6"
+                                           Margin="12,0,0,4"
                                            VerticalAlignment="Bottom"
                                            Style="{StaticResource CaptionText}" />
                             </StackPanel>
@@ -871,28 +881,109 @@
                                 <ui:Button AutomationProperties.AutomationId="CopyAllSubtitlesButton"
                                            Click="OnCopyAllClick"
                                            Icon="{ui:SymbolIcon ClipboardTextLtr24}"
-                                           Content="复制当天全部" />
+                                           Content="复制全部"
+                                           ToolTip="复制当前列表中的全部字幕"
+                                           Margin="0,0,8,0" />
+                                <ui:Button x:Name="ExportSubtitlesButton"
+                                           AutomationProperties.AutomationId="ExportSubtitlesButton"
+                                           Click="OnExportSubtitlesClick"
+                                           Icon="{ui:SymbolIcon ArrowDownload24}"
+                                           Content="导出"
+                                           ToolTip="导出为 SRT 字幕文件或 TXT 文本">
+                                    <ui:Button.ContextMenu>
+                                        <ContextMenu x:Name="ExportSubtitlesContextMenu">
+                                            <MenuItem Header="导出双语字幕 (.srt)"
+                                                      Tag="srt:bilingual"
+                                                      Click="OnExportMenuItemClick" />
+                                            <MenuItem Header="导出双语文本 (.txt)"
+                                                      Tag="txt:bilingual"
+                                                      Click="OnExportMenuItemClick" />
+                                            <Separator />
+                                            <MenuItem Header="仅导出原文 (.txt)"
+                                                      Tag="txt:source"
+                                                      Click="OnExportMenuItemClick" />
+                                            <MenuItem Header="仅导出译文 (.txt)"
+                                                      Tag="txt:translation"
+                                                      Click="OnExportMenuItemClick" />
+                                            <Separator />
+                                            <MenuItem Header="仅导出原文 (.srt)"
+                                                      Tag="srt:source"
+                                                      Click="OnExportMenuItemClick" />
+                                            <MenuItem Header="仅导出译文 (.srt)"
+                                                      Tag="srt:translation"
+                                                      Click="OnExportMenuItemClick" />
+                                        </ContextMenu>
+                                    </ui:Button.ContextMenu>
+                                </ui:Button>
                                 <ui:Button x:Name="ClearHistoryButton"
                                            AutomationProperties.AutomationId="ClearHistoryButton"
                                            Click="OnClearHistoryClick"
                                            Icon="{ui:SymbolIcon Delete24}"
-                                           Content="清空当天历史"
-                                           Margin="16,0,0,0" />
+                                           Content="清空"
+                                           ToolTip="清空当前所选日期的字幕历史"
+                                           Margin="12,0,0,0" />
                             </StackPanel>
                         </DockPanel>
 
                         <Border Grid.Row="1"
                                 Style="{StaticResource PanelBorder}"
                                 Margin="0"
-                                Padding="24,20">
-                            <DockPanel>
-                                <TextBlock DockPanel.Dock="Top"
-                                           Text="今天"
-                                           Style="{StaticResource SectionTitleText}" />
-                                <Grid>
+                                Padding="20,16">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+
+                                <!-- 历史工具条：日期切换 + 回到今天 + 条数统计 + 实时搜索 -->
+                                <DockPanel Grid.Row="0" Margin="0,0,0,12">
+                                    <ui:TextBox x:Name="HistorySearchBox"
+                                                DockPanel.Dock="Right"
+                                                AutomationProperties.AutomationId="HistorySearchBox"
+                                                Width="260"
+                                                PlaceholderText="搜索原文或译文..."
+                                                Icon="{ui:SymbolIcon Search20}"
+                                                ClearButtonEnabled="True"
+                                                VerticalAlignment="Center"
+                                                TextChanged="OnHistorySearchTextChanged" />
+
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                        <ComboBox x:Name="HistoryDateComboBox"
+                                                  AutomationProperties.AutomationId="HistoryDateComboBox"
+                                                  MinWidth="176"
+                                                  VerticalContentAlignment="Center"
+                                                  VerticalAlignment="Center"
+                                                  DisplayMemberPath="Label"
+                                                  SelectionChanged="OnHistoryDateSelectionChanged" />
+                                        <ui:Button x:Name="HistoryBackToTodayButton"
+                                                   AutomationProperties.AutomationId="HistoryBackToTodayButton"
+                                                   Visibility="Collapsed"
+                                                   Content="回到今天"
+                                                   Appearance="Secondary"
+                                                   Padding="10,5"
+                                                   Margin="8,0,0,0"
+                                                   VerticalAlignment="Center"
+                                                   Click="OnHistoryBackToTodayClick" />
+                                        <TextBlock x:Name="HistorySummaryCountText"
+                                                   AutomationProperties.AutomationId="HistorySummaryCountText"
+                                                   Text="暂无记录"
+                                                   Style="{StaticResource CaptionText}"
+                                                   Typography.NumeralAlignment="Tabular"
+                                                   VerticalAlignment="Center"
+                                                   Margin="12,0,12,0" />
+                                    </StackPanel>
+                                </DockPanel>
+
+                                <Border Grid.Row="1"
+                                        Height="1"
+                                        Background="{DynamicResource DividerStrokeColorDefaultBrush}"
+                                        Margin="0,0,0,10" />
+
+                                <Grid Grid.Row="2">
                                     <TextBlock x:Name="SubtitlePlaceholderText"
                                                Text="开始字幕后，这里会保存今天的字幕记录。"
-                                               Margin="12,10"
+                                               Margin="12,12"
                                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                                FontSize="14"
                                                IsHitTestVisible="False" />
@@ -901,12 +992,17 @@
                                              BorderThickness="0"
                                              Background="Transparent"
                                              HorizontalContentAlignment="Stretch"
+                                             VirtualizingStackPanel.IsVirtualizing="True"
+                                             VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                             VirtualizingStackPanel.ScrollUnit="Pixel"
+                                             ScrollViewer.CanContentScroll="True"
                                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                                             ScrollViewer.VerticalScrollBarVisibility="Auto">
+                                             ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                             ScrollViewer.ScrollChanged="OnSubtitleListScrollChanged">
                                         <ListBox.ItemContainerStyle>
                                             <Style TargetType="{x:Type ListBoxItem}">
                                                 <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                                                <Setter Property="Padding" Value="12,8" />
+                                                <Setter Property="Padding" Value="12,9" />
                                             </Style>
                                         </ListBox.ItemContainerStyle>
                                         <ListBox.ItemTemplate>
@@ -916,10 +1012,11 @@
                                                         <ColumnDefinition Width="64" />
                                                         <ColumnDefinition Width="12" />
                                                         <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
                                                     </Grid.ColumnDefinitions>
                                                     <TextBlock Grid.Column="0"
                                                                Text="{Binding GeneratedTimeText}"
-                                                               FontFamily="Cascadia Mono, Consolas"
+                                                               Typography.NumeralAlignment="Tabular"
                                                                FontSize="12"
                                                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                                                Margin="0,3,0,0"
@@ -932,8 +1029,8 @@
                                                                    Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
                                                         <TextBlock Text="{Binding TranslatedText}"
                                                                    TextWrapping="Wrap"
-                                                                   FontSize="14"
-                                                                   LineHeight="21"
+                                                                   FontSize="13.5"
+                                                                   LineHeight="20"
                                                                    Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                                                    Margin="0,3,0,0">
                                                             <TextBlock.Style>
@@ -951,12 +1048,55 @@
                                                             </TextBlock.Style>
                                                         </TextBlock>
                                                     </StackPanel>
+                                                    <ui:Button Grid.Column="3"
+                                                               Tag="{Binding}"
+                                                               ToolTip="复制此条字幕"
+                                                               Click="OnCopyHistoryItemClick"
+                                                               Appearance="Transparent"
+                                                               BorderThickness="0"
+                                                               Width="30"
+                                                               Height="30"
+                                                               Padding="0"
+                                                               Margin="8,0,0,0"
+                                                               VerticalAlignment="Top">
+                                                        <ui:Button.Style>
+                                                            <Style TargetType="{x:Type ui:Button}" BasedOn="{StaticResource {x:Type ui:Button}}">
+                                                                <Setter Property="Opacity" Value="0.24" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                                                                        <Setter Property="Opacity" Value="1" />
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                                                                        <Setter Property="Opacity" Value="0.9" />
+                                                                    </DataTrigger>
+                                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                                        <Setter Property="Opacity" Value="1" />
+                                                                    </Trigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </ui:Button.Style>
+                                                        <ui:SymbolIcon Symbol="Copy20" FontSize="14" />
+                                                    </ui:Button>
                                                 </Grid>
                                             </DataTemplate>
                                         </ListBox.ItemTemplate>
                                     </ListBox>
+
+                                    <!-- 滚动锁定时的新字幕/回顶浮动胶囊 -->
+                                    <ui:Button x:Name="HistoryJumpLatestButton"
+                                               AutomationProperties.AutomationId="HistoryJumpLatestButton"
+                                               Visibility="Collapsed"
+                                               Appearance="Primary"
+                                               CornerRadius="16"
+                                               Padding="14,6"
+                                               Margin="0,8,0,0"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Top"
+                                               Icon="{ui:SymbolIcon ArrowUp16}"
+                                               Content="回到最新"
+                                               Click="OnHistoryJumpLatestClick" />
                                 </Grid>
-                            </DockPanel>
+                            </Grid>
                         </Border>
                     </Grid>
 
@@ -2303,9 +2443,8 @@
                                                            FontWeight="Medium"
                                                            Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
                                                 <TextBlock x:Name="DataDirectoryText"
-                                                           FontFamily="Cascadia Mono, Consolas, Segoe UI"
-                                                           FontSize="12"
-                                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                           Style="{StaticResource CaptionText}"
+                                                           Typography.NumeralAlignment="Tabular"
                                                            TextWrapping="Wrap"
                                                            Margin="0,3,0,0" />
                                             </StackPanel>
@@ -2368,13 +2507,40 @@
                                         </Grid.ColumnDefinitions>
                                         <StackPanel Grid.Column="0">
                                             <TextBlock Text="运行环境" Style="{StaticResource SectionTitleText}" Margin="0,0,0,8" />
-                                            <TextBlock x:Name="AboutRuntimeEnvText"
-                                                       Text="Windows · .NET 10"
-                                                       FontFamily="Cascadia Mono, Consolas, Segoe UI"
-                                                       FontSize="12"
-                                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                                       TextWrapping="Wrap"
-                                                       LineHeight="20" />
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="64" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                </Grid.RowDefinitions>
+                                                <TextBlock Grid.Row="0" Grid.Column="0"
+                                                           Text="OS"
+                                                           Style="{StaticResource CaptionText}"
+                                                           LineHeight="20" />
+                                                <TextBlock x:Name="AboutOsText"
+                                                           Grid.Row="0" Grid.Column="1"
+                                                           Text="Windows"
+                                                           Style="{StaticResource CaptionText}"
+                                                           Typography.NumeralAlignment="Tabular"
+                                                           TextWrapping="Wrap"
+                                                           LineHeight="20" />
+                                                <TextBlock Grid.Row="1" Grid.Column="0"
+                                                           Text="Runtime"
+                                                           Style="{StaticResource CaptionText}"
+                                                           Margin="0,3,0,0"
+                                                           LineHeight="20" />
+                                                <TextBlock x:Name="AboutRuntimeText"
+                                                           Grid.Row="1" Grid.Column="1"
+                                                           Text=".NET 10"
+                                                           Style="{StaticResource CaptionText}"
+                                                           Typography.NumeralAlignment="Tabular"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,3,0,0"
+                                                           LineHeight="20" />
+                                            </Grid>
                                         </StackPanel>
                                         <StackPanel Grid.Column="2">
                                             <TextBlock Text="数据与隐私" Style="{StaticResource SectionTitleText}" Margin="0,0,0,8" />

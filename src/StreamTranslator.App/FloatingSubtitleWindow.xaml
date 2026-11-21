@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         Title="字幕"
+        Icon="pack://application:,,,/Assets/app.ico"
         Width="780"
         MinWidth="420"
         MinHeight="84"

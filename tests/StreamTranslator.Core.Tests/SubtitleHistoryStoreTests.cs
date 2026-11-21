@@ -200,6 +200,29 @@ public sealed class SubtitleHistoryStoreTests
         Assert.AreEqual("current session", latest[1].SourceText);
     }
 
+    [TestMethod]
+    public async Task ListAvailableDates_ReturnsValidDatesDescending()
+    {
+        using var directory = TempDirectoryScope.Create("streamtranslator-subtitles-");
+        var store = new SubtitleHistoryStore(directory.FullName);
+
+        await store.AppendAsync(Item(1, "older"), new DateOnly(2026, 11, 18));
+        await store.AppendAsync(Item(1, "newest"), new DateOnly(2026, 11, 21));
+        await store.AppendAsync(Item(1, "middle"), new DateOnly(2026, 11, 19));
+        await File.WriteAllTextAsync(Path.Combine(directory.FullName, "not-a-date.jsonl"), "");
+
+        var dates = store.ListAvailableDates();
+
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                new DateOnly(2026, 11, 21),
+                new DateOnly(2026, 11, 19),
+                new DateOnly(2026, 11, 18)
+            },
+            dates.ToArray());
+    }
+
     private static SubtitleItem HistoryItem(long sequence, string text, string groupId)
     {
         return new SubtitleItem
