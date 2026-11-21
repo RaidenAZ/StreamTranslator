@@ -27,7 +27,43 @@ public sealed class SettingsStoreTests
         Assert.AreEqual(0, settings.Translation.Profiles.Count);
         Assert.AreEqual(18d, settings.SubtitleWindow.FontSize);
         Assert.AreEqual(2, settings.SubtitleWindow.MaxSubtitleItems);
+        Assert.AreEqual(SubtitleDisplayMode.BilingualSourceFirst, settings.SubtitleWindow.DisplayMode);
+        Assert.AreEqual(SubtitleOverlayTheme.CinemaGlass, settings.SubtitleWindow.Theme);
         Assert.IsTrue(File.Exists(settingsPath));
+    }
+
+    [TestMethod]
+    public async Task SaveAndLoadAsync_PreservesSubtitleWindowDisplayModeAndTheme()
+    {
+        var directory = Directory.CreateTempSubdirectory("streamtranslator-settings-");
+        var settingsPath = Path.Combine(directory.FullName, "settings.json");
+        var store = new SettingsStore(settingsPath);
+        var original = new AppSettings
+        {
+            SubtitleWindow = new SubtitleWindowSettings
+            {
+                FontSize = 24,
+                MaxSubtitleItems = 3,
+                Opacity = 0.15,
+                DisplayMode = SubtitleDisplayMode.BilingualTranslationFirst,
+                Theme = SubtitleOverlayTheme.MinimalFloating,
+                Left = 120,
+                Top = 640,
+                WindowWidth = 900
+            }
+        };
+
+        await store.SaveAsync(original);
+        var reloaded = await store.LoadAsync();
+
+        Assert.AreEqual(24d, reloaded.SubtitleWindow.FontSize);
+        Assert.AreEqual(3, reloaded.SubtitleWindow.MaxSubtitleItems);
+        Assert.AreEqual(0.15d, reloaded.SubtitleWindow.Opacity, 0.0001);
+        Assert.AreEqual(SubtitleDisplayMode.BilingualTranslationFirst, reloaded.SubtitleWindow.DisplayMode);
+        Assert.AreEqual(SubtitleOverlayTheme.MinimalFloating, reloaded.SubtitleWindow.Theme);
+        Assert.AreEqual(120d, reloaded.SubtitleWindow.Left);
+        Assert.AreEqual(640d, reloaded.SubtitleWindow.Top);
+        Assert.AreEqual(900d, reloaded.SubtitleWindow.WindowWidth);
     }
 
     [TestMethod]

@@ -52,6 +52,9 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     private bool _stopping;
     private bool _mergeNextSegment;
     private int _workerRestartCount;
+    private int _inFlightAsrRequests;
+    private bool _lastSpeechActive;
+    private long _lastActivityNotifyTick;
 
     public SubtitleRuntime(string baseDirectory, string dataDirectory, AppSettings settings)
     {
@@ -74,6 +77,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     public event EventHandler<TranslationResultUpdate>? TranslationReady;
     public event EventHandler<TranslationRuntimeStatus>? TranslationStatusChanged;
     public event EventHandler<TranslationTaskStatusUpdate>? TranslationTaskStatusChanged;
+    public event EventHandler<SubtitleActivitySnapshot>? ActivityChanged;
 
     public void UpdateTranslationVisibleGroups(IReadOnlyCollection<string> visibleGroupIds)
     {
@@ -172,8 +176,31 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         }
 
         StatusChanged?.Invoke(this, new RuntimeStatusUpdate(RuntimeStatusCategory.General, "已停止"));
+        Interlocked.Exchange(ref _inFlightAsrRequests, 0);
+        _lastSpeechActive = false;
+        ActivityChanged?.Invoke(this, new SubtitleActivitySnapshot(SubtitleActivityState.Idle, 0, 0));
         _stopCts?.Dispose();
         _stopCts = null;
+    }
+
+    private void PublishActivity(bool isSpeech, double audioLevel, bool force = false)
+    {
+        var speechChanged = _lastSpeechActive != isSpeech;
+        _lastSpeechActive = isSpeech;
+        var activeAsr = Volatile.Read(ref _inFlightAsrRequests);
+        var now = Environment.TickCount64;
+        if (!force && !speechChanged && now - Volatile.Read(ref _lastActivityNotifyTick) < 90)
+        {
+            return;
+        }
+
+        Volatile.Write(ref _lastActivityNotifyTick, now);
+        var state = activeAsr > 0
+            ? SubtitleActivityState.Processing
+            : isSpeech
+                ? SubtitleActivityState.ListeningSpeech
+                : SubtitleActivityState.Idle;
+        ActivityChanged?.Invoke(this, new SubtitleActivitySnapshot(state, audioLevel, activeAsr));
     }
 
     private void OnFrameCaptured(object? sender, PcmAudioFrame frame)
@@ -194,7 +221,9 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             }
 
             var decision = vad.Analyze(frame.Samples, frame.SampleRate);
-            AudioLevelChanged?.Invoke(this, CalculateLevel(frame.Samples));
+            var level = CalculateLevel(frame.Samples);
+            AudioLevelChanged?.Invoke(this, level);
+            PublishActivity(decision.IsSpeech, level);
             WriteVadDiagnostic(frame, decision);
             var endpointObservation = endpointController.ObserveVad(frame.StartMs, frame.DurationMs, decision.IsSpeech);
             if (endpointObservation.Evaluation is { } evaluation)
@@ -426,6 +455,8 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         DiagnosticSegmentRecord? diagnosticRecord = null;
         WorkerResponse response;
         RuntimeFatalException? fatalError = null;
+        Interlocked.Increment(ref _inFlightAsrRequests);
+        PublishActivity(_lastSpeechActive, 0, force: true);
         try
         {
             await _asrSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -466,6 +497,9 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             {
                 _asrSemaphore.Release();
             }
+
+            Interlocked.Decrement(ref _inFlightAsrRequests);
+            PublishActivity(_lastSpeechActive, 0, force: true);
         }
 
         var outcome = AsrResultClassifier.Classify(response);

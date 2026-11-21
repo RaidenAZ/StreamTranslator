@@ -1,90 +1,477 @@
 <Window x:Class="StreamTranslator.App.FloatingSubtitleWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
         Title="字幕"
-        Width="760"
+        Width="780"
         MinWidth="420"
-        MinHeight="76"
+        MinHeight="84"
         SizeToContent="Height"
         WindowStartupLocation="CenterScreen"
         WindowStyle="None"
-        ResizeMode="CanResizeWithGrip"
+        ResizeMode="NoResize"
         AllowsTransparency="True"
         Background="Transparent"
         Topmost="True"
         ShowInTaskbar="False"
+        MouseEnter="OnWindowMouseEnter"
+        MouseLeave="OnWindowMouseLeave"
         MouseLeftButtonDown="OnMouseLeftButtonDown">
-    <Border x:Name="Chrome"
-            Margin="10"
-            CornerRadius="8"
-            BorderBrush="#26FFFFFF"
-            BorderThickness="1"
-            Padding="18,12">
-        <Border.Background>
-            <SolidColorBrush x:Name="ChromeBackgroundBrush" Color="#141C26" Opacity="0.8" />
-        </Border.Background>
-        <Border.Effect>
-            <DropShadowEffect Color="#000000"
-                              BlurRadius="18"
-                              ShadowDepth="3"
-                              Direction="270"
-                              Opacity="0.45" />
-        </Border.Effect>
-        <Grid>
-            <ItemsControl x:Name="SubtitleGroups"
-                          ItemsSource="{Binding Entries, RelativeSource={RelativeSource AncestorType=Window}}"
-                          HorizontalContentAlignment="Stretch">
-                <ItemsControl.ItemTemplate>
-                    <DataTemplate>
-                        <StackPanel Margin="0,4">
-                            <TextBlock Text="{Binding SourceText}"
-                                       Foreground="White"
-                                       FontSize="{DynamicResource FloatingSourceFontSize}"
-                                       FontWeight="SemiBold"
-                                       TextWrapping="Wrap"
-                                       TextAlignment="Center"
-                                       LineStackingStrategy="BlockLineHeight">
-                                <TextBlock.Effect>
-                                    <DropShadowEffect Color="#000000"
-                                                      BlurRadius="4"
-                                                      ShadowDepth="1"
-                                                      Opacity="0.8" />
-                                </TextBlock.Effect>
-                            </TextBlock>
-                            <TextBlock Text="{Binding DisplayTranslatedText}"
-                                       Visibility="{Binding TranslationVisibility}"
-                                       Foreground="#D9FFFFFF"
-                                       FontSize="{DynamicResource FloatingTranslationFontSize}"
-                                       TextWrapping="Wrap"
-                                       TextAlignment="Center"
-                                       Margin="0,3,0,0"
-                                       LineStackingStrategy="BlockLineHeight">
-                                <TextBlock.Effect>
-                                    <DropShadowEffect Color="#000000"
-                                                      BlurRadius="4"
-                                                      ShadowDepth="1"
-                                                      Opacity="0.8" />
-                                </TextBlock.Effect>
-                            </TextBlock>
-                        </StackPanel>
-                    </DataTemplate>
-                </ItemsControl.ItemTemplate>
-            </ItemsControl>
+    <Window.Resources>
+        <Style x:Key="PillButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#E6FFFFFF" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="7,3" />
+            <Setter Property="Height" Value="24" />
+            <Setter Property="FontSize" Value="11.5" />
+            <Setter Property="FontWeight" Value="Medium" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="RootBorder"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="10"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="RootBorder" Property="Background" Value="#2AFFFFFF" />
+                                <Setter Property="Foreground" Value="#FFFFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="RootBorder" Property="Background" Value="#40FFFFFF" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
 
-            <Border x:Name="LockHint"
-                    HorizontalAlignment="Center"
-                    VerticalAlignment="Top"
-                    Margin="0,-4,0,0"
-                    Padding="10,4"
-                    CornerRadius="4"
-                    Background="#B2000000"
-                    Visibility="Collapsed"
-                    IsHitTestVisible="False">
-                <TextBlock x:Name="LockHintText"
-                           Text=""
-                           Foreground="White"
-                           FontSize="12" />
-            </Border>
-        </Grid>
-    </Border>
+        <Style x:Key="EdgeResizeThumbStyle" TargetType="Thumb">
+            <Setter Property="Width" Value="12" />
+            <Setter Property="Cursor" Value="SizeWE" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border Background="Transparent">
+                            <Border x:Name="EdgeGripLine"
+                                    Width="3"
+                                    Height="28"
+                                    CornerRadius="1.5"
+                                    Background="#70FFFFFF"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    Opacity="0" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="EdgeGripLine" Property="Opacity" Value="0.85" />
+                            </Trigger>
+                            <Trigger Property="IsDragging" Value="True">
+                                <Setter TargetName="EdgeGripLine" Property="Opacity" Value="1" />
+                                <Setter TargetName="EdgeGripLine" Property="Background" Value="#FF2DD4A3" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="OverlayMenuItemStyle" TargetType="MenuItem">
+            <Setter Property="Foreground" Value="#F2FFFFFF" />
+            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="MenuItem">
+                        <Border x:Name="MenuBorder"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="5"
+                                Margin="4,1"
+                                Padding="{TemplateBinding Padding}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="18" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="CheckGlyph"
+                                           Grid.Column="0"
+                                           Text="●"
+                                           FontSize="8"
+                                           Foreground="#FF2DD4A3"
+                                           VerticalAlignment="Center"
+                                           HorizontalAlignment="Left"
+                                           Visibility="Collapsed" />
+                                <ContentPresenter Grid.Column="1"
+                                                  ContentSource="Header"
+                                                  RecognizesAccessKey="True"
+                                                  VerticalAlignment="Center" />
+                                <TextBlock Grid.Column="2"
+                                           Text="{TemplateBinding InputGestureText}"
+                                           Foreground="#8AFFFFFF"
+                                           FontSize="11"
+                                           Margin="16,0,0,0"
+                                           VerticalAlignment="Center" />
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="CheckGlyph" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="MenuBorder" Property="Background" Value="#24FFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="OverlayContextMenuStyle" TargetType="ContextMenu">
+            <Setter Property="OverridesDefaultStyle" Value="True" />
+            <Setter Property="HasDropShadow" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ContextMenu">
+                        <Border Background="#F2121821"
+                                BorderBrush="#33FFFFFF"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="0,5"
+                                MinWidth="196">
+                            <Border.Effect>
+                                <DropShadowEffect Color="#000000" BlurRadius="16" ShadowDepth="4" Opacity="0.5" />
+                            </Border.Effect>
+                            <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="OverlaySeparatorStyle" TargetType="Separator">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Separator">
+                        <Border Height="1" Background="#1FFFFFFF" Margin="10,4" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Window.ContextMenu>
+        <ContextMenu x:Name="OverlayContextMenu"
+                     Style="{StaticResource OverlayContextMenuStyle}"
+                     Opened="OnContextMenuOpened"
+                     Closed="OnContextMenuClosed">
+            <MenuItem x:Name="MenuLockItem"
+                      Header="锁定悬浮窗（点击穿透）"
+                      InputGestureText="Ctrl+Alt+L"
+                      Style="{StaticResource OverlayMenuItemStyle}"
+                      Click="OnLockButtonClick" />
+            <MenuItem Header="隐藏悬浮窗"
+                      InputGestureText="Ctrl+Alt+H"
+                      Style="{StaticResource OverlayMenuItemStyle}"
+                      Click="OnHideButtonClick" />
+            <Separator Style="{StaticResource OverlaySeparatorStyle}" />
+            <MenuItem x:Name="MenuModeTranslationFirst"
+                      Header="双语 · 译文优先"
+                      Tag="BilingualTranslationFirst"
+                      IsCheckable="True"
+                      Style="{StaticResource OverlayMenuItemStyle}"
+                      Click="OnDisplayModeMenuClick" />
+            <MenuItem x:Name="MenuModeSourceFirst"
+                      Header="双语 · 原文优先"
+                      Tag="BilingualSourceFirst"
+                      IsCheckable="True"
+                      Style="{StaticResource OverlayMenuItemStyle}"
+                      Click="OnDisplayModeMenuClick" />
+            <MenuItem x:Name="MenuModeTranslationOnly"
+                      Header="仅显示译文"
+                      Tag="TranslationOnly"
+                      IsCheckable="True"
+                      Style="{StaticResource OverlayMenuItemStyle}"
+                      Click="OnDisplayModeMenuClick" />
+            <MenuItem x:Name="MenuModeSourceOnly"
+                      Header="仅显示原文"
+                      Tag="SourceOnly"
+                      IsCheckable="True"
+                      Style="{StaticResource OverlayMenuItemStyle}"
+                      Click="OnDisplayModeMenuClick" />
+            <Separator Style="{StaticResource OverlaySeparatorStyle}" />
+            <MenuItem x:Name="MenuThemeCinemaGlass"
+                      Header="皮肤 · 影院暗玻璃"
+                      Tag="CinemaGlass"
+                      IsCheckable="True"
+                      Style="{StaticResource OverlayMenuItemStyle}"
+                      Click="OnThemeMenuClick" />
+            <MenuItem x:Name="MenuThemeHighContrast"
+                      Header="皮肤 · 亮底高对比"
+                      Tag="HighContrast"
+                      IsCheckable="True"
+                      Style="{StaticResource OverlayMenuItemStyle}"
+                      Click="OnThemeMenuClick" />
+            <MenuItem x:Name="MenuThemeMinimalFloating"
+                      Header="皮肤 · 极简浮字"
+                      Tag="MinimalFloating"
+                      IsCheckable="True"
+                      Style="{StaticResource OverlayMenuItemStyle}"
+                      Click="OnThemeMenuClick" />
+            <Separator Style="{StaticResource OverlaySeparatorStyle}" />
+            <MenuItem Header="增大字号"
+                      Style="{StaticResource OverlayMenuItemStyle}"
+                      Click="OnIncreaseFontClick" />
+            <MenuItem Header="减小字号"
+                      Style="{StaticResource OverlayMenuItemStyle}"
+                      Click="OnDecreaseFontClick" />
+            <MenuItem Header="重置位置到屏幕底部居中"
+                      Style="{StaticResource OverlayMenuItemStyle}"
+                      Click="OnResetPositionClick" />
+            <Separator Style="{StaticResource OverlaySeparatorStyle}" />
+            <MenuItem Header="打开主窗口设置"
+                      Style="{StaticResource OverlayMenuItemStyle}"
+                      Click="OnOpenSettingsClick" />
+        </ContextMenu>
+    </Window.ContextMenu>
+
+    <!-- 顶部预留 28px 悬停微控胶囊区域，让工具栏浮在字幕面板上方而不挤动字幕高度 -->
+    <Grid Margin="10,2,10,12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="28" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- 顶部悬停热区（确保鼠标从字幕面板向上移到胶囊栏之间不会触发 Leave 闪烁） -->
+        <Border x:Name="HoverBridge"
+                Grid.Row="0"
+                Background="#01000000"
+                IsHitTestVisible="False" />
+
+        <!-- 悬停微控胶囊栏（仅未锁定且鼠标移入时淡入） -->
+        <Border x:Name="HoverToolbar"
+                Grid.Row="0"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Bottom"
+                Margin="0,0,0,4"
+                CornerRadius="13"
+                Background="#E8111720"
+                BorderBrush="#36FFFFFF"
+                BorderThickness="1"
+                Padding="6,1"
+                Opacity="0"
+                IsHitTestVisible="False">
+            <Border.Effect>
+                <DropShadowEffect Color="#000000" BlurRadius="12" ShadowDepth="2" Opacity="0.45" />
+            </Border.Effect>
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock Text="⠿"
+                           Foreground="#88FFFFFF"
+                           FontSize="12"
+                           VerticalAlignment="Center"
+                           Margin="4,0,6,0"
+                           ToolTip="按住拖动移动位置" />
+                <Border Width="1" Height="12" Background="#26FFFFFF" Margin="0,0,4,0" />
+                <Button Content="A-"
+                        ToolTip="减小字号"
+                        Style="{StaticResource PillButtonStyle}"
+                        Click="OnDecreaseFontClick" />
+                <TextBlock x:Name="PillFontSizeText"
+                           Text="18"
+                           Foreground="#B8FFFFFF"
+                           FontSize="11"
+                           VerticalAlignment="Center"
+                           Margin="2,0"
+                           Typography.NumeralAlignment="Tabular" />
+                <Button Content="A+"
+                        ToolTip="增大字号"
+                        Style="{StaticResource PillButtonStyle}"
+                        Click="OnIncreaseFontClick" />
+                <Border Width="1" Height="12" Background="#26FFFFFF" Margin="4,0" />
+                <Button x:Name="PillDisplayModeButton"
+                        Content="双语·原文"
+                        ToolTip="点击切换双语/单语显示模式"
+                        Style="{StaticResource PillButtonStyle}"
+                        Click="OnCycleDisplayModeClick" />
+                <Button x:Name="PillThemeButton"
+                        Content="暗玻璃"
+                        ToolTip="点击切换可读性皮肤预设"
+                        Style="{StaticResource PillButtonStyle}"
+                        Click="OnCycleThemeClick" />
+                <Border Width="1" Height="12" Background="#26FFFFFF" Margin="4,0" />
+                <Button x:Name="PillLockButton"
+                        ToolTip="锁定悬浮窗（点击穿透，Ctrl+Alt+L 解锁）"
+                        Style="{StaticResource PillButtonStyle}"
+                        Click="OnLockButtonClick">
+                    <StackPanel Orientation="Horizontal">
+                        <ui:SymbolIcon Symbol="LockClosed20" FontSize="12" Margin="0,0,4,0" />
+                        <TextBlock Text="锁定" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+                <Button ToolTip="打开主窗口"
+                        Style="{StaticResource PillButtonStyle}"
+                        Click="OnOpenSettingsClick">
+                    <ui:SymbolIcon Symbol="Settings20" FontSize="12" />
+                </Button>
+                <Button ToolTip="隐藏悬浮窗 (Ctrl+Alt+H)"
+                        Style="{StaticResource PillButtonStyle}"
+                        Click="OnHideButtonClick">
+                    <ui:SymbolIcon Symbol="Dismiss20" FontSize="11" />
+                </Button>
+            </StackPanel>
+        </Border>
+
+        <!-- 主字幕面板 -->
+        <Border x:Name="Chrome"
+                Grid.Row="1"
+                CornerRadius="12"
+                BorderThickness="1"
+                Padding="22,13,22,14">
+            <Border.Background>
+                <SolidColorBrush x:Name="ChromeBackgroundBrush" Color="#0F141B" Opacity="0.72" />
+            </Border.Background>
+            <Border.BorderBrush>
+                <LinearGradientBrush x:Name="ChromeBorderBrush" StartPoint="0,0" EndPoint="0,1">
+                    <GradientStop x:Name="ChromeBorderTopStop" Color="#3DFFFFFF" Offset="0" />
+                    <GradientStop x:Name="ChromeBorderBottomStop" Color="#14FFFFFF" Offset="1" />
+                </LinearGradientBrush>
+            </Border.BorderBrush>
+            <Border.Effect>
+                <DropShadowEffect x:Name="ChromeShadowEffect"
+                                  Color="#000000"
+                                  BlurRadius="20"
+                                  ShadowDepth="4"
+                                  Direction="270"
+                                  Opacity="0.46" />
+            </Border.Effect>
+
+            <Grid>
+                <!-- 字幕条目列表 -->
+                <ItemsControl x:Name="SubtitleGroups"
+                              ItemsSource="{Binding Entries, RelativeSource={RelativeSource AncestorType=Window}}"
+                              HorizontalContentAlignment="Stretch">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel x:Name="EntryRoot"
+                                        Margin="0,4"
+                                        Opacity="{Binding EmphasisOpacity}"
+                                        RenderTransformOrigin="0.5,0.5">
+                                <StackPanel.RenderTransform>
+                                    <TranslateTransform Y="0" />
+                                </StackPanel.RenderTransform>
+                                <StackPanel.Triggers>
+                                    <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                                        <BeginStoryboard>
+                                            <Storyboard>
+                                                <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.Y)"
+                                                                 From="5"
+                                                                 To="0"
+                                                                 Duration="0:0:0.18">
+                                                    <DoubleAnimation.EasingFunction>
+                                                        <CubicEase EasingMode="EaseOut" />
+                                                    </DoubleAnimation.EasingFunction>
+                                                </DoubleAnimation>
+                                            </Storyboard>
+                                        </BeginStoryboard>
+                                    </EventTrigger>
+                                </StackPanel.Triggers>
+
+                                <!-- 第一行（按 DisplayMode 决定是原文还是译文） -->
+                                <TextBlock Text="{Binding PrimaryLineText}"
+                                           Visibility="{Binding PrimaryLineVisibility}"
+                                           Foreground="{Binding PrimaryLineBrush}"
+                                           FontSize="{Binding PrimaryLineFontSize}"
+                                           FontWeight="{Binding PrimaryLineFontWeight}"
+                                           TextWrapping="Wrap"
+                                           TextAlignment="Center"
+                                           LineStackingStrategy="BlockLineHeight"
+                                           Effect="{DynamicResource FloatingTextShadowEffect}" />
+
+                                <!-- 第二行（按 DisplayMode 决定是译文、原文或隐藏） -->
+                                <TextBlock Text="{Binding SecondaryLineText}"
+                                           Visibility="{Binding SecondaryLineVisibility}"
+                                           Foreground="{Binding SecondaryLineBrush}"
+                                           FontSize="{Binding SecondaryLineFontSize}"
+                                           FontWeight="{Binding SecondaryLineFontWeight}"
+                                           TextWrapping="Wrap"
+                                           TextAlignment="Center"
+                                           Margin="0,3,0,0"
+                                           LineStackingStrategy="BlockLineHeight"
+                                           Effect="{DynamicResource FloatingTextShadowEffect}" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <!-- 锁定/解锁短提示气泡 -->
+                <Border x:Name="LockHint"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Top"
+                        Margin="0,-6,0,0"
+                        Padding="12,4"
+                        CornerRadius="12"
+                        Background="#D80B1017"
+                        BorderBrush="#36FFFFFF"
+                        BorderThickness="1"
+                        Visibility="Collapsed"
+                        IsHitTestVisible="False">
+                    <TextBlock x:Name="LockHintText"
+                               Text=""
+                               Foreground="#F5FFFFFF"
+                               FontSize="12" />
+                </Border>
+
+                <!-- 底部 2px 声学 / 识别微光呼吸条（消除 VAD 停顿等待期的“是否卡死”焦虑） -->
+                <Border x:Name="ActivityTrack"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Bottom"
+                        Margin="0,0,0,-9"
+                        Height="2.5"
+                        Width="140"
+                        CornerRadius="1.25"
+                        Background="#18FFFFFF"
+                        Opacity="0"
+                        IsHitTestVisible="False">
+                    <Border x:Name="ActivityBar"
+                            HorizontalAlignment="Center"
+                            Height="2.5"
+                            Width="36"
+                            CornerRadius="1.25"
+                            Background="#FF2DD4A3">
+                        <Border.Effect>
+                            <DropShadowEffect x:Name="ActivityGlow"
+                                              Color="#2DD4A3"
+                                              BlurRadius="8"
+                                              ShadowDepth="0"
+                                              Opacity="0.8" />
+                        </Border.Effect>
+                    </Border>
+                </Border>
+            </Grid>
+        </Border>
+
+        <!-- 左右隐形边缘缩放手柄，替代违和的 Win32 ResizeGrip 灰点 -->
+        <Thumb x:Name="LeftResizeThumb"
+               Grid.Row="1"
+               HorizontalAlignment="Left"
+               Margin="-2,8,0,8"
+               Style="{StaticResource EdgeResizeThumbStyle}"
+               DragDelta="OnLeftResizeDragDelta" />
+        <Thumb x:Name="RightResizeThumb"
+               Grid.Row="1"
+               HorizontalAlignment="Right"
+               Margin="0,8,-2,8"
+               Style="{StaticResource EdgeResizeThumbStyle}"
+               DragDelta="OnRightResizeDragDelta" />
+    </Grid>
 </Window>

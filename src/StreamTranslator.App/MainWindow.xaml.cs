@@ -312,6 +312,7 @@ public partial class MainWindow : FluentWindow
         _runtime.TranslationReady += OnTranslationReady;
         _runtime.TranslationStatusChanged += OnTranslationStatusChanged;
         _runtime.TranslationTaskStatusChanged += OnTranslationTaskStatusChanged;
+        _runtime.ActivityChanged += OnRuntimeActivityChanged;
 
         AudioStatusText.Text = "等待捕获";
         VadStatusText.Text = "加载中";
@@ -354,9 +355,11 @@ public partial class MainWindow : FluentWindow
             _runtime.TranslationReady -= OnTranslationReady;
             _runtime.TranslationStatusChanged -= OnTranslationStatusChanged;
             _runtime.TranslationTaskStatusChanged -= OnTranslationTaskStatusChanged;
+            _runtime.ActivityChanged -= OnRuntimeActivityChanged;
             await _runtime.DisposeAsync();
             _runtime = null;
         }
+        _floatingWindow?.UpdateActivity(new SubtitleActivitySnapshot(SubtitleActivityState.Idle, 0, 0));
 
         _isRunning = false;
         _sessionTranslationEnabled = false;
@@ -859,6 +862,14 @@ public partial class MainWindow : FluentWindow
         });
     }
 
+    private void OnRuntimeActivityChanged(object? sender, SubtitleActivitySnapshot snapshot)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            _floatingWindow?.UpdateActivity(snapshot);
+        });
+    }
+
     private void OnVadEndpointChanged(object? sender, VadEndpointRuntimeStatus status)
     {
         Dispatcher.BeginInvoke(() =>
@@ -880,6 +891,9 @@ public partial class MainWindow : FluentWindow
             _floatingWindow.VisibleGroupsChanged += OnFloatingVisibleGroupsChanged;
             _floatingWindow.BoundsChanged += OnFloatingWindowBoundsChanged;
             _floatingWindow.LockedChanged += OnFloatingWindowLockedChanged;
+            _floatingWindow.AppearanceChanged += OnFloatingWindowAppearanceChanged;
+            _floatingWindow.HideRequested += OnFloatingWindowHideRequested;
+            _floatingWindow.OpenSettingsRequested += OnFloatingWindowOpenSettingsRequested;
             _floatingWindow.ApplyWindowBounds(
                 _settings.SubtitleWindow.Left,
                 _settings.SubtitleWindow.Top,
@@ -891,6 +905,9 @@ public partial class MainWindow : FluentWindow
                     floatingWindow.VisibleGroupsChanged -= OnFloatingVisibleGroupsChanged;
                     floatingWindow.BoundsChanged -= OnFloatingWindowBoundsChanged;
                     floatingWindow.LockedChanged -= OnFloatingWindowLockedChanged;
+                    floatingWindow.AppearanceChanged -= OnFloatingWindowAppearanceChanged;
+                    floatingWindow.HideRequested -= OnFloatingWindowHideRequested;
+                    floatingWindow.OpenSettingsRequested -= OnFloatingWindowOpenSettingsRequested;
                 }
                 _floatingWindow = null;
                 UpdateFloatingWindowButtonState();
@@ -913,7 +930,9 @@ public partial class MainWindow : FluentWindow
         _floatingWindow.ApplySettings(
             NumberValue(FloatingFontSizeBox, 18),
             (int)NumberValue(FloatingLinesBox, 2),
-            FloatingOpacitySlider.Value);
+            FloatingOpacitySlider.Value,
+            SelectedFloatingDisplayMode(),
+            SelectedFloatingTheme());
         UpdateFloatingWindowButtonState();
     }
 
@@ -933,10 +952,55 @@ public partial class MainWindow : FluentWindow
         UpdateFloatingLockButtonState(locked);
     }
 
+    private void OnFloatingWindowAppearanceChanged(FloatingAppearanceChange change)
+    {
+        var previousSuppress = _suppressSettingChanges;
+        _suppressSettingChanges = true;
+        try
+        {
+            FloatingFontSizeBox.Value = change.FontSize;
+            SelectFloatingDisplayMode(change.DisplayMode);
+            SelectFloatingTheme(change.Theme);
+        }
+        finally
+        {
+            _suppressSettingChanges = previousSuppress;
+        }
+
+        ScheduleSettingsSave();
+    }
+
+    private void OnFloatingWindowHideRequested()
+    {
+        if (_floatingWindow is { IsVisible: true })
+        {
+            _floatingWindow.Hide();
+            UpdateFloatingWindowButtonState();
+        }
+    }
+
+    private void OnFloatingWindowOpenSettingsRequested()
+    {
+        if (WindowState == WindowState.Minimized)
+        {
+            WindowState = WindowState.Normal;
+        }
+
+        Show();
+        Activate();
+        ShowPage(SettingsPage);
+        SetActiveNavigationItem("SettingsPage");
+    }
+
     private void UpdateFloatingLockButtonState(bool locked)
     {
         FloatingLockButton.Content = locked ? "解锁悬浮窗" : "锁定悬浮窗";
         FloatingLockButton.Icon = new SymbolIcon(locked ? SymbolRegular.LockOpen24 : SymbolRegular.LockClosed24);
+        HomeFloatingLockText.Text = locked ? "已锁定" : "锁定";
+        HomeFloatingLockIcon.Symbol = locked ? SymbolRegular.LockOpen24 : SymbolRegular.LockClosed24;
+        HomeFloatingLockButton.ToolTip = locked
+            ? "悬浮窗已锁定（点击穿透），点击或按 Ctrl+Alt+L 解锁"
+            : "锁定悬浮窗（开启鼠标点击穿透，Ctrl+Alt+L）";
     }
 
     private void TryShowFloatingWindow()
@@ -1065,6 +1129,17 @@ public partial class MainWindow : FluentWindow
         ScheduleSettingsSave();
     }
 
+    private void OnFloatingAppearanceSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressSettingChanges)
+        {
+            return;
+        }
+
+        ApplyFloatingSettingsLive();
+        ScheduleSettingsSave();
+    }
+
     private void OnFloatingOpacityChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (FloatingOpacityValueText is not null)
@@ -1086,7 +1161,51 @@ public partial class MainWindow : FluentWindow
         _floatingWindow?.ApplySettings(
             NumberValue(FloatingFontSizeBox, 18),
             (int)NumberValue(FloatingLinesBox, 2),
-            FloatingOpacitySlider.Value);
+            FloatingOpacitySlider.Value,
+            SelectedFloatingDisplayMode(),
+            SelectedFloatingTheme());
+    }
+
+    private SubtitleDisplayMode SelectedFloatingDisplayMode()
+    {
+        var tag = (FloatingDisplayModeBox?.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+        return Enum.TryParse<SubtitleDisplayMode>(tag, out var mode)
+            ? mode
+            : SubtitleDisplayMode.BilingualSourceFirst;
+    }
+
+    private void SelectFloatingDisplayMode(SubtitleDisplayMode mode)
+    {
+        if (FloatingDisplayModeBox is null)
+        {
+            return;
+        }
+
+        var match = FloatingDisplayModeBox.Items
+            .OfType<ComboBoxItem>()
+            .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), mode.ToString(), StringComparison.Ordinal));
+        FloatingDisplayModeBox.SelectedItem = match ?? FloatingDisplayModeBox.Items[0];
+    }
+
+    private SubtitleOverlayTheme SelectedFloatingTheme()
+    {
+        var tag = (FloatingThemeBox?.SelectedItem as ComboBoxItem)?.Tag?.ToString();
+        return Enum.TryParse<SubtitleOverlayTheme>(tag, out var theme)
+            ? theme
+            : SubtitleOverlayTheme.CinemaGlass;
+    }
+
+    private void SelectFloatingTheme(SubtitleOverlayTheme theme)
+    {
+        if (FloatingThemeBox is null)
+        {
+            return;
+        }
+
+        var match = FloatingThemeBox.Items
+            .OfType<ComboBoxItem>()
+            .FirstOrDefault(item => string.Equals(item.Tag?.ToString(), theme.ToString(), StringComparison.Ordinal));
+        FloatingThemeBox.SelectedItem = match ?? FloatingThemeBox.Items[0];
     }
 
     private void OnThemeModeChanged(object sender, SelectionChangedEventArgs e)
@@ -1272,6 +1391,8 @@ public partial class MainWindow : FluentWindow
         FloatingLinesBox.Value = settings.SubtitleWindow.MaxSubtitleItems;
         FloatingOpacitySlider.Value = settings.SubtitleWindow.Opacity;
         FloatingOpacityValueText.Text = $"{Math.Round(settings.SubtitleWindow.Opacity * 100)}%";
+        SelectFloatingDisplayMode(settings.SubtitleWindow.DisplayMode);
+        SelectFloatingTheme(settings.SubtitleWindow.Theme);
         HotkeysEnabledSwitch.IsChecked = settings.Hotkeys.Enabled;
         LanguageBox.Text = "自动检测 (auto)";
         SelectThemeMode(settings.Appearance.Theme);
@@ -1345,6 +1466,8 @@ public partial class MainWindow : FluentWindow
                 FontSize = NumberValue(FloatingFontSizeBox, 18),
                 MaxSubtitleItems = (int)NumberValue(FloatingLinesBox, 2),
                 Opacity = FloatingOpacitySlider.Value,
+                DisplayMode = SelectedFloatingDisplayMode(),
+                Theme = SelectedFloatingTheme(),
                 Left = _floatingWindowBounds?.Left ?? _settings.SubtitleWindow.Left,
                 Top = _floatingWindowBounds?.Top ?? _settings.SubtitleWindow.Top,
                 WindowWidth = _floatingWindowBounds?.Width ?? _settings.SubtitleWindow.WindowWidth
@@ -2149,6 +2272,7 @@ public partial class MainWindow : FluentWindow
         var buttonText = isVisible ? "隐藏悬浮窗" : "显示悬浮窗";
 
         HomeFloatingWindowButton.ToolTip = buttonText;
+        HomeFloatingWindowText.Text = buttonText;
         AutomationProperties.SetName(HomeFloatingWindowButton, buttonText);
         FloatingWindowIcon.Symbol = isVisible ? SymbolRegular.Dismiss24 : SymbolRegular.Window24;
     }

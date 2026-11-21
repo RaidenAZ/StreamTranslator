@@ -189,10 +189,21 @@
                                                            AutomationProperties.AutomationId="HomeFloatingWindowButton"
                                                            AutomationProperties.Name="显示悬浮窗"
                                                            Click="OnShowFloatingWindowClick"
-                                                           MinWidth="112">
+                                                           MinWidth="112"
+                                                           Margin="0,0,8,0">
                                                     <StackPanel Orientation="Horizontal">
                                                         <ui:SymbolIcon x:Name="FloatingWindowIcon" Symbol="Window24" Margin="0,0,8,0" />
-                                                        <TextBlock Text="悬浮窗" />
+                                                        <TextBlock x:Name="HomeFloatingWindowText" Text="显示悬浮窗" />
+                                                    </StackPanel>
+                                                </ui:Button>
+                                                <ui:Button x:Name="HomeFloatingLockButton"
+                                                           AutomationProperties.AutomationId="HomeFloatingLockButton"
+                                                           ToolTip="锁定或解锁悬浮窗（Ctrl+Alt+L）"
+                                                           Click="OnToggleFloatingLockClick"
+                                                           MinWidth="96">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <ui:SymbolIcon x:Name="HomeFloatingLockIcon" Symbol="LockClosed24" Margin="0,0,6,0" />
+                                                        <TextBlock x:Name="HomeFloatingLockText" Text="锁定" />
                                                     </StackPanel>
                                                 </ui:Button>
                                             </StackPanel>
@@ -947,9 +958,36 @@
                                             <Grid.RowDefinitions>
                                                 <RowDefinition Height="Auto" />
                                                 <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
                                             </Grid.RowDefinitions>
 
                                             <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,0,16">
+                                                <TextBlock Text="显示模式" Style="{StaticResource FieldLabelText}" />
+                                                <ComboBox x:Name="FloatingDisplayModeBox"
+                                                          AutomationProperties.AutomationId="FloatingDisplayModeBox"
+                                                          Width="240"
+                                                          HorizontalAlignment="Left"
+                                                          SelectionChanged="OnFloatingAppearanceSelectionChanged">
+                                                    <ComboBoxItem Content="双语 · 原文优先" Tag="BilingualSourceFirst" />
+                                                    <ComboBoxItem Content="双语 · 译文优先（推荐看外语）" Tag="BilingualTranslationFirst" />
+                                                    <ComboBoxItem Content="仅显示译文" Tag="TranslationOnly" />
+                                                    <ComboBoxItem Content="仅显示原文" Tag="SourceOnly" />
+                                                </ComboBox>
+                                            </StackPanel>
+                                            <StackPanel Grid.Row="0" Grid.Column="2" Margin="0,0,0,16">
+                                                <TextBlock Text="可读性皮肤预设" Style="{StaticResource FieldLabelText}" />
+                                                <ComboBox x:Name="FloatingThemeBox"
+                                                          AutomationProperties.AutomationId="FloatingThemeBox"
+                                                          Width="240"
+                                                          HorizontalAlignment="Left"
+                                                          SelectionChanged="OnFloatingAppearanceSelectionChanged">
+                                                    <ComboBoxItem Content="影院暗玻璃（默认）" Tag="CinemaGlass" />
+                                                    <ComboBoxItem Content="亮底高对比（适配 PPT / 白底）" Tag="HighContrast" />
+                                                    <ComboBoxItem Content="极简浮字（适配全屏视频 / 游戏）" Tag="MinimalFloating" />
+                                                </ComboBox>
+                                            </StackPanel>
+
+                                            <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,0,0,16">
                                                 <TextBlock Text="字号" Style="{StaticResource FieldLabelText}" />
                                                 <ui:NumberBox x:Name="FloatingFontSizeBox"
                                                               Value="18"
@@ -961,7 +999,7 @@
                                                               ValueChanged="OnFloatingNumberSettingChanged"
                                                               HorizontalAlignment="Left" />
                                             </StackPanel>
-                                            <StackPanel Grid.Row="0" Grid.Column="2" Margin="0,0,0,16">
+                                            <StackPanel Grid.Row="1" Grid.Column="2" Margin="0,0,0,16">
                                                 <TextBlock Text="显示字幕数" Style="{StaticResource FieldLabelText}" />
                                                 <ui:NumberBox x:Name="FloatingLinesBox"
                                                               Value="2"
@@ -973,9 +1011,9 @@
                                                               ValueChanged="OnFloatingNumberSettingChanged"
                                                               HorizontalAlignment="Left" />
                                             </StackPanel>
-                                            <StackPanel Grid.Row="1" Grid.Column="0">
+                                            <StackPanel Grid.Row="2" Grid.Column="0">
                                                 <DockPanel Width="260" HorizontalAlignment="Left" Margin="0,0,0,6">
-                                                    <TextBlock Text="透明度" Style="{StaticResource FieldLabelText}" Margin="0" />
+                                                    <TextBlock Text="底板不透明度" Style="{StaticResource FieldLabelText}" Margin="0" />
                                                     <TextBlock x:Name="FloatingOpacityValueText"
                                                                DockPanel.Dock="Right"
                                                                Text="72%"
@@ -983,14 +1021,14 @@
                                                                HorizontalAlignment="Right" />
                                                 </DockPanel>
                                                 <Slider x:Name="FloatingOpacitySlider"
-                                                        Minimum="0.35"
+                                                        Minimum="0"
                                                         Maximum="0.95"
                                                         Value="0.72"
                                                         Width="260"
                                                         ValueChanged="OnFloatingOpacityChanged"
                                                         HorizontalAlignment="Left" />
                                             </StackPanel>
-                                            <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Bottom">
+                                            <StackPanel Grid.Row="2" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Bottom">
                                                 <ui:Button Click="OnShowFloatingWindowClick"
                                                            Icon="{ui:SymbolIcon Window24}"
                                                            Content="显示/隐藏"
@@ -1002,6 +1040,10 @@
                                                            Content="锁定悬浮窗" />
                                             </StackPanel>
                                         </Grid>
+                                        <TextBlock Text="提示：未锁定时鼠标悬停在悬浮窗上可弹出快捷微控栏，拖动左右边缘可调整宽度，右键可快速切换显示模式与皮肤。"
+                                                   Style="{StaticResource CaptionText}"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,12,0,0" />
                                     </StackPanel>
                                 </Border>
 
