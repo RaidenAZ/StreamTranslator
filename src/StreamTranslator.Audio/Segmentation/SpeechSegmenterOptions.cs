@@ -10,4 +10,6 @@ public sealed record SpeechSegmenterOptions
     public int SoftMaxSegmentMs { get; init; } = 4000;
     public int HardMaxSegmentMs { get; init; } = 10000;
     public int OverlapMs { get; init; } = 600;
+    public int SilenceGlitchToleranceMs { get; init; } = 32;
+    public int ValleyLookbackMs { get; init; } = 1800;
 }

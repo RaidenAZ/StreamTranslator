@@ -88,7 +88,7 @@ static int RunSegment(SegmentOptions options)
             continue;
         }
 
-        endpointController.NotifySegmentCut(completed.EndMs, completed.CutReason);
+        _ = endpointController.ObserveSegmentCut(completed.EndMs, completed.CutReason);
 
         var segmentFileName = $"seg-{sequence:000000}.wav";
         var segmentPath = Path.Combine(segmentsDirectory, segmentFileName);

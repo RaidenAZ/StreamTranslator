@@ -1,15 +1,14 @@
 namespace StreamTranslator.Core.Subtitles;
 
 /// <summary>
-/// Scans accumulated ASR text for sentence boundaries using punctuation heuristics.
-/// Designed for English conversational/presentation speech where the ASR model outputs
-/// properly punctuated text. Returns the character index at which the next sentence
-/// begins (i.e. just past the whitespace following terminal punctuation), or -1.
+/// Scans accumulated ASR text for sentence boundaries using multilingual punctuation heuristics.
+/// Supports both English terminal punctuation ([.!?] + whitespace + capital) and CJK terminal
+/// punctuation ([。！？]). Returns the character index at which the next sentence begins, or -1.
 /// </summary>
 public static class SentenceBoundaryScanner
 {
     /// <summary>
-    /// Minimum word count a sentence must have to be considered a valid flush boundary.
+    /// Minimum word-equivalent units a sentence must have to be considered a valid flush boundary.
     /// Short fragments like "The free start." are excluded by this guard.
     /// </summary>
     public const int MinSentenceWords = 5;
@@ -31,6 +30,29 @@ public static class SentenceBoundaryScanner
         for (var i = 0; i < text.Length - 1; i++)
         {
             var ch = text[i];
+
+            if (ch is '。' or '！' or '？')
+            {
+                var nextStart = i + 1;
+                while (nextStart < text.Length && IsCjkBoundaryTrailingWrapper(text[nextStart]))
+                {
+                    nextStart++;
+                }
+
+                if (nextStart >= text.Length)
+                {
+                    continue;
+                }
+
+                if (CountWords(text, 0, i + 1) < MinSentenceWords)
+                {
+                    continue;
+                }
+
+                lastBoundary = nextStart;
+                continue;
+            }
+
             if (ch is not ('.' or '!' or '?'))
             {
                 continue;
@@ -58,8 +80,9 @@ public static class SentenceBoundaryScanner
                 nextWordStart++;
             }
 
-            // Next token must start with an uppercase letter.
-            if (nextWordStart >= text.Length || !char.IsUpper(text[nextWordStart]))
+            // Next token must start with an uppercase letter (or CJK character in code-switched speech).
+            if (nextWordStart >= text.Length ||
+                (!char.IsUpper(text[nextWordStart]) && !UtteranceCompletenessAnalyzer.IsCjkChar(text[nextWordStart])))
             {
                 continue;
             }
@@ -77,6 +100,11 @@ public static class SentenceBoundaryScanner
         return lastBoundary;
     }
 
+    private static bool IsCjkBoundaryTrailingWrapper(char ch)
+    {
+        return char.IsWhiteSpace(ch) || ch is '”' or '’' or '」' or '』' or '》' or '）' or '"' or '\'';
+    }
+
     private static int WordStartBefore(string text, int position)
     {
         var i = position - 1;
@@ -88,23 +116,37 @@ public static class SentenceBoundaryScanner
         return i + 1;
     }
 
+    /// <summary>
+    /// Counts word-equivalent units in [start, end). Space-delimited Latin tokens count
+    /// as 1 unit each (preserving exact English behavior), while every 2 CJK ideographs
+    /// count as 1 unit so CJK clauses meet the same sentence length thresholds.
+    /// </summary>
     internal static int CountWords(string text, int start, int end)
     {
-        var count = 0;
-        var inWord = false;
-        for (var i = start; i < end && i < text.Length; i++)
+        var latinWords = 0;
+        var cjkChars = 0;
+        var inLatinWord = false;
+        var limit = Math.Min(end, text.Length);
+
+        for (var i = start; i < limit; i++)
         {
-            if (char.IsWhiteSpace(text[i]))
+            var ch = text[i];
+            if (UtteranceCompletenessAnalyzer.IsCjkChar(ch))
             {
-                inWord = false;
+                inLatinWord = false;
+                cjkChars++;
             }
-            else if (!inWord)
+            else if (char.IsWhiteSpace(ch) || ch is '。' or '，' or '！' or '？' or '、' or '；' or '：')
             {
-                inWord = true;
-                count++;
+                inLatinWord = false;
+            }
+            else if (!inLatinWord)
+            {
+                inLatinWord = true;
+                latinWords++;
             }
         }
 
-        return count;
+        return latinWords + (cjkChars / 2);
     }
 }

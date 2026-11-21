@@ -20,7 +20,7 @@ public sealed class SubtitleHistoryStoreTests
     [TestMethod]
     public async Task LoadLatestAsync_MaterializesTranslationForCurrentSourceRevision()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-history-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-history-");
         var store = new SubtitleHistoryStore(directory.FullName);
         var date = new DateOnly(2026, 7, 14);
         var source = Item(1, "Hello") with
@@ -52,7 +52,7 @@ public sealed class SubtitleHistoryStoreTests
     [TestMethod]
     public async Task LoadLatestAsync_IgnoresStaleTranslationAndCorruptTranslationEvent()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-history-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-history-");
         var store = new SubtitleHistoryStore(directory.FullName);
         var date = new DateOnly(2026, 7, 14);
         var first = Item(1, "Hello") with { UtteranceGroupId = "session:1", Revision = 1 };
@@ -89,7 +89,7 @@ public sealed class SubtitleHistoryStoreTests
     [TestMethod]
     public async Task TranslationStatus_DoesNotOverwriteSuccessfulTranslation()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-history-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-history-");
         var store = new SubtitleHistoryStore(directory.FullName);
         var date = new DateOnly(2026, 7, 14);
         await store.AppendAsync(Item(1, "Hello") with { UtteranceGroupId = "session:1" }, date);
@@ -127,7 +127,7 @@ public sealed class SubtitleHistoryStoreTests
     [TestMethod]
     public async Task AppendAsync_WritesSubtitleAsJsonLine()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-subtitles-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-subtitles-");
         var store = new SubtitleHistoryStore(directory.FullName);
 
         var generatedAt = new DateTimeOffset(2026, 7, 7, 9, 8, 7, TimeSpan.FromHours(8));
@@ -154,7 +154,7 @@ public sealed class SubtitleHistoryStoreTests
     [TestMethod]
     public async Task LoadLatestAsync_MaterializesNewestAppendOnlyRevision()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-subtitles-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-subtitles-");
         var store = new SubtitleHistoryStore(directory.FullName);
         var date = new DateOnly(2026, 7, 14);
         var first = HistoryItem(1, "Welcome to the show", "utt-000001");
@@ -178,7 +178,7 @@ public sealed class SubtitleHistoryStoreTests
     [TestMethod]
     public async Task LoadLatestAsync_DoesNotReplaceSameSequenceFromAnotherSessionGroup()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-subtitles-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-subtitles-");
         var store = new SubtitleHistoryStore(directory.FullName);
         var date = new DateOnly(2026, 7, 14);
         var previousSession = HistoryItem(1, "previous session", "session-a-utt-000001");
@@ -198,6 +198,29 @@ public sealed class SubtitleHistoryStoreTests
         Assert.AreEqual(2, latest.Count);
         Assert.AreEqual("previous session", latest[0].SourceText);
         Assert.AreEqual("current session", latest[1].SourceText);
+    }
+
+    [TestMethod]
+    public async Task ListAvailableDates_ReturnsValidDatesDescending()
+    {
+        using var directory = TempDirectoryScope.Create("streamtranslator-subtitles-");
+        var store = new SubtitleHistoryStore(directory.FullName);
+
+        await store.AppendAsync(Item(1, "older"), new DateOnly(2026, 11, 18));
+        await store.AppendAsync(Item(1, "newest"), new DateOnly(2026, 11, 21));
+        await store.AppendAsync(Item(1, "middle"), new DateOnly(2026, 11, 19));
+        await File.WriteAllTextAsync(Path.Combine(directory.FullName, "not-a-date.jsonl"), "");
+
+        var dates = store.ListAvailableDates();
+
+        CollectionAssert.AreEqual(
+            new[]
+            {
+                new DateOnly(2026, 11, 21),
+                new DateOnly(2026, 11, 19),
+                new DateOnly(2026, 11, 18)
+            },
+            dates.ToArray());
     }
 
     private static SubtitleItem HistoryItem(long sequence, string text, string groupId)

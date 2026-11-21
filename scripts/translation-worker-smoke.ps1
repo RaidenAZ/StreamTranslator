@@ -4,14 +4,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$translationWorker = Join-Path $PackageRoot "worker\translation_worker.exe"
-$asrWorker = Join-Path $PackageRoot "worker\asr_worker.exe"
-if (-not (Test-Path $translationWorker)) {
-    throw "translation_worker.exe was not found at $translationWorker"
+function Resolve-WorkerExe([string]$Name) {
+    $onedir = Join-Path $PackageRoot "worker\$Name\$Name.exe"
+    if (Test-Path $onedir) { return $onedir }
+    $onefile = Join-Path $PackageRoot "worker\$Name.exe"
+    if (Test-Path $onefile) { return $onefile }
+    throw "$Name.exe was not found at $onedir or $onefile"
 }
-if (-not (Test-Path $asrWorker)) {
-    throw "asr_worker.exe was not found at $asrWorker"
-}
+
+$translationWorker = Resolve-WorkerExe "translation_worker"
+$asrWorker = Resolve-WorkerExe "asr_worker"
 
 $translationInput = @(
     '{"id":"cfg-smoke","type":"configure","profile":{"profileId":"9a7a57da-5c95-4e44-9e3b-54795ae90998","baseUrl":"http://127.0.0.1:8000/v1","model":"smoke-model","apiKey":"","requestCompatibility":"Standard","customExtraBody":{},"timeoutMs":10000,"maxConcurrency":2},"promptVersion":"translation-v1"}',

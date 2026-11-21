@@ -1,18 +1,20 @@
+using System.Text;
+
 namespace StreamTranslator.Core.Subtitles;
 
 /// <summary>
-/// Buffers ASR output across hardMax-cut boundaries and emits semantically complete
-/// sentence units for translation and history recording.
+/// Buffers ASR output across hardMax / incomplete softMax cut boundaries and emits
+/// semantically complete sentence units for translation and history recording.
 ///
 /// Flush rules (priority order):
-///   1. CutReason != HardMax  →  immediate flush (natural VAD boundary or revision).
+///   1. CutReason is Silence or a semantically complete SoftMax  →  immediate flush.
 ///   2. Sentence boundary found in accumulated text  →  flush up to the boundary,
 ///      subject to seam validation (see IsValidBoundaryAtSeam). A boundary that falls
-///      exactly at the join point between two HardMax segments is a candidate for an
+///      exactly at the join point between two forced-cut segments is a candidate for an
 ///      ASR artifact period; it is only accepted when the sentence before the seam
-///      contains ≥ MinSentenceWordsAtHardMaxSeam words.
+///      contains ≥ MinSentenceWordsAtHardMaxSeam word-equivalent units.
 ///   3. Combined text length exceeds ForceFlushThreshold AND more than one item is
-///      buffered  →  force flush. A single HardMax item never force-flushes on its own;
+///      buffered  →  force flush. A single forced-cut item never force-flushes on its own;
 ///      it always waits for the next segment so the two can be evaluated together.
 ///
 /// Thread-safety: all public methods must be called from the same thread (UI / dispatch).
@@ -23,7 +25,7 @@ public sealed class TextSentenceAccumulator
 
     /// <summary>
     /// Minimum word count required for a sentence boundary that falls exactly at the
-    /// seam between two HardMax buffer items. ASR models commonly append a closing period
+    /// seam between two forced-cut buffer items. ASR models commonly append a closing period
     /// when audio is cut mid-sentence; a short sentence at a seam is likely an artifact.
     /// Boundaries with fewer words than this threshold are demoted to "no boundary".
     /// </summary>
@@ -31,7 +33,7 @@ public sealed class TextSentenceAccumulator
 
     /// <summary>
     /// Character tolerance when checking whether a boundary position coincides with a
-    /// HardMax seam. Accounts for minor whitespace variation in the combined text.
+    /// forced-cut seam. Accounts for minor whitespace variation in the combined text.
     /// </summary>
     private const int SeamBoundaryTolerance = 1;
 
@@ -61,54 +63,69 @@ public sealed class TextSentenceAccumulator
             return;
         }
 
-        _buffer.Add(item);
-
         // Revision items bypass accumulation and are emitted directly so the
         // history revision mechanism stays immediate and unaffected.
         var isRevision = string.Equals(item.Type, "subtitle_revision", StringComparison.Ordinal);
         if (isRevision)
         {
-            _buffer.RemoveAt(_buffer.Count - 1);
             SentenceUnitReady?.Invoke(item);   // pass through as-is, no Type override
             return;
         }
 
-        // Non-hardMax cuts (Silence, SoftMax): flush immediately.
+        // If Layer B2 left-context alignment identified a truncated boundary stub on the
+        // previous buffered item (e.g. "The free start." -> next item begins with "starter pack"),
+        // cleanly trim the stub from the buffered item before joining.
+        if (_buffer.Count > 0 && item.PreviousTailTrimLength > 0)
+        {
+            var prev = _buffer[^1];
+            var prevText = prev.SourceText;
+            if (item.PreviousTailTrimLength < prevText.Length)
+            {
+                var trimmedPrev = prevText[..^item.PreviousTailTrimLength].TrimEnd();
+                if (trimmedPrev.Length > 0)
+                {
+                    _buffer[^1] = prev with { SourceText = trimmedPrev };
+                }
+            }
+        }
+
+        _buffer.Add(item);
+
+        // Non-hardMax cuts flush immediately unless SoftMax cut an incomplete mid-sentence clause.
         var isHardMax = string.Equals(item.CutReason, "HardMax", StringComparison.Ordinal);
-        if (!isHardMax)
+        var isIncompleteSoftMax = string.Equals(item.CutReason, "SoftMax", StringComparison.Ordinal) &&
+                                  UtteranceCompletenessAnalyzer.Analyze(item.SourceText).IsIncomplete;
+        if (!isHardMax && !isIncompleteSoftMax)
         {
             FlushAll();
             return;
         }
 
-        var combined = BuildCombinedText();
+        var combined = BuildCombinedText(out var seamPositions, out var itemEndOffsets);
 
         // Check for a sentence boundary in the accumulated text.
         var boundary = SentenceBoundaryScanner.FindLastBoundary(combined);
 
         // Validate seam boundaries: a boundary that lands exactly at the join point
-        // between two HardMax items may be caused by an ASR artifact period. Require
+        // between two forced-cut items may be caused by an ASR artifact period. Require
         // a higher word count to accept it.
-        if (boundary > 0)
+        if (boundary > 0 && !IsValidBoundaryAtSeam(boundary, combined, seamPositions))
         {
-            var seamPositions = ComputeHardMaxSeamPositions();
-            if (!IsValidBoundaryAtSeam(boundary, combined, seamPositions))
-                boundary = -1;
+            boundary = -1;
         }
 
         if (boundary > 0)
         {
             var sentenceText = combined[..boundary].TrimEnd();
             var remainderText = combined[boundary..].TrimStart();
-            FlushUpTo(sentenceText);
+            FlushUpTo(sentenceText, itemEndOffsets);
             RebuildBufferFromRemainder(remainderText);
             return;
         }
 
         // Force flush when the buffer has grown too large.
-        // A single HardMax item never triggers force-flush on its own — it must wait
-        // for at least one more segment so the pair can be evaluated together. This
-        // prevents a long single segment from bypassing accumulation entirely.
+        // A single forced-cut item never triggers force-flush on its own — it must wait
+        // for at least one more segment so the pair can be evaluated together.
         if (_buffer.Count > 1 && combined.Length >= ForceFlushThreshold)
         {
             FlushAll();
@@ -129,40 +146,69 @@ public sealed class TextSentenceAccumulator
     // ──────────────────────────────────────────────────────────────────────────
     // Private helpers
 
-    private string BuildCombinedText()
+    private string BuildCombinedText(out int[] forcedSeamPositions, out int[] itemEndOffsets)
     {
-        return string.Join(" ", _buffer.Select(item => item.SourceText.Trim()));
+        var sb = new StringBuilder();
+        var seams = new List<int>();
+        itemEndOffsets = new int[_buffer.Count];
+
+        for (var i = 0; i < _buffer.Count; i++)
+        {
+            var part = _buffer[i].SourceText.Trim();
+            if (i > 0 && sb.Length > 0 && part.Length > 0 && NeedsSeparator(sb[^1], part[0]))
+            {
+                sb.Append(' ');
+            }
+
+            if (i > 0 && IsForcedCut(_buffer[i - 1].CutReason))
+            {
+                seams.Add(sb.Length);
+            }
+
+            sb.Append(part);
+            itemEndOffsets[i] = sb.Length;
+        }
+
+        forcedSeamPositions = [.. seams];
+        return sb.ToString();
     }
 
-    /// <summary>
-    /// Returns the character offsets in the combined text where each HardMax item ends
-    /// and the next item begins (i.e. the seam positions). Only seams preceded by a
-    /// HardMax item are included, as those are the candidates for artifact periods.
-    /// </summary>
-    private int[] ComputeHardMaxSeamPositions()
+    private static bool IsForcedCut(string? cutReason)
     {
-        var positions = new List<int>();
-        var offset = 0;
-        for (var i = 0; i < _buffer.Count - 1; i++)
+        return string.Equals(cutReason, "HardMax", StringComparison.Ordinal) ||
+               string.Equals(cutReason, "SoftMax", StringComparison.Ordinal);
+    }
+
+    private static bool NeedsSeparator(char left, char right)
+    {
+        if (char.IsWhiteSpace(left) || char.IsWhiteSpace(right))
         {
-            offset += _buffer[i].SourceText.Trim().Length + 1; // +1 = separator space
-            if (string.Equals(_buffer[i].CutReason, "HardMax", StringComparison.Ordinal))
-                positions.Add(offset);
+            return false;
         }
-        return [..positions];
+
+        if (UtteranceCompletenessAnalyzer.IsCjkChar(left) ||
+            UtteranceCompletenessAnalyzer.IsCjkChar(right) ||
+            left is '。' or '，' or '！' or '？' or '、' or '；' or '：' or '”' or '」')
+        {
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>
     /// Returns true if <paramref name="boundary"/> is a valid flush point.
     /// A boundary that falls within <see cref="SeamBoundaryTolerance"/> characters of
-    /// a HardMax seam is treated as suspicious and must meet the higher word-count
+    /// a forced-cut seam is treated as suspicious and must meet the higher word-count
     /// requirement <see cref="MinSentenceWordsAtHardMaxSeam"/> to be accepted.
     /// </summary>
     private static bool IsValidBoundaryAtSeam(int boundary, string combined, int[] seamPositions)
     {
         var isAtSeam = seamPositions.Any(seam => Math.Abs(seam - boundary) <= SeamBoundaryTolerance);
         if (!isAtSeam)
+        {
             return true;
+        }
 
         var sentenceText = combined[..boundary].TrimEnd();
         return SentenceBoundaryScanner.CountWords(sentenceText, 0, sentenceText.Length)
@@ -176,23 +222,17 @@ public sealed class TextSentenceAccumulator
             return;
         }
 
-        var combinedText = BuildCombinedText();
+        var combinedText = BuildCombinedText(out _, out _);
         EmitUnit(combinedText, _buffer[0], _buffer[^1]);
         _buffer.Clear();
     }
 
-    private void FlushUpTo(string sentenceText)
+    private void FlushUpTo(string sentenceText, int[] itemEndOffsets)
     {
-        // Determine the last buffer item whose text is fully covered by sentenceText.
-        // We attribute the sentence to all buffer items up to (and including) the one
-        // that tips the combined length past sentenceText.Length.
-        var accumulated = 0;
         var lastConsumedIndex = _buffer.Count - 1;
-        for (var i = 0; i < _buffer.Count; i++)
+        for (var i = 0; i < itemEndOffsets.Length; i++)
         {
-            var contribution = (i == 0 ? 0 : 1) + _buffer[i].SourceText.Trim().Length;
-            accumulated += contribution;
-            if (accumulated >= sentenceText.Length)
+            if (itemEndOffsets[i] >= sentenceText.Length)
             {
                 lastConsumedIndex = i;
                 break;
@@ -203,7 +243,6 @@ public sealed class TextSentenceAccumulator
         var last = _buffer[lastConsumedIndex];
         EmitUnit(sentenceText, first, last);
 
-        // Remove consumed items.
         _buffer.RemoveRange(0, lastConsumedIndex + 1);
     }
 
@@ -214,8 +253,6 @@ public sealed class TextSentenceAccumulator
             return;
         }
 
-        // Update the first remaining buffer item's SourceText to the remainder so
-        // the next cycle starts with clean text that matches what was accumulated.
         _buffer[0] = _buffer[0] with { SourceText = remainderText };
     }
 
@@ -235,7 +272,9 @@ public sealed class TextSentenceAccumulator
             GeneratedAt = last.GeneratedAt,
             CutReason = null,
             PreviousSourceTail = tail,
-            TranslatedText = null
+            TranslatedText = null,
+            ReplacesGroupSourceText = false,
+            PreviousTailTrimLength = 0
         };
 
         SentenceUnitReady?.Invoke(unit);

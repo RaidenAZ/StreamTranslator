@@ -14,6 +14,16 @@ public sealed record AppSettings
     public HotkeySettings Hotkeys { get; init; } = new();
     public DiagnosticsSettings Diagnostics { get; init; } = new();
     public AppearanceSettings Appearance { get; init; } = new();
+    public TraySettings Tray { get; init; } = new();
+}
+
+public sealed record TraySettings
+{
+    /// <summary>点击主窗口关闭按钮时隐藏到系统托盘而不退出程序。</summary>
+    public bool CloseToTray { get; init; }
+
+    /// <summary>最小化主窗口时隐藏任务栏图标并收入系统托盘。</summary>
+    public bool MinimizeToTray { get; init; }
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<AppThemeMode>))]
@@ -42,8 +52,8 @@ public sealed record VadSettings
     public int StartSpeechMs { get; init; } = 96;
     public int PreRollMs { get; init; } = 192;
     public int MinSegmentMs { get; init; } = 900;
-    public int SoftBreakSilenceMs { get; init; } = 128;
-    public int SoftMaxSegmentMs { get; init; } = 4000;
+    public int SoftBreakSilenceMs { get; init; } = 192;
+    public int SoftMaxSegmentMs { get; init; } = 5500;
     public int HardMaxSegmentMs { get; init; } = 10000;
     public int OverlapMs { get; init; } = 600;
 }
@@ -141,12 +151,38 @@ public static class AsrProviderDefaults
     public const string DeepSeekAsrEndpoint = "https://api.deepseek.com/v1/tools/asr";
 }
 
+[JsonConverter(typeof(JsonStringEnumConverter<SubtitleDisplayMode>))]
+public enum SubtitleDisplayMode
+{
+    /// <summary>双语，译文为主焦点（较大、高亮），原文为辅。</summary>
+    BilingualTranslationFirst,
+    /// <summary>双语，原文为主焦点（较大、高亮），译文在下方。</summary>
+    BilingualSourceFirst,
+    /// <summary>仅显示译文（无译文或未开启翻译时自动回退显示原文）。</summary>
+    TranslationOnly,
+    /// <summary>仅显示原文。</summary>
+    SourceOnly
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<SubtitleOverlayTheme>))]
+public enum SubtitleOverlayTheme
+{
+    /// <summary>影院暗玻璃：深蓝灰半透明底板 + 细微顶部高光。</summary>
+    CinemaGlass,
+    /// <summary>亮底高对比：深炭底板 + 强轮廓阴影，适配白底 PPT 与文档。</summary>
+    HighContrast,
+    /// <summary>极简浮字：超轻或透明底板 + 清晰文字外描边阴影，适配全屏视频/游戏。</summary>
+    MinimalFloating
+}
+
 public sealed record SubtitleWindowSettings
 {
     public double FontSize { get; init; } = 18;
     public int MaxSubtitleItems { get; init; } = 2;
     public double Opacity { get; init; } = 0.72;
     public bool ClickThroughWhenLocked { get; init; } = true;
+    public SubtitleDisplayMode DisplayMode { get; init; } = SubtitleDisplayMode.BilingualSourceFirst;
+    public SubtitleOverlayTheme Theme { get; init; } = SubtitleOverlayTheme.CinemaGlass;
     // 悬浮窗上次的位置与宽度；null 表示尚未记录，首次显示居中。
     public double? Left { get; init; }
     public double? Top { get; init; }

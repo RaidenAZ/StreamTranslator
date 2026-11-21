@@ -529,7 +529,7 @@ public sealed class TranslationSessionTests
     [TestMethod]
     public async Task SuccessfulResult_IsAppendedAndMaterializedThroughHistoryStore()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-translation-history-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-translation-history-");
         var date = DateOnly.FromDateTime(DateTime.Now);
         var history = new SubtitleHistoryStore(directory.FullName);
         var source = Source(1, 1, "Hello");
@@ -560,7 +560,7 @@ public sealed class TranslationSessionTests
     [TestMethod]
     public async Task StaleResult_IsAppendedButNotMaterializedOverLatestRevision()
     {
-        var directory = Directory.CreateTempSubdirectory("streamtranslator-stale-translation-history-");
+        using var directory = TempDirectoryScope.Create("streamtranslator-stale-translation-history-");
         var history = new SubtitleHistoryStore(directory.FullName);
         var generatedAt = DateTimeOffset.Now;
         var date = DateOnly.FromDateTime(generatedAt.Date);

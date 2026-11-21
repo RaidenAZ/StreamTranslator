@@ -121,6 +121,54 @@ def test_transcribe_whisper_converts_auto_language_to_none():
 
     # "auto" must become None for the standard Whisper API
     assert transcriptions.kwargs.get("language") is None
+    assert "prompt" not in transcriptions.kwargs
+
+
+def test_transcribe_whisper_forwards_prompt_when_provided():
+    transcriptions = FakeTranscriptions()
+    worker = AsrWorker(config_whisper(api_key="key"), client=FakeWhisperClient(transcriptions))
+
+    worker.transcribe(
+        {
+            "id": "seg-2",
+            "audioBase64": "UklGRg==",
+            "audioFormat": "wav",
+            "language": "auto",
+            "prompt": "Previous sentence context for terminology.",
+        }
+    )
+
+    assert transcriptions.kwargs.get("prompt") == "Previous sentence context for terminology."
+
+
+def test_transcribe_mimo_and_deepseek_ignore_prompt_payload():
+    completions = FakeCompletions()
+    mimo_worker = AsrWorker(config(api_key="key"), client=FakeClient(completions))
+    mimo_worker.transcribe(
+        {
+            "id": "seg-1",
+            "audioBase64": "UklGRg==",
+            "audioFormat": "wav",
+            "language": "auto",
+            "prompt": "Should not be forwarded to MiMo",
+        }
+    )
+    assert "prompt" not in completions.kwargs
+    assert len(completions.kwargs["messages"]) == 1
+    assert len(completions.kwargs["messages"][0]["content"]) == 1
+
+    httpx_client = FakeHttpxClient(200, {"text": "ok", "duration_ms": 1000})
+    ds_worker = AsrWorker(config_deepseek(api_key="ds-key"), client=httpx_client)
+    ds_worker.transcribe(
+        {
+            "id": "seg-2",
+            "audioBase64": base64.b64encode(wav_bytes(seconds=1)).decode("ascii"),
+            "audioFormat": "wav",
+            "language": "auto",
+            "prompt": "Should not be forwarded to DeepSeek",
+        }
+    )
+    assert "prompt" not in httpx_client.captured
 
 
 def test_transcribe_deepseek_posts_multipart_wav_to_tools_asr():

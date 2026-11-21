@@ -52,6 +52,19 @@ public sealed class SileroOnnxVadEngineTests
         Assert.ThrowsException<ArgumentException>(() => engine.Analyze(new short[160], 16000));
     }
 
+    [TestMethod]
+    public void EvaluateHysteresis_HoldsSpeechAboveExitThresholdAndExitsBelow()
+    {
+        // Inactive: requires enterThreshold (0.50) to enter speech.
+        Assert.IsFalse(SileroOnnxVadEngine.EvaluateHysteresis(false, 0.45f, 0.50f, 0.34f));
+        Assert.IsTrue(SileroOnnxVadEngine.EvaluateHysteresis(false, 0.50f, 0.50f, 0.34f));
+
+        // Active: holds speech across soft endings [0.34, 0.50), exits only below 0.34.
+        Assert.IsTrue(SileroOnnxVadEngine.EvaluateHysteresis(true, 0.38f, 0.50f, 0.34f));
+        Assert.IsTrue(SileroOnnxVadEngine.EvaluateHysteresis(true, 0.34f, 0.50f, 0.34f));
+        Assert.IsFalse(SileroOnnxVadEngine.EvaluateHysteresis(true, 0.33f, 0.50f, 0.34f));
+    }
+
     private static string ModelPath()
     {
         return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "models", "silero_vad.onnx"));

@@ -57,6 +57,26 @@ public sealed class SubtitleRevisionCoordinatorTests
         Assert.AreEqual(1, fourth.Item.Revision);
     }
 
+    [TestMethod]
+    public void Publish_FullUtteranceReplacementReplacesSourceTextInsteadOfAppending()
+    {
+        var coordinator = new SubtitleRevisionCoordinator();
+
+        var first = coordinator.Publish(Item(1, "Because of the", "utt-000001"));
+        var second = coordinator.Publish(
+            Item(2, "Because of the new architecture, latency drops by half.", "utt-000001") with
+            {
+                ReplacesGroupSourceText = true
+            });
+
+        Assert.AreEqual(SubtitlePublicationKind.Append, first.Kind);
+        Assert.AreEqual(SubtitlePublicationKind.Revise, second.Kind);
+        Assert.AreEqual("subtitle_revision", second.Item.Type);
+        Assert.AreEqual(2, second.Item.Revision);
+        Assert.AreEqual("Because of the new architecture, latency drops by half.", second.Item.SourceText);
+        CollectionAssert.AreEqual(new long[] { 1, 2 }, second.Item.ReplacesSequences);
+    }
+
     private static SubtitleItem Item(long sequence, string text, string groupId)
     {
         return new SubtitleItem
