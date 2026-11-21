@@ -74,7 +74,14 @@ class AsrBackend(ABC):
     """Abstract base for ASR provider-specific transcription logic."""
 
     @abstractmethod
-    def transcribe(self, audio_base64: str, audio_format: str, language: str, client: Any) -> str:
+    def transcribe(
+        self,
+        audio_base64: str,
+        audio_format: str,
+        language: str,
+        client: Any,
+        prompt: str | None = None,
+    ) -> str:
         """Transcribe audio and return the recognized text."""
 
 
@@ -88,7 +95,15 @@ class MimoBackend(AsrBackend):
     def __init__(self, config: WorkerConfig) -> None:
         self._config = config
 
-    def transcribe(self, audio_base64: str, audio_format: str, language: str, client: Any) -> str:
+    def transcribe(
+        self,
+        audio_base64: str,
+        audio_format: str,
+        language: str,
+        client: Any,
+        prompt: str | None = None,
+    ) -> str:
+        del prompt  # MiMo-V2.5-ASR strictly supports single input_audio messages.
         if audio_format not in self._SUPPORTED_FORMATS:
             raise ValueError(f"audioFormat must be one of {sorted(self._SUPPORTED_FORMATS)}")
         if language not in self._SUPPORTED_LANGUAGES:
@@ -124,20 +139,32 @@ class MimoBackend(AsrBackend):
 class WhisperBackend(AsrBackend):
     """Whisper-compatible ASR: uses audio.transcriptions with a multipart file upload."""
 
+    _MAX_PROMPT_CHARS = 400
+
     def __init__(self, config: WorkerConfig) -> None:
         self._config = config
 
-    def transcribe(self, audio_base64: str, audio_format: str, language: str, client: Any) -> str:
+    def transcribe(
+        self,
+        audio_base64: str,
+        audio_format: str,
+        language: str,
+        client: Any,
+        prompt: str | None = None,
+    ) -> str:
         audio_bytes = base64.b64decode(audio_base64)
         audio_file = io.BytesIO(audio_bytes)
         # The OpenAI library inspects the name attribute for MIME-type detection.
         audio_file.name = f"audio.{audio_format}"
         lang = language if language != "auto" else None
-        response = client.audio.transcriptions.create(
-            model=self._config.model,
-            file=audio_file,
-            language=lang,
-        )
+        kwargs: dict[str, Any] = {
+            "model": self._config.model,
+            "file": audio_file,
+            "language": lang,
+        }
+        if prompt and prompt.strip():
+            kwargs["prompt"] = prompt.strip()[-self._MAX_PROMPT_CHARS:]
+        response = client.audio.transcriptions.create(**kwargs)
         return response.text if hasattr(response, "text") else str(response)
 
 
@@ -155,7 +182,15 @@ class DeepSeekToolsBackend(AsrBackend):
     def __init__(self, config: WorkerConfig) -> None:
         self._config = config
 
-    def transcribe(self, audio_base64: str, audio_format: str, language: str, client: Any) -> str:
+    def transcribe(
+        self,
+        audio_base64: str,
+        audio_format: str,
+        language: str,
+        client: Any,
+        prompt: str | None = None,
+    ) -> str:
+        del prompt  # DeepSeek /v1/tools/asr accepts only multipart file upload.
         if audio_format not in self._SUPPORTED_FORMATS:
             raise ValueError("DeepSeek ASR 仅支持 WAV（16 位 PCM），请确认音频格式。")
         audio_bytes = base64.b64decode(audio_base64)
@@ -247,12 +282,20 @@ class AsrWorker:
         audio_base64 = request.get("audioBase64") or request.get("audio_base64")
         audio_format = request.get("audioFormat") or request.get("audio_format") or "wav"
         language = request.get("language") or "auto"
+        raw_prompt = request.get("prompt")
+        prompt = raw_prompt.strip() if isinstance(raw_prompt, str) and raw_prompt.strip() else None
 
         if not audio_base64:
             raise ValueError("audioBase64 is required")
         self.health_check()
 
-        text = self._backend.transcribe(audio_base64, audio_format, language, self._get_client())
+        text = self._backend.transcribe(
+            audio_base64,
+            audio_format,
+            language,
+            self._get_client(),
+            prompt=prompt,
+        )
         latency_ms = int((time.perf_counter() - started) * 1000)
         return {
             "id": request["id"],

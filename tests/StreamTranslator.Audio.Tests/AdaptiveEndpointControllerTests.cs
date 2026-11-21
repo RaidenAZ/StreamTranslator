@@ -193,6 +193,58 @@ public sealed class AdaptiveEndpointControllerTests
         Assert.AreEqual(350, controller.EffectiveEndSilenceMs);
     }
 
+    [TestMethod]
+    public void ObserveSegmentCut_ContinuousFastSpeechHardMaxLowersEndpoint()
+    {
+        var controller = new AdaptiveEndpointController(VadEndpointMode.Balanced, fixedEndSilenceMs: 400);
+
+        // Feed 4 seconds of continuous high-density speech (100% speech ratio).
+        for (var t = 0; t < 4000; t += 100)
+        {
+            controller.ObserveVad(t, 100, isSpeech: true);
+        }
+
+        var cutObs = controller.ObserveSegmentCut(4000, SpeechSegmentCutReason.HardMax);
+
+        Assert.IsNotNull(cutObs);
+        Assert.IsNotNull(cutObs.Adjustment);
+        Assert.AreEqual(EndpointAdjustmentReason.ContinuousSpeech, cutObs.Adjustment.Reason);
+        Assert.AreEqual(350, controller.EffectiveEndSilenceMs);
+        Assert.AreEqual(EndpointEvaluationSignal.ContinuousSpeech, cutObs.Evaluation?.Signal);
+    }
+
+    [TestMethod]
+    public void ObserveVad_DynamicQuickResumeCeilingTracksEffectiveEndpoint()
+    {
+        // LowLatency starts at 250ms -> dynamic ceiling = 500ms.
+        var controller = new AdaptiveEndpointController(VadEndpointMode.LowLatency, fixedEndSilenceMs: 250);
+        Assert.AreEqual(500, controller.QuickResumeCeilingMs);
+
+        controller.ObserveVad(startMs: 0, durationMs: 100, isSpeech: true);
+        // 650ms total pause exceeds the 500ms fast-speech ceiling -> must NOT merge as quick resume.
+        var observation = QuickResume(controller, silenceStartMs: 100, resumeStartMs: 750);
+
+        Assert.IsNull(observation.QuickResume);
+    }
+
+    [TestMethod]
+    public void ObserveIncompleteUtterance_RepeatedMidSentencePausesRaiseEndpoint()
+    {
+        var controller = new AdaptiveEndpointController(VadEndpointMode.Balanced, fixedEndSilenceMs: 400);
+
+        var first = controller.ObserveIncompleteUtterance(timestampMs: 2000, gapToNextSpeechMs: 950);
+        var second = controller.ObserveIncompleteUtterance(timestampMs: 4500, gapToNextSpeechMs: 1050);
+
+        Assert.IsNotNull(first);
+        Assert.IsNull(first.Adjustment);
+        Assert.AreEqual(EndpointEvaluationDecision.WaitingForQuickResumes, first.Evaluation?.Decision);
+
+        Assert.IsNotNull(second);
+        Assert.IsNotNull(second.Adjustment);
+        Assert.AreEqual(EndpointAdjustmentReason.IncompleteUtterance, second.Adjustment.Reason);
+        Assert.AreEqual(450, controller.EffectiveEndSilenceMs);
+    }
+
     private static AdaptiveEndpointObservation QuickResume(
         AdaptiveEndpointController controller,
         long silenceStartMs,

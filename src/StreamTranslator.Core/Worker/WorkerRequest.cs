@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace StreamTranslator.Core.Worker;
 
 public sealed record WorkerRequest
@@ -11,6 +13,8 @@ public sealed record WorkerRequest
     public int? SampleRate { get; init; }
     public string? Language { get; init; }
     public string? AudioBase64 { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Prompt { get; init; }
 
     public static WorkerRequest Ping(string id)
     {
@@ -29,7 +33,8 @@ public sealed record WorkerRequest
         long endMs,
         int sampleRate,
         string language,
-        string audioBase64)
+        string audioBase64,
+        string? prompt = null)
     {
         return new WorkerRequest
         {
@@ -41,7 +46,8 @@ public sealed record WorkerRequest
             AudioFormat = "wav",
             SampleRate = sampleRate,
             Language = language,
-            AudioBase64 = audioBase64
+            AudioBase64 = audioBase64,
+            Prompt = string.IsNullOrWhiteSpace(prompt) ? null : prompt.Trim()
         };
     }
 }

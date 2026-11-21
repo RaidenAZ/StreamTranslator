@@ -4,9 +4,17 @@ namespace StreamTranslator.Audio.Segmentation;
 
 public sealed class AdaptiveEndpointController
 {
+    private const long SpeechDensityWindowMs = 10_000;
+    private const int MinDensityObservationMs = 3_000;
+    private const double ContinuousSpeechDensityThreshold = 0.78;
+    private const double FastPaceStableDownThreshold = 0.82;
+
     private readonly int _startSpeechMs;
     private readonly List<PauseSample> _pauseSamples = [];
     private readonly Queue<long> _adjustmentTimes = new();
+    private readonly Queue<DensitySlice> _densityWindow = new();
+    private long _densityTotalMs;
+    private long _densitySpeechMs;
     private PendingCut? _pendingCut;
     private long? _silenceStartedAtMs;
     private long? _pendingSpeechStartedAtMs;
@@ -14,6 +22,7 @@ public sealed class AdaptiveEndpointController
     private bool _speechConfirmed;
     private bool _idleInitialReported;
     private int _consecutiveQuickResumes;
+    private int _consecutiveForcedCuts;
     private long? _lastAdjustmentAtMs;
     private long? _lastConfirmedSpeechAtMs;
     private long? _lastIdleEvaluationAtMs;
@@ -41,6 +50,16 @@ public sealed class AdaptiveEndpointController
     public int MaximumEndSilenceMs { get; }
     public bool IsAdaptive => MinimumEndSilenceMs != MaximumEndSilenceMs;
     public int PauseSampleCount => _pauseSamples.Count;
+    public double RecentSpeechRatio => _densityTotalMs > 0 ? (double)_densitySpeechMs / _densityTotalMs : 0d;
+
+    /// <summary>
+    /// Dynamic quick-resume ceiling linked to the active endpoint so fast speakers
+    /// (lower endpoint) do not spuriously merge distinct utterances, while slower
+    /// speakers retain wider protection against mid-sentence pauses.
+    /// </summary>
+    public int QuickResumeCeilingMs => IsAdaptive
+        ? Math.Clamp(EffectiveEndSilenceMs * 2, 480, 900)
+        : 800;
 
     public event EventHandler<EndpointAdjustment>? EndpointAdjusted;
 
@@ -56,6 +75,9 @@ public sealed class AdaptiveEndpointController
             throw new ArgumentOutOfRangeException(nameof(durationMs));
         }
 
+        var endMs = startMs + durationMs;
+        RecordDensitySlice(endMs, durationMs, isSpeech);
+
         if (!isSpeech)
         {
             _pendingSpeechStartedAtMs = null;
@@ -67,7 +89,7 @@ public sealed class AdaptiveEndpointController
             }
 
             var idleResult = IsAdaptive
-                ? TryHandleIdle(startMs + durationMs)
+                ? TryHandleIdle(endMs)
                 : (Adjustment: null, Evaluation: null);
             return new AdaptiveEndpointObservation(
                 EffectiveEndSilenceMs,
@@ -80,7 +102,7 @@ public sealed class AdaptiveEndpointController
         _lastIdleEvaluationAtMs = null;
         if (_speechConfirmed)
         {
-            _lastConfirmedSpeechAtMs = startMs + durationMs;
+            _lastConfirmedSpeechAtMs = endMs;
             return new AdaptiveEndpointObservation(EffectiveEndSilenceMs, null, null);
         }
 
@@ -95,7 +117,7 @@ public sealed class AdaptiveEndpointController
         _pendingSpeechStartedAtMs = null;
         _pendingSpeechMs = 0;
         _speechConfirmed = true;
-        _lastConfirmedSpeechAtMs = startMs + durationMs;
+        _lastConfirmedSpeechAtMs = endMs;
 
         QuickResumeSignal? quickResume = null;
         EndpointAdjustment? adjustment = null;
@@ -104,10 +126,10 @@ public sealed class AdaptiveEndpointController
         {
             var postCutGapMs = Math.Max(0, confirmedSpeechStartMs - _pendingCut.CutAtMs);
             var completePauseMs = checked(_pendingCut.EndSilenceMs + (int)postCutGapMs);
-            var isQuickResume = completePauseMs <= 800;
+            var isQuickResume = completePauseMs <= QuickResumeCeilingMs;
             if (IsAdaptive)
             {
-                AddPauseSample(completePauseMs, startMs + durationMs, isQuickResume);
+                AddPauseSample(completePauseMs, endMs, isQuickResume);
             }
 
             if (isQuickResume)
@@ -132,19 +154,19 @@ public sealed class AdaptiveEndpointController
                         {
                             var requestedEndSilenceMs = Math.Min(MaximumEndSilenceMs, EffectiveEndSilenceMs + 50);
                             adjustment = TryAdjust(
-                                startMs + durationMs,
+                                endMs,
                                 requestedEndSilenceMs,
                                 EndpointAdjustmentReason.QuickResume,
                                 p75PauseMs,
                                 targetEndSilenceMs);
                             decision = adjustment is not null
                                 ? EndpointEvaluationDecision.Adjusted
-                                : ClassifyBlockedAdjustment(startMs + durationMs, requestedEndSilenceMs);
+                                : ClassifyBlockedAdjustment(endMs, requestedEndSilenceMs);
                         }
                     }
 
                     evaluation = CreateEvaluation(
-                        startMs + durationMs,
+                        endMs,
                         EndpointEvaluationSignal.QuickResume,
                         decision,
                         p75PauseMs,
@@ -153,7 +175,7 @@ public sealed class AdaptiveEndpointController
                 else
                 {
                     evaluation = CreateEvaluation(
-                        startMs + durationMs,
+                        endMs,
                         EndpointEvaluationSignal.QuickResume,
                         EndpointEvaluationDecision.FixedMode,
                         CalculateP75PauseMs(),
@@ -170,9 +192,9 @@ public sealed class AdaptiveEndpointController
         else if (IsAdaptive && _silenceStartedAtMs is not null)
         {
             var pauseMs = checked((int)Math.Max(0, confirmedSpeechStartMs - _silenceStartedAtMs.Value));
-            AddPauseSample(pauseMs, startMs + durationMs, isQuickResume: false);
+            AddPauseSample(pauseMs, endMs, isQuickResume: false);
             _consecutiveQuickResumes = 0;
-            evaluation = EvaluateStablePause(startMs + durationMs, out adjustment);
+            evaluation = EvaluateStablePause(endMs, out adjustment);
         }
 
         _silenceStartedAtMs = null;
@@ -181,15 +203,131 @@ public sealed class AdaptiveEndpointController
 
     public void NotifySegmentCut(long cutAtMs, SpeechSegmentCutReason cutReason)
     {
-        if (cutReason != SpeechSegmentCutReason.Silence)
+        _ = ObserveSegmentCut(cutAtMs, cutReason);
+    }
+
+    public AdaptiveEndpointObservation? ObserveSegmentCut(long cutAtMs, SpeechSegmentCutReason cutReason)
+    {
+        if (cutReason == SpeechSegmentCutReason.Silence)
         {
-            return;
+            _consecutiveForcedCuts = 0;
+            _pendingCut = new PendingCut(cutAtMs, EffectiveEndSilenceMs);
+            _speechConfirmed = false;
+            _pendingSpeechStartedAtMs = null;
+            _pendingSpeechMs = 0;
+            return null;
         }
 
-        _pendingCut = new PendingCut(cutAtMs, EffectiveEndSilenceMs);
-        _speechConfirmed = false;
-        _pendingSpeechStartedAtMs = null;
-        _pendingSpeechMs = 0;
+        _pendingCut = null;
+        if (!IsAdaptive)
+        {
+            return null;
+        }
+
+        _consecutiveQuickResumes = 0;
+        _consecutiveForcedCuts += cutReason == SpeechSegmentCutReason.HardMax ? 2 : 1;
+
+        var isHighDensity = _densityTotalMs >= MinDensityObservationMs &&
+                            RecentSpeechRatio >= ContinuousSpeechDensityThreshold;
+        if (_consecutiveForcedCuts < 2 || (!isHighDensity && cutReason != SpeechSegmentCutReason.HardMax))
+        {
+            return null;
+        }
+
+        var step = cutReason == SpeechSegmentCutReason.HardMax ? 50 : 25;
+        var requested = Math.Max(MinimumEndSilenceMs, EffectiveEndSilenceMs - step);
+        var p75PauseMs = CalculateP75PauseMs();
+        var adjustment = TryAdjust(
+            cutAtMs,
+            requested,
+            EndpointAdjustmentReason.ContinuousSpeech,
+            p75PauseMs,
+            MinimumEndSilenceMs);
+
+        if (adjustment is not null)
+        {
+            _consecutiveForcedCuts = 0;
+        }
+
+        var decision = adjustment is not null
+            ? EndpointEvaluationDecision.Adjusted
+            : ClassifyBlockedAdjustment(cutAtMs, requested);
+        var evaluation = CreateEvaluation(
+            cutAtMs,
+            EndpointEvaluationSignal.ContinuousSpeech,
+            decision,
+            p75PauseMs,
+            MinimumEndSilenceMs);
+
+        return new AdaptiveEndpointObservation(EffectiveEndSilenceMs, null, adjustment, evaluation);
+    }
+
+    /// <summary>
+    /// Layer C1 semantic feedback: called when the previous ASR transcript clearly ended
+    /// mid-sentence (dangling connector or unfinished clause) and speech resumed shortly after.
+    /// Nudges the adaptive endpoint upward even if the pause exceeded the pure acoustic ceiling.
+    /// </summary>
+    public AdaptiveEndpointObservation? ObserveIncompleteUtterance(long timestampMs, int gapToNextSpeechMs)
+    {
+        if (!IsAdaptive || timestampMs < 0 || gapToNextSpeechMs <= 0 || gapToNextSpeechMs > 1600)
+        {
+            return null;
+        }
+
+        AddPauseSample(gapToNextSpeechMs, timestampMs, isQuickResume: true);
+        _consecutiveQuickResumes++;
+        _consecutiveForcedCuts = 0;
+
+        var p75PauseMs = CalculateP75PauseMs();
+        var targetEndSilenceMs = Math.Clamp(p75PauseMs + 50, MinimumEndSilenceMs, MaximumEndSilenceMs);
+        EndpointAdjustment? adjustment = null;
+        EndpointEvaluationDecision decision;
+
+        if (_consecutiveQuickResumes < 2)
+        {
+            decision = EndpointEvaluationDecision.WaitingForQuickResumes;
+        }
+        else
+        {
+            var requested = Math.Min(MaximumEndSilenceMs, EffectiveEndSilenceMs + 50);
+            adjustment = TryAdjust(
+                timestampMs,
+                requested,
+                EndpointAdjustmentReason.IncompleteUtterance,
+                p75PauseMs,
+                targetEndSilenceMs);
+            decision = adjustment is not null
+                ? EndpointEvaluationDecision.Adjusted
+                : ClassifyBlockedAdjustment(timestampMs, requested);
+        }
+
+        var evaluation = CreateEvaluation(
+            timestampMs,
+            EndpointEvaluationSignal.IncompleteUtterance,
+            decision,
+            p75PauseMs,
+            targetEndSilenceMs);
+        return new AdaptiveEndpointObservation(EffectiveEndSilenceMs, null, adjustment, evaluation);
+    }
+
+    private void RecordDensitySlice(long endMs, int durationMs, bool isSpeech)
+    {
+        _densityWindow.Enqueue(new DensitySlice(endMs, durationMs, isSpeech));
+        _densityTotalMs += durationMs;
+        if (isSpeech)
+        {
+            _densitySpeechMs += durationMs;
+        }
+
+        while (_densityWindow.Count > 0 && endMs - _densityWindow.Peek().EndMs > SpeechDensityWindowMs)
+        {
+            var expired = _densityWindow.Dequeue();
+            _densityTotalMs -= expired.DurationMs;
+            if (expired.IsSpeech)
+            {
+                _densitySpeechMs -= expired.DurationMs;
+            }
+        }
     }
 
     private void AddPauseSample(int durationMs, long observedAtMs, bool isQuickResume)
@@ -206,7 +344,15 @@ public sealed class AdaptiveEndpointController
     {
         var p75PauseMs = CalculateP75PauseMs();
         var targetEndSilenceMs = Math.Clamp(p75PauseMs + 50, MinimumEndSilenceMs, MaximumEndSilenceMs);
-        if (_pauseSamples.Count < 6 || _pauseSamples.Any(static sample => sample.IsQuickResume))
+
+        var hasStandardStableWindow = _pauseSamples.Count >= 6 &&
+                                      !_pauseSamples.Any(static sample => sample.IsQuickResume);
+        var hasFastPaceStableWindow = _densityTotalMs >= 4000 &&
+                                      RecentSpeechRatio >= FastPaceStableDownThreshold &&
+                                      _pauseSamples.Count >= 4 &&
+                                      _pauseSamples.Skip(_pauseSamples.Count - 4).All(static sample => !sample.IsQuickResume);
+
+        if (!hasStandardStableWindow && !hasFastPaceStableWindow)
         {
             adjustment = null;
             return CreateEvaluation(
@@ -252,7 +398,11 @@ public sealed class AdaptiveEndpointController
         }
 
         _pauseSamples.Clear();
+        _densityWindow.Clear();
+        _densityTotalMs = 0;
+        _densitySpeechMs = 0;
         _consecutiveQuickResumes = 0;
+        _consecutiveForcedCuts = 0;
         _pendingCut = null;
         if (EffectiveEndSilenceMs == InitialEndSilenceMs)
         {
@@ -423,6 +573,7 @@ public sealed class AdaptiveEndpointController
 
     private sealed record PendingCut(long CutAtMs, int EndSilenceMs);
     private sealed record PauseSample(int DurationMs, long ObservedAtMs, bool IsQuickResume);
+    private readonly record struct DensitySlice(long EndMs, int DurationMs, bool IsSpeech);
 }
 
 public sealed record AdaptiveEndpointObservation(
@@ -446,7 +597,9 @@ public enum EndpointAdjustmentReason
 {
     QuickResume,
     StablePauses,
-    IdleReturn
+    IdleReturn,
+    ContinuousSpeech,
+    IncompleteUtterance
 }
 
 public sealed record EndpointEvaluation(
@@ -465,7 +618,9 @@ public enum EndpointEvaluationSignal
 {
     QuickResume,
     StablePause,
-    Idle
+    Idle,
+    ContinuousSpeech,
+    IncompleteUtterance
 }
 
 public enum EndpointEvaluationDecision

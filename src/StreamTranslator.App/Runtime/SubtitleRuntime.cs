@@ -33,13 +33,20 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     private readonly SubtitleReorderBuffer _reorderBuffer = new(firstSequence: 1);
     private readonly UtteranceGroupTracker _utteranceGroupTracker;
     private readonly SubtitleRevisionCoordinator _revisionCoordinator = new();
+    private readonly SegmentAudioContextBuilder _audioContextBuilder = new();
     private readonly object _subtitleLock = new();
+    private readonly object _audioContextLock = new();
     private readonly object _tasksLock = new();
     private readonly object _captureTaskLock = new();
     private readonly List<Task> _segmentTasks = [];
     private readonly List<DiagnosticSegmentRecord> _diagnosticSegments = [];
     private long _sequence;
     private string _lastFinalText = "";
+    private string _lastStableTranscriptTail = "";
+    private string _previousGroupTranscriptTail = "";
+    private string? _lastStableGroupId;
+    private PreviousSegmentSnapshot? _lastSegmentSnapshot;
+    private CompletedUtteranceSnapshot? _lastCompletedUtterance;
     private StreamWriter? _vadTimelineWriter;
     private StreamWriter? _translationDiagnosticWriter;
     private readonly object _translationDiagnosticLock = new();
@@ -88,6 +95,19 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     {
         _stopping = false;
         _workerRestartCount = 0;
+        _lastSegmentSnapshot = null;
+        lock (_audioContextLock)
+        {
+            _audioContextBuilder.Reset();
+        }
+        lock (_subtitleLock)
+        {
+            _lastFinalText = "";
+            _lastStableTranscriptTail = "";
+            _previousGroupTranscriptTail = "";
+            _lastStableGroupId = null;
+            _lastCompletedUtterance = null;
+        }
         _stopCts = new CancellationTokenSource();
         _history = new SubtitleHistoryStore(Path.Combine(_dataDirectory, "subtitles"));
         _sentenceAccumulator = new TextSentenceAccumulator(_settings.Translation.SentenceAccumulationLimit);
@@ -228,25 +248,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             var endpointObservation = endpointController.ObserveVad(frame.StartMs, frame.DurationMs, decision.IsSpeech);
             if (endpointObservation.Evaluation is { } evaluation)
             {
-                WriteAdaptiveMetric(new
-                {
-                    type = "endpoint_evaluation",
-                    timestamp = DateTimeOffset.Now,
-                    timelineMs = evaluation.TimestampMs,
-                    mode = endpointController.Mode.ToString(),
-                    signal = evaluation.Signal.ToString(),
-                    decision = evaluation.Decision.ToString(),
-                    effectiveEndSilenceMs = evaluation.EffectiveEndSilenceMs,
-                    minimumEndSilenceMs = endpointController.MinimumEndSilenceMs,
-                    maximumEndSilenceMs = endpointController.MaximumEndSilenceMs,
-                    sampleCount = evaluation.SampleCount,
-                    p75PauseMs = evaluation.P75PauseMs,
-                    targetEndSilenceMs = evaluation.TargetEndSilenceMs,
-                    consecutiveQuickResumes = evaluation.ConsecutiveQuickResumes,
-                    recentAdjustmentCount = evaluation.RecentAdjustmentCount,
-                    cooldownRemainingMs = evaluation.CooldownRemainingMs
-                });
-                PublishVadEndpointStatus(endpointController, endpointObservation.Adjustment, evaluation);
+                RecordEndpointEvaluation(endpointController, evaluation, endpointObservation.Adjustment);
             }
 
             if (endpointObservation.QuickResume is { } quickResume)
@@ -269,14 +271,88 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             var completed = segmenter.Push(frame, decision, endpointController.EffectiveEndSilenceMs);
             if (completed is not null)
             {
-                endpointController.NotifySegmentCut(completed.EndMs, completed.CutReason);
+                var cutObservation = endpointController.ObserveSegmentCut(completed.EndMs, completed.CutReason);
+                if (cutObservation?.Evaluation is { } cutEvaluation)
+                {
+                    RecordEndpointEvaluation(endpointController, cutEvaluation, cutObservation.Adjustment);
+                }
+
+                var mergeWithPrevious = _mergeNextSegment;
+                _mergeNextSegment = false;
+                var mergedByIncompleteClause = false;
+                var estimatedPauseMs = 0;
+
+                if (!mergeWithPrevious &&
+                    endpointController.IsAdaptive &&
+                    _lastSegmentSnapshot is { CutReason: SpeechSegmentCutReason.Silence } previousSegment)
+                {
+                    var segmentDurationMs = (int)Math.Max(0, completed.EndMs - completed.StartMs);
+                    var preRollContributionMs = Math.Min(
+                        _settings.Vad.PreRollMs,
+                        Math.Max(0, segmentDurationMs - _settings.Vad.StartSpeechMs));
+                    var speechStartEstimateMs = completed.StartMs + preRollContributionMs;
+                    estimatedPauseMs = (int)Math.Max(0, speechStartEstimateMs - previousSegment.SpeechEndMs);
+
+                    CompletedUtteranceSnapshot? completedSnapshot;
+                    lock (_subtitleLock)
+                    {
+                        completedSnapshot = _lastCompletedUtterance;
+                    }
+
+                    if (completedSnapshot is { } previousUtterance &&
+                        previousUtterance.Sequence == previousSegment.Sequence &&
+                        previousUtterance.Completeness.IsIncomplete)
+                    {
+                        var allowedWindowMs = UtteranceCompletenessAnalyzer.RecommendedContinuationWindowMs(
+                            previousUtterance.Completeness,
+                            endpointController.QuickResumeCeilingMs);
+                        if (estimatedPauseMs <= allowedWindowMs)
+                        {
+                            mergeWithPrevious = true;
+                            mergedByIncompleteClause = true;
+                        }
+                    }
+                }
+
+                if (mergedByIncompleteClause)
+                {
+                    var incompleteObservation = endpointController.ObserveIncompleteUtterance(
+                        completed.StartMs,
+                        estimatedPauseMs);
+                    if (incompleteObservation?.Evaluation is { } incompleteEvaluation)
+                    {
+                        RecordEndpointEvaluation(
+                            endpointController,
+                            incompleteEvaluation,
+                            incompleteObservation.Adjustment);
+                    }
+                }
+
                 var sequence = Interlocked.Increment(ref _sequence);
                 var groupAssignment = _utteranceGroupTracker.Assign(
                     sequence,
                     completed.StartMs,
                     completed.EndMs,
-                    _mergeNextSegment);
-                _mergeNextSegment = false;
+                    mergeWithPrevious);
+
+                PreparedAsrAudio preparedAudio;
+                lock (_audioContextLock)
+                {
+                    preparedAudio = _audioContextBuilder.Prepare(
+                        sequence,
+                        groupAssignment.UtteranceGroupId,
+                        groupAssignment.IsContinuation,
+                        completed,
+                        enableAudioContext: endpointController.IsAdaptive);
+                }
+
+                _lastSegmentSnapshot = new PreviousSegmentSnapshot(
+                    sequence,
+                    SpeechEndMs: Math.Max(completed.StartMs, completed.EndMs - completed.TrailingSilenceMs),
+                    SegmentEndMs: completed.EndMs,
+                    completed.CutReason,
+                    groupAssignment.UtteranceGroupId);
+
                 WriteAdaptiveMetric(new
                 {
                     type = "utterance_group_assignment",
@@ -285,11 +361,16 @@ public sealed class SubtitleRuntime : IAsyncDisposable
                     groupAssignment.UtteranceGroupId,
                     groupAssignment.SegmentCount,
                     groupAssignment.IsContinuation,
+                    mergedByIncompleteClause,
+                    contextMode = preparedAudio.ContextMode.ToString(),
+                    leftContextMs = preparedAudio.LeftContextMs,
+                    combinedSegmentCount = preparedAudio.CombinedSegmentCount,
                     groupSpanMs = groupAssignment.GroupEndMs - groupAssignment.GroupStartMs
                 });
                 var task = ProcessSegmentAsync(
                     sequence,
                     completed,
+                    preparedAudio,
                     groupAssignment,
                     _stopCts?.Token ?? CancellationToken.None);
                 TrackSegmentTask(task);
@@ -349,6 +430,15 @@ public sealed class SubtitleRuntime : IAsyncDisposable
                     _utteranceGroupTracker.CloseCurrentGroup();
                     _revisionCoordinator.CloseCurrentGroup();
                     _mergeNextSegment = false;
+                    _lastSegmentSnapshot = null;
+                    lock (_audioContextLock)
+                    {
+                        _audioContextBuilder.Reset();
+                    }
+                    lock (_subtitleLock)
+                    {
+                        _lastCompletedUtterance = null;
+                    }
 
                     _capture.Start();
                     StatusChanged?.Invoke(this, new RuntimeStatusUpdate(RuntimeStatusCategory.AudioCapture, "音频捕获已恢复"));
@@ -447,6 +537,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     private async Task ProcessSegmentAsync(
         long sequence,
         CompletedSpeechSegment segment,
+        PreparedAsrAudio preparedAudio,
         UtteranceGroupAssignment groupAssignment,
         CancellationToken cancellationToken)
     {
@@ -462,23 +553,39 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             await _asrSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
             acquired = true;
 
-            var wav = WavEncoder.EncodePcm16Mono(segment.Samples, segment.SampleRate);
-            diagnosticRecord = SaveSegmentDiagnostic(sequence, segment, groupAssignment, wav);
+            var wav = WavEncoder.EncodePcm16Mono(preparedAudio.Samples, preparedAudio.SampleRate);
+            diagnosticRecord = SaveSegmentDiagnostic(sequence, segment, preparedAudio, groupAssignment, wav);
             WriteAdaptiveMetric(new
             {
                 type = "asr_request",
                 timestamp = DateTimeOffset.Now,
                 sequence,
-                groupAssignment.UtteranceGroupId
+                groupAssignment.UtteranceGroupId,
+                contextMode = preparedAudio.ContextMode.ToString(),
+                leftContextMs = preparedAudio.LeftContextMs,
+                combinedSegmentCount = preparedAudio.CombinedSegmentCount,
+                sentAudioDurationMs = preparedAudio.SampleRate > 0
+                    ? preparedAudio.Samples.Length * 1000L / preparedAudio.SampleRate
+                    : 0
             });
+
+            string? promptHint;
+            lock (_subtitleLock)
+            {
+                promptHint = preparedAudio.ReplacesGroupSourceText
+                    ? _previousGroupTranscriptTail
+                    : _lastStableTranscriptTail;
+            }
+
             var request = WorkerRequest.Transcribe(
                 id: requestId,
                 sequence: sequence,
-                startMs: segment.StartMs,
-                endMs: segment.EndMs,
-                sampleRate: segment.SampleRate,
+                startMs: preparedAudio.AudioStartMs,
+                endMs: preparedAudio.AudioEndMs,
+                sampleRate: preparedAudio.SampleRate,
                 language: "auto",
-                audioBase64: Convert.ToBase64String(wav));
+                audioBase64: Convert.ToBase64String(wav),
+                prompt: promptHint);
 
             response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
         }
@@ -518,7 +625,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
 
         try
         {
-            await PublishTerminalResponseAsync(sequence, segment, groupAssignment, response).ConfigureAwait(false);
+            await PublishTerminalResponseAsync(sequence, segment, preparedAudio, groupAssignment, response).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -539,6 +646,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     private async Task PublishTerminalResponseAsync(
         long sequence,
         CompletedSpeechSegment segment,
+        PreparedAsrAudio preparedAudio,
         UtteranceGroupAssignment groupAssignment,
         WorkerResponse response)
     {
@@ -559,34 +667,80 @@ public sealed class SubtitleRuntime : IAsyncDisposable
                     _ => $"识别失败: {response.ErrorMessage ?? "未知错误"}"
                 },
                 Status = status,
-                CutReason = segment.CutReason.ToString()
+                CutReason = segment.CutReason.ToString(),
+                ReplacesGroupSourceText = preparedAudio.ReplacesGroupSourceText,
+                HasLeftAudioContext = preparedAudio.ContextMode == AsrAudioContextMode.LeftAudioContext
             };
 
-            // A null publication marks a NoSpeech item: it only fills its slot in
-            // the reorder buffer so later sequences can be released in order.
+            // A null publication marks a NoSpeech or pure-duplicate item: it only fills
+            // its slot in the reorder buffer so later sequences can be released in order.
             (SubtitleItem HistoryItem, SubtitlePublication? Publication)[] publications;
+            var groupsToInvalidate = new List<string>();
             lock (_subtitleLock)
             {
                 var releasedItems = _reorderBuffer.Add(subtitle);
                 publications = new (SubtitleItem, SubtitlePublication?)[releasedItems.Count];
                 for (var index = 0; index < releasedItems.Count; index++)
                 {
-                    if (releasedItems[index].Status == SubtitleStatus.NoSpeech)
+                    var released = releasedItems[index];
+                    if (released.Status == SubtitleStatus.NoSpeech)
                     {
-                        publications[index] = (releasedItems[index], null);
+                        if (!string.IsNullOrWhiteSpace(released.UtteranceGroupId))
+                        {
+                            groupsToInvalidate.Add(released.UtteranceGroupId);
+                        }
+
+                        publications[index] = (released, null);
                         continue;
                     }
 
-                    var deduplicated = ApplyDeduplicationLocked(releasedItems[index]);
-                    UpdateDiagnosticDedupLocked(deduplicated.Item.Sequence, deduplicated.DedupApplied);
-                    var historyItem = deduplicated.Item with
+                    if (released.Status == SubtitleStatus.Failed &&
+                        !string.IsNullOrWhiteSpace(released.UtteranceGroupId))
+                    {
+                        groupsToInvalidate.Add(released.UtteranceGroupId);
+                    }
+
+                    var alignment = ApplyContextAlignmentLocked(released);
+                    UpdateDiagnosticDedupLocked(released.Sequence, alignment.DedupApplied);
+                    if (alignment.SuppressAsDuplicate)
+                    {
+                        publications[index] = (released with { Status = SubtitleStatus.NoSpeech, SourceText = "" }, null);
+                        continue;
+                    }
+
+                    var historyItem = alignment.Item with
                     {
                         Type = "subtitle",
                         Revision = 1,
-                        ReplacesSequences = [deduplicated.Item.Sequence],
-                        GeneratedAt = deduplicated.Item.GeneratedAt ?? DateTimeOffset.Now
+                        ReplacesSequences = [alignment.Item.Sequence],
+                        GeneratedAt = alignment.Item.GeneratedAt ?? DateTimeOffset.Now
                     };
-                    publications[index] = (historyItem, _revisionCoordinator.Publish(historyItem));
+                    var publication = _revisionCoordinator.Publish(historyItem);
+                    publications[index] = (historyItem, publication);
+
+                    if (publication.Item.Status == SubtitleStatus.Final &&
+                        !string.IsNullOrWhiteSpace(publication.Item.SourceText))
+                    {
+                        var completeness = UtteranceCompletenessAnalyzer.Analyze(publication.Item.SourceText);
+                        _lastCompletedUtterance = new CompletedUtteranceSnapshot(
+                            released.Sequence,
+                            publication.Item.UtteranceGroupId ?? "",
+                            completeness);
+                        UpdateTranscriptPromptTailLocked(
+                            publication.Item.UtteranceGroupId,
+                            publication.Item.SourceText);
+                    }
+                }
+            }
+
+            if (groupsToInvalidate.Count > 0)
+            {
+                lock (_audioContextLock)
+                {
+                    foreach (var groupId in groupsToInvalidate)
+                    {
+                        _audioContextBuilder.InvalidateGroup(groupId);
+                    }
                 }
             }
 
@@ -594,9 +748,10 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             {
                 if (publication is null)
                 {
-                    // Nothing to show, record or translate. A non-HardMax cut still
+                    // Nothing to show, record or translate. A natural silence cut still
                     // ends the sentence in progress, as a published segment would.
-                    if (!string.Equals(historyItem.CutReason, nameof(SpeechSegmentCutReason.HardMax), StringComparison.Ordinal))
+                    if (!string.Equals(historyItem.CutReason, nameof(SpeechSegmentCutReason.HardMax), StringComparison.Ordinal) &&
+                        !string.Equals(historyItem.CutReason, nameof(SpeechSegmentCutReason.SoftMax), StringComparison.Ordinal))
                     {
                         _sentenceAccumulator?.Flush();
                     }
@@ -669,15 +824,21 @@ public sealed class SubtitleRuntime : IAsyncDisposable
 
     private SpeechSegmenter CreateSpeechSegmenter()
     {
+        var hardMax = _settings.Vad.HardMaxSegmentMs;
+        var configuredSoftMax = Math.Min(_settings.Vad.SoftMaxSegmentMs, Math.Max(1000, hardMax - 1000));
+        var scaledSoftMax = hardMax * 65 / 100;
+        var effectiveSoftMax = Math.Clamp(scaledSoftMax, configuredSoftMax, Math.Max(configuredSoftMax, hardMax - 1500));
+        var effectiveSoftBreak = Math.Max(_settings.Vad.SoftBreakSilenceMs, 192);
+
         return new SpeechSegmenter(new SpeechSegmenterOptions
         {
             EndSilenceMs = _endpointController?.EffectiveEndSilenceMs ?? _settings.Vad.EndSilenceMs,
             StartSpeechMs = _settings.Vad.StartSpeechMs,
             PreRollMs = _settings.Vad.PreRollMs,
             MinSegmentMs = _settings.Vad.MinSegmentMs,
-            SoftBreakSilenceMs = _settings.Vad.SoftBreakSilenceMs,
-            SoftMaxSegmentMs = _settings.Vad.SoftMaxSegmentMs,
-            HardMaxSegmentMs = _settings.Vad.HardMaxSegmentMs,
+            SoftBreakSilenceMs = effectiveSoftBreak,
+            SoftMaxSegmentMs = effectiveSoftMax,
+            HardMaxSegmentMs = hardMax,
             OverlapMs = _settings.Vad.OverlapMs
         });
     }
@@ -1067,6 +1228,114 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         return Math.Clamp(rms * 160, 0, 100);
     }
 
+    private void RecordEndpointEvaluation(
+        AdaptiveEndpointController endpointController,
+        EndpointEvaluation evaluation,
+        EndpointAdjustment? adjustment)
+    {
+        WriteAdaptiveMetric(new
+        {
+            type = "endpoint_evaluation",
+            timestamp = DateTimeOffset.Now,
+            timelineMs = evaluation.TimestampMs,
+            mode = endpointController.Mode.ToString(),
+            signal = evaluation.Signal.ToString(),
+            decision = evaluation.Decision.ToString(),
+            effectiveEndSilenceMs = evaluation.EffectiveEndSilenceMs,
+            minimumEndSilenceMs = endpointController.MinimumEndSilenceMs,
+            maximumEndSilenceMs = endpointController.MaximumEndSilenceMs,
+            sampleCount = evaluation.SampleCount,
+            p75PauseMs = evaluation.P75PauseMs,
+            targetEndSilenceMs = evaluation.TargetEndSilenceMs,
+            consecutiveQuickResumes = evaluation.ConsecutiveQuickResumes,
+            recentAdjustmentCount = evaluation.RecentAdjustmentCount,
+            cooldownRemainingMs = evaluation.CooldownRemainingMs,
+            recentSpeechRatio = Math.Round(endpointController.RecentSpeechRatio, 3)
+        });
+        PublishVadEndpointStatus(endpointController, adjustment, evaluation);
+    }
+
+    private ContextAlignmentResult ApplyContextAlignmentLocked(SubtitleItem item)
+    {
+        if (item.Status != SubtitleStatus.Final || string.IsNullOrWhiteSpace(item.SourceText))
+        {
+            return new ContextAlignmentResult(item, DedupApplied: false, SuppressAsDuplicate: false);
+        }
+
+        // Layer B1: Full-utterance audio re-recognition replaces the active group's text outright.
+        if (item.ReplacesGroupSourceText)
+        {
+            var fullText = item.SourceText.Trim();
+            _lastFinalText = TrimRollingTail(fullText, 400);
+            return new ContextAlignmentResult(
+                item with { SourceText = fullText },
+                DedupApplied: false,
+                SuppressAsDuplicate: false);
+        }
+
+        // Layer B2: Strip the prepended audio left context against the tail of the prior transcript.
+        if (item.HasLeftAudioContext && !string.IsNullOrWhiteSpace(_lastFinalText))
+        {
+            var strip = TextDeduplicator.StripLeftContext(_lastFinalText, item.SourceText);
+            if (strip.IsPureDuplicate)
+            {
+                return new ContextAlignmentResult(item, DedupApplied: true, SuppressAsDuplicate: true);
+            }
+
+            if (strip.Matched)
+            {
+                var baseLeft = _lastFinalText;
+                if (strip.SuggestedPreviousTailTrimLength > 0 &&
+                    strip.SuggestedPreviousTailTrimLength < baseLeft.Length)
+                {
+                    baseLeft = baseLeft[..^strip.SuggestedPreviousTailTrimLength].TrimEnd();
+                }
+
+                var sep = baseLeft.Length > 0 && strip.StrippedText.Length > 0 &&
+                          baseLeft[^1] <= 0x7f && strip.StrippedText[0] <= 0x7f
+                    ? " "
+                    : "";
+                _lastFinalText = TrimRollingTail(baseLeft + sep + strip.StrippedText, 400);
+                return new ContextAlignmentResult(
+                    item with
+                    {
+                        SourceText = strip.StrippedText,
+                        PreviousTailTrimLength = strip.SuggestedPreviousTailTrimLength
+                    },
+                    DedupApplied: true,
+                    SuppressAsDuplicate: false);
+            }
+        }
+
+        var deduplicated = ApplyDeduplicationLocked(item);
+        if (deduplicated.DedupApplied && string.IsNullOrWhiteSpace(deduplicated.Item.SourceText))
+        {
+            return new ContextAlignmentResult(deduplicated.Item, DedupApplied: true, SuppressAsDuplicate: true);
+        }
+
+        return new ContextAlignmentResult(
+            deduplicated.Item,
+            deduplicated.DedupApplied,
+            SuppressAsDuplicate: false);
+    }
+
+    private void UpdateTranscriptPromptTailLocked(string? utteranceGroupId, string sourceText)
+    {
+        if (!string.Equals(_lastStableGroupId, utteranceGroupId, StringComparison.Ordinal))
+        {
+            _previousGroupTranscriptTail = _lastStableTranscriptTail;
+            _lastStableGroupId = utteranceGroupId;
+        }
+
+        _lastStableTranscriptTail = TrimRollingTail(sourceText, 180);
+    }
+
+    private static string TrimRollingTail(string text, int maxLength)
+    {
+        var trimmed = text.Trim();
+        return trimmed.Length <= maxLength ? trimmed : trimmed[^maxLength..].TrimStart();
+    }
+
     private (SubtitleItem Item, bool DedupApplied) ApplyDeduplicationLocked(SubtitleItem item)
     {
         if (item.Status != SubtitleStatus.Final || string.IsNullOrWhiteSpace(item.SourceText))
@@ -1076,12 +1345,12 @@ public sealed class SubtitleRuntime : IAsyncDisposable
 
         if (string.IsNullOrWhiteSpace(_lastFinalText))
         {
-            _lastFinalText = item.SourceText;
+            _lastFinalText = TrimRollingTail(item.SourceText, 400);
             return (item, false);
         }
 
         var merged = TextDeduplicator.MergeOverlap(_lastFinalText, item.SourceText);
-        _lastFinalText = merged.Deduplicated ? merged.MergedText : item.SourceText;
+        _lastFinalText = TrimRollingTail(merged.Deduplicated ? merged.MergedText : item.SourceText, 400);
         return merged.Deduplicated ? (item with { SourceText = merged.AppendedText }, true) : (item, false);
     }
 
@@ -1124,6 +1393,7 @@ public sealed class SubtitleRuntime : IAsyncDisposable
     private DiagnosticSegmentRecord? SaveSegmentDiagnostic(
         long sequence,
         CompletedSpeechSegment segment,
+        PreparedAsrAudio preparedAudio,
         UtteranceGroupAssignment groupAssignment,
         byte[] wav)
     {
@@ -1148,8 +1418,14 @@ public sealed class SubtitleRuntime : IAsyncDisposable
             StartMs = segment.StartMs,
             EndMs = segment.EndMs,
             DurationMs = segment.EndMs - segment.StartMs,
+            SentAudioDurationMs = preparedAudio.SampleRate > 0
+                ? preparedAudio.Samples.Length * 1000L / preparedAudio.SampleRate
+                : 0,
             CutReason = segment.CutReason.ToString(),
             OverlapMs = segment.OverlapMs,
+            ContextMode = preparedAudio.ContextMode.ToString(),
+            LeftContextMs = preparedAudio.LeftContextMs,
+            CombinedSegmentCount = preparedAudio.CombinedSegmentCount,
             File = fileName
         };
 
@@ -1228,6 +1504,23 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         }
     }
 
+    private sealed record PreviousSegmentSnapshot(
+        long Sequence,
+        long SpeechEndMs,
+        long SegmentEndMs,
+        SpeechSegmentCutReason CutReason,
+        string UtteranceGroupId);
+
+    private sealed record CompletedUtteranceSnapshot(
+        long Sequence,
+        string UtteranceGroupId,
+        UtteranceCompletenessResult Completeness);
+
+    private readonly record struct ContextAlignmentResult(
+        SubtitleItem Item,
+        bool DedupApplied,
+        bool SuppressAsDuplicate);
+
     private sealed class DiagnosticSegmentRecord
     {
         public long Sequence { get; init; }
@@ -1236,8 +1529,12 @@ public sealed class SubtitleRuntime : IAsyncDisposable
         public long StartMs { get; init; }
         public long EndMs { get; init; }
         public long DurationMs { get; init; }
+        public long SentAudioDurationMs { get; init; }
         public string CutReason { get; init; } = "";
         public int OverlapMs { get; init; }
+        public string ContextMode { get; init; } = "";
+        public int LeftContextMs { get; init; }
+        public int CombinedSegmentCount { get; init; }
         public string? File { get; init; }
         public int? AsrLatencyMs { get; set; }
         public bool? AsrOk { get; set; }

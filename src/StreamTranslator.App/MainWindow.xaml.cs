@@ -3862,7 +3862,12 @@ public partial class MainWindow : FluentWindow
 
         var decision = evaluation.Decision switch
         {
-            EndpointEvaluationDecision.Adjusted => $"已调整至 {evaluation.EffectiveEndSilenceMs}ms",
+            EndpointEvaluationDecision.Adjusted => evaluation.Signal switch
+            {
+                EndpointEvaluationSignal.ContinuousSpeech => $"连续快语速，降至 {evaluation.EffectiveEndSilenceMs}ms",
+                EndpointEvaluationSignal.IncompleteUtterance => $"未完句续接，调至 {evaluation.EffectiveEndSilenceMs}ms",
+                _ => $"已调整至 {evaluation.EffectiveEndSilenceMs}ms"
+            },
             EndpointEvaluationDecision.WaitingForSamples => "样本不足，持续学习",
             EndpointEvaluationDecision.WaitingForQuickResumes => "等待连续快速恢复",
             EndpointEvaluationDecision.WaitingForStablePauses => "等待稳定停顿",

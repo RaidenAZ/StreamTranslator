@@ -109,4 +109,21 @@ public sealed class SentenceBoundaryScannerTests
         // Should find the boundary at "It comes…"
         Assert.IsTrue(text[idx..].StartsWith("It", StringComparison.Ordinal));
     }
+
+    [TestMethod]
+    public void FindsBoundary_ChineseSentenceEnding_ReturnsStartOfNextSentence()
+    {
+        var text = "今天我们重点来看一下新的音频上下文分段方案。接下来测试快语速直播的效果。";
+        var idx = SentenceBoundaryScanner.FindLastBoundary(text);
+
+        Assert.IsTrue(idx > 0);
+        Assert.IsTrue(text[idx..].StartsWith("接下来", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void NoBoundary_ShortChineseFragment_ReturnsMinusOne()
+    {
+        var text = "好的。马上开始。";
+        Assert.AreEqual(-1, SentenceBoundaryScanner.FindLastBoundary(text));
+    }
 }

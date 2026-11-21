@@ -6,7 +6,8 @@ public sealed record CompletedSpeechSegment(
     int SampleRate,
     short[] Samples,
     SpeechSegmentCutReason CutReason,
-    int OverlapMs);
+    int OverlapMs,
+    int TrailingSilenceMs = 0);
 
 public enum SpeechSegmentCutReason
 {

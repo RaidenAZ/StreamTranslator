@@ -9,9 +9,11 @@ public sealed class SileroOnnxVadEngine : IVadEngine
     private readonly float[] _state = new float[2 * 1 * 128];
     private readonly float[] _context = new float[64];
     private readonly float _threshold;
+    private readonly float _exitThreshold;
     private int _lastSampleRate;
+    private bool _isSpeechActive;
 
-    public SileroOnnxVadEngine(string modelPath, float threshold = 0.5f)
+    public SileroOnnxVadEngine(string modelPath, float threshold = 0.5f, float? exitThreshold = null)
     {
         if (!File.Exists(modelPath))
         {
@@ -26,7 +28,24 @@ public sealed class SileroOnnxVadEngine : IVadEngine
         };
 
         _session = new InferenceSession(modelPath, options);
-        _threshold = threshold;
+        _threshold = Math.Clamp(threshold, 0.05f, 0.99f);
+        _exitThreshold = exitThreshold.HasValue
+            ? Math.Clamp(exitThreshold.Value, 0.05f, _threshold)
+            : Math.Clamp(_threshold - 0.16f, 0.10f, _threshold);
+    }
+
+    public float Threshold => _threshold;
+    public float ExitThreshold => _exitThreshold;
+
+    public static bool EvaluateHysteresis(
+        bool currentlyActive,
+        float probability,
+        float enterThreshold,
+        float exitThreshold)
+    {
+        return currentlyActive
+            ? probability >= exitThreshold
+            : probability >= enterThreshold;
     }
 
     public VadDecision Analyze(ReadOnlySpan<short> pcm16Frame, int sampleRate)
@@ -73,8 +92,9 @@ public sealed class SileroOnnxVadEngine : IVadEngine
         UpdateState(results);
         Array.Copy(input, input.Length - contextSize, _context, 0, contextSize);
         _lastSampleRate = sampleRate;
+        _isSpeechActive = EvaluateHysteresis(_isSpeechActive, probability, _threshold, _exitThreshold);
 
-        return new VadDecision(probability >= _threshold, probability);
+        return new VadDecision(_isSpeechActive, probability);
     }
 
     public void Reset()
@@ -82,6 +102,7 @@ public sealed class SileroOnnxVadEngine : IVadEngine
         Array.Clear(_state);
         Array.Clear(_context);
         _lastSampleRate = 0;
+        _isSpeechActive = false;
     }
 
     private static float ReadSpeechProbability(IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results)

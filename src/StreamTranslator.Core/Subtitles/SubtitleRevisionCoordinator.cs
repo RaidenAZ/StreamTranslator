@@ -35,13 +35,17 @@ public sealed class SubtitleRevisionCoordinator
             .Distinct()
             .Order()
             .ToArray();
+        var revisedSourceText = item.ReplacesGroupSourceText
+            ? item.SourceText.Trim()
+            : MergeAdjacentText(currentItem.SourceText, item.SourceText);
         var revision = item with
         {
             Type = "subtitle_revision",
             Revision = currentItem.Revision + 1,
             ReplacesSequences = replacedSequences,
             Start = currentItem.Start,
-            SourceText = MergeAdjacentText(currentItem.SourceText, item.SourceText)
+            SourceText = revisedSourceText,
+            ReplacesGroupSourceText = false
         };
         _currentItem = revision;
         return new SubtitlePublication(SubtitlePublicationKind.Revise, revision);

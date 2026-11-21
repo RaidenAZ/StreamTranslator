@@ -270,6 +270,87 @@ public sealed class SpeechSegmenterTests
         Assert.AreEqual(SpeechSegmentCutReason.SoftMax, completed.CutReason);
     }
 
+    [TestMethod]
+    public void Push_IgnoresSingleFrameGlitchDuringSilenceWhenBelowStartSpeech()
+    {
+        var segmenter = new SpeechSegmenter(new SpeechSegmenterOptions
+        {
+            StartSpeechMs = 96,
+            PreRollMs = 0,
+            EndSilenceMs = 128,
+            MinSegmentMs = 0,
+            SoftMaxSegmentMs = 5000,
+            HardMaxSegmentMs = 10000,
+            OverlapMs = 0,
+            SilenceGlitchToleranceMs = 32
+        });
+
+        // Open speech (3 frames = 96ms).
+        for (var t = 0; t < 96; t += 32)
+        {
+            Assert.IsNull(segmenter.Push(Frame(t, 32, speech: true), new VadDecision(true, 0.9f)));
+        }
+
+        // Two silent frames (64ms), then a single 32ms BGM glitch, then two more silent frames (total silence = 128ms).
+        Assert.IsNull(segmenter.Push(Frame(96, 32, speech: false), new VadDecision(false, 0.1f)));
+        Assert.IsNull(segmenter.Push(Frame(128, 32, speech: false), new VadDecision(false, 0.1f)));
+        Assert.IsNull(segmenter.Push(Frame(160, 32, speech: true), new VadDecision(true, 0.65f)));
+        Assert.IsNull(segmenter.Push(Frame(192, 32, speech: false), new VadDecision(false, 0.1f)));
+
+        var completed = segmenter.Push(Frame(224, 32, speech: false), new VadDecision(false, 0.1f));
+
+        Assert.IsNotNull(completed);
+        Assert.AreEqual(SpeechSegmentCutReason.Silence, completed.CutReason);
+        Assert.AreEqual(128, completed.TrailingSilenceMs);
+    }
+
+    [TestMethod]
+    public void Push_HardMaxCutsAtEarlierAcousticValleyAndPreservesSubsequentFrames()
+    {
+        var segmenter = new SpeechSegmenter(new SpeechSegmenterOptions
+        {
+            StartSpeechMs = 64,
+            PreRollMs = 0,
+            EndSilenceMs = 400,
+            MinSegmentMs = 0,
+            SoftBreakSilenceMs = 192,
+            SoftMaxSegmentMs = 600,
+            HardMaxSegmentMs = 960,
+            OverlapMs = 128,
+            ValleyLookbackMs = 320
+        });
+
+        CompletedSpeechSegment? hardCut = null;
+        // 30 frames of 32ms = 960ms total. Place a clear acoustic valley at frames 24-25 (768..832ms).
+        for (var i = 0; i < 30; i++)
+        {
+            var startMs = i * 32;
+            var isValley = i is 24 or 25;
+            var frame = Frame(startMs, 32, speech: !isValley);
+            var decision = isValley ? new VadDecision(true, 0.12f) : new VadDecision(true, 0.92f);
+            hardCut = segmenter.Push(frame, decision);
+        }
+
+        Assert.IsNotNull(hardCut);
+        Assert.AreEqual(SpeechSegmentCutReason.HardMax, hardCut.CutReason);
+        // Should cut cleanly at the end of the valley (frame 25 -> 832ms) instead of mid-speech at 960ms.
+        Assert.AreEqual(832, hardCut.EndMs);
+
+        // Next silence cut should start at 832 - 128 = 704ms and retain frames 832..960ms with zero loss.
+        CompletedSpeechSegment? next = null;
+        for (var t = 960; t < 960 + 416; t += 32)
+        {
+            next = segmenter.Push(Frame(t, 32, speech: false), new VadDecision(false, 0.05f));
+            if (next is not null)
+            {
+                break;
+            }
+        }
+
+        Assert.IsNotNull(next);
+        Assert.AreEqual(704, next.StartMs);
+    }
+
     private static IEnumerable<PcmAudioFrame> Frames(long startMs, int count, bool speech)
     {
         for (var i = 0; i < count; i++)

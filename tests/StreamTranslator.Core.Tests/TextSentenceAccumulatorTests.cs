@@ -309,4 +309,54 @@ public sealed class TextSentenceAccumulatorTests
         Assert.AreEqual(TimeSpan.FromSeconds(5), emitted[0].Start, "Start should be earliest");
         Assert.AreEqual(TimeSpan.FromSeconds(25), emitted[0].End, "End should be latest");
     }
+
+    [TestMethod]
+    public void IncompleteSoftMax_AccumulatesUntilNextSentenceEnd()
+    {
+        var emitted = new List<SubtitleItem>();
+        var acc = new TextSentenceAccumulator(350);
+        acc.SentenceUnitReady += unit => emitted.Add(unit);
+
+        acc.Add(MakeItem("We are going to talk about the", "SoftMax"));
+        Assert.AreEqual(0, emitted.Count, "Incomplete SoftMax clause should wait for continuation");
+
+        acc.Add(MakeItem("new architecture today.", "Silence"));
+        Assert.AreEqual(1, emitted.Count);
+        Assert.AreEqual("We are going to talk about the new architecture today.", emitted[0].SourceText);
+    }
+
+    [TestMethod]
+    public void PreviousTailTrimLength_RepairsTruncatedHardMaxStub()
+    {
+        var emitted = new List<SubtitleItem>();
+        var acc = new TextSentenceAccumulator(350);
+        acc.SentenceUnitReady += unit => emitted.Add(unit);
+
+        acc.Add(MakeItem("Train Sim World Journey. We are introducing the free start.", "HardMax"));
+        acc.Add(MakeItem("starter pack next week.", "Silence") with
+        {
+            PreviousTailTrimLength = "start.".Length
+        });
+
+        Assert.AreEqual(1, emitted.Count);
+        Assert.AreEqual(
+            "Train Sim World Journey. We are introducing the free starter pack next week.",
+            emitted[0].SourceText);
+    }
+
+    [TestMethod]
+    public void ChineseSegments_JoinWithoutInjectedSpacesAndSplitOnChinesePeriod()
+    {
+        var emitted = new List<SubtitleItem>();
+        var acc = new TextSentenceAccumulator(350);
+        acc.SentenceUnitReady += unit => emitted.Add(unit);
+
+        acc.Add(MakeItem("今天我们重点演示一下这套全新的音频上下文分段机制", "HardMax"));
+        acc.Add(MakeItem("在连续快语速场景下的表现。接下来看第二部分", "HardMax"));
+
+        Assert.AreEqual(1, emitted.Count);
+        Assert.AreEqual(
+            "今天我们重点演示一下这套全新的音频上下文分段机制在连续快语速场景下的表现。",
+            emitted[0].SourceText);
+    }
 }
