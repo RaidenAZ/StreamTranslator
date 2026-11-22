@@ -45,7 +45,6 @@ dotnet publish (Join-Path $root "src\StreamTranslator.Diagnostics\StreamTranslat
 Assert-LastExitCode "dotnet publish StreamTranslator.Diagnostics"
 
 Copy-Item (Join-Path $root "models\silero_vad.onnx") (Join-Path $modelsRoot "silero_vad.onnx") -ErrorAction Stop
-Copy-Item (Join-Path $root "docs") (Join-Path $publishRoot "docs") -Recurse
 
 if (-not $SkipWorker) {
     # Workers are built inside a dedicated venv so the host site-packages neither
