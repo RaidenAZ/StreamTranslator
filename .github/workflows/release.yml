@@ -111,7 +111,7 @@ jobs:
       #   1. ensure-model.ps1 — 校验 / 下载 silero_vad.onnx（有缓存时直接通过）
       #   2. dotnet publish   — 编译 .NET 10 WPF 应用
       #   3. PyInstaller      — 打包 asr_worker 和 translation_worker
-      #   4. 复制 models / docs，生成 artifacts/StreamTranslator 便携包
+      #   4. 复制运行时模型，生成 artifacts/StreamTranslator 便携包
       - name: Build portable package
         shell: pwsh
         run: scripts/publish.ps1
